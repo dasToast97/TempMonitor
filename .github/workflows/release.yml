@@ -1,0 +1,80 @@
+# Baut bei jedem Push das Programm + den Installer (zum Testen unter "Actions" herunterladbar)
+# und veröffentlicht bei einem Versions-Tag (z. B. v1.1.0) automatisch ein GitHub Release
+# mit TempMonitor-Setup.exe. Diesen Installer findet dann der eingebaute Updater.
+
+name: Build & Release
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Version bestimmen
+        id: ver
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $v = "${{ github.ref_name }}".TrimStart('v','V')
+          } else {
+            $v = "0.0.${{ github.run_number }}"
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Programm bauen (eine einzige .exe, .NET muss nicht installiert sein)
+        run: >
+          dotnet publish TempMonitor.csproj -c Release -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:IncludeAllContentForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -p:DebugType=none
+          -p:Version=${{ steps.ver.outputs.version }}
+          -p:GitHubRepo=${{ github.repository }}
+          -o publish
+
+      - name: Inno Setup installieren
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+
+      - name: Installer bauen
+        shell: pwsh
+        run: >
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          "/DMyAppVersion=${{ steps.ver.outputs.version }}"
+          "/DMyRepo=${{ github.repository }}"
+          installer\TempMonitor.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TempMonitor-${{ steps.ver.outputs.version }}
+          path: |
+            publish/TempMonitor-Setup.exe
+            publish/TempMonitor.exe
+
+      - name: GitHub Release erstellen
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            publish/TempMonitor-Setup.exe
+            publish/TempMonitor.exe
+          generate_release_notes: true

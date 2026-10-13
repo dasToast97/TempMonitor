@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <AssemblyName>TempMonitor</AssemblyName>
+    <RootNamespace>TempMonitor</RootNamespace>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+
+    <!-- Version: wird beim Release automatisch aus dem Git-Tag (z. B. v1.2.0) gesetzt -->
+    <Version>1.0.0</Version>
+    <Product>Temperatur-Monitor</Product>
+
+    <!-- GitHub-Repo für den Updater (owner/name). Wird vom GitHub-Workflow automatisch gesetzt.
+         Bei lokalen Builds leer -> Updater ist dann einfach aus. -->
+    <GitHubRepo Condition="'$(GitHubRepo)' == ''"></GitHubRepo>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="GitHubRepo" Value="$(GitHubRepo)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
+  </ItemGroup>
+
+</Project>
