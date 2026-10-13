@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using LibreHardwareMonitor.Hardware;
@@ -93,6 +94,9 @@ sealed class MainForm : Form
         IsStorageEnabled = true,
         IsMemoryEnabled = true,
         IsControllerEnabled = true,
+        IsNetworkEnabled = true,
+        IsPsuEnabled = true,
+        IsBatteryEnabled = true,
     };
 
     readonly UpdateVisitor _visitor = new();
@@ -108,6 +112,7 @@ sealed class MainForm : Form
     readonly NotifyIcon _tray;
     readonly TabButton _tempTab, _fanTab;
     readonly List<(string Short, ISensor Sensor)> _heroes = new();
+    readonly List<SensorTable> _tables = new();
     bool _exiting, _shownOnce, _loaded;
 
     float K => DeviceDpi / 96f;
@@ -417,7 +422,14 @@ sealed class MainForm : Form
         HardwareType.Storage => "Laufwerk",
         HardwareType.Memory => "Arbeitsspeicher",
         HardwareType.Network => "Netzwerk",
-        _ => t.ToString(),
+        _ => t.ToString() switch
+        {
+            "Battery" => "Akku",
+            "Psu" => "Netzteil",
+            "Cooler" => "Kühlung",
+            "EmbeddedController" => "Mainboard (EC)",
+            var other => other,
+        },
     };
 
     static int Order(HardwareType t) => t switch
@@ -462,25 +474,40 @@ sealed class MainForm : Form
             .Where(g => g.Sensors.Count > 0)
             .ToList();
 
-        if (groups.Count == 0)
+        // ===== Hinweis, wenn der Treiber für CPU/Mainboard fehlt =====
+        if (!Driver.PawnIoInstalled)
         {
-            _flow.Controls.Add(new Label
+            var banner = new DriverBanner();
+            banner.InstallClicked += async () =>
             {
-                Text = "Keine Temperatursensoren gefunden.\n\n" +
-                       "•  Programm als Administrator starten\n" +
-                       "•  Falls CPU/Mainboard fehlen: den Treiber PawnIO installieren (https://pawnio.eu)",
-                ForeColor = Theme.Muted,
-                AutoSize = true,
-                Font = new Font("Segoe UI", 11f),
-                Margin = new Padding((int)(10 * K), (int)(20 * K), 0, 0),
-            });
-            _flow.ResumeLayout();
-            _status.Text = "Keine Sensoren";
-            return;
+                if (await Driver.InstallAsync(this))
+                {
+                    var r = MessageBox.Show(this,
+                        "PawnIO ist installiert. Toast Temperatur muss neu gestartet werden, damit CPU- und Mainboard-Werte erscheinen.\n\nJetzt neu starten?",
+                        "Neustart", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+                    if (r == DialogResult.Yes) RestartApp();
+                }
+            };
+            _fullWidth.Add(banner);
+            _flow.Controls.Add(banner);
+            _flow.SetFlowBreak(banner, true);
         }
 
         // ===== Übersicht: eine große Kachel pro Bauteil-Art =====
         AddSection("Übersicht", null);
+        if (groups.Count == 0)
+        {
+            var none = new Label
+            {
+                Text = "Keine Temperatursensoren gefunden – Programm als Administrator starten.",
+                ForeColor = Theme.Muted,
+                AutoSize = true,
+                Font = new Font("Segoe UI", 10.5f),
+                Margin = new Padding((int)(10 * K), (int)(6 * K), 0, 0),
+            };
+            _flow.Controls.Add(none);
+            _flow.SetFlowBreak(none, true);
+        }
         SensorCard? lastHero = null;
         foreach (var cat in groups.GroupBy(g => Category(g.Hw.HardwareType)))
         {
@@ -501,28 +528,71 @@ sealed class MainForm : Form
         }
         if (lastHero != null) _flow.SetFlowBreak(lastHero, true);
 
-        // ===== Details: alle Sensoren, nach Bauteil gruppiert =====
-        foreach (var (hw, sensors) in groups)
+        // ===== Details: jedes Bauteil aufklappbar – Temperatur-Graphen + alle Werte wie bei HWMonitor =====
+        int total = 0;
+        foreach (var hw in _computer.Hardware.OrderBy(h => Order(h.HardwareType)))
         {
-            string cat = Category(hw.HardwareType);
-            AddSection($"{cat}  ·  {hw.Name}", Theme.ForCategory(cat));
+            var all = AllSensors(hw).Where(s => s.Value.HasValue).ToList();
+            if (all.Count == 0) continue;
+            total += all.Count;
 
+            string cat = Category(hw.HardwareType);
+            var accent = Theme.ForCategory(cat);
+            bool openByDefault = hw.HardwareType is HardwareType.Cpu or HardwareType.Motherboard
+                or HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel;
+
+            var header = new CollapsibleHeader($"{cat}  ·  {hw.Name}", $"{all.Count} Werte", accent,
+                "hw|" + hw.Identifier, openByDefault)
+            {
+                Height = (int)(42 * K),
+                Margin = new Padding((int)(6 * K), (int)(12 * K), (int)(6 * K), (int)(4 * K)),
+            };
+            _fullWidth.Add(header);
+            _flow.Controls.Add(header);
+            _flow.SetFlowBreak(header, true);
+
+            // Temperatur-Graphen
             SensorCard? last = null;
-            foreach (var s in sensors)
+            foreach (var s in all.Where(IsUsefulTemp))
             {
                 string sub = s.Hardware.Name != hw.Name ? s.Hardware.Name : cat;
-                var card = new SensorCard(s.Name, sub, Theme.ForCategory(cat), big: false);
+                var card = new SensorCard(s.Name, sub, accent, big: false);
                 card.Push(s.Value);
                 _cards.Add((s, card));
                 _flow.Controls.Add(card);
+                header.AddContent(card);
                 last = card;
             }
             if (last != null) _flow.SetFlowBreak(last, true);
+
+            // Tabelle mit allen Werten
+            var table = new SensorTable(hw, all, accent);
+            _tables.Add(table);
+            _fullWidth.Add(table);
+            _flow.Controls.Add(table);
+            _flow.SetFlowBreak(table, true);
+            header.AddContent(table);
         }
 
         ResizeFullWidth();
         _flow.ResumeLayout();
-        _status.Text = $"{_cards.Count - groups.GroupBy(g => Category(g.Hw.HardwareType)).Count()} Sensoren gefunden";
+        _status.Text = $"{total} Werte gefunden";
+    }
+
+    /// Programm neu starten (z. B. nach Treiber-Installation)
+    void RestartApp()
+    {
+        string exe = Environment.ProcessPath ?? Application.ExecutablePath;
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "cmd.exe",
+            Arguments = $"/c timeout /t 2 /nobreak >nul & start \"\" \"{exe}\"",
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            WindowStyle = ProcessWindowStyle.Hidden,
+        });
+        _exiting = true;
+        Close();
     }
 
     void AddSection(string text, Color? accent)
@@ -558,7 +628,12 @@ sealed class MainForm : Form
 
             if (Visible)
             {
-                foreach (var (sensor, card) in _cards) card.Push(sensor.Value);
+                foreach (var (sensor, card) in _cards)
+                {
+                    if (card.Visible) card.Push(sensor.Value); else card.PushSilent(sensor.Value);
+                }
+                if (_flow.Visible)
+                    foreach (var t in _tables) if (t.Visible) t.Invalidate();
                 if (_fanView is { Visible: true }) _fanView.RefreshValues();
             }
             else
