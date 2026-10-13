@@ -263,13 +263,24 @@ sealed class MainForm : Form
             return;
         }
 
+        // Lüfter zuerst suchen: liefert Namen und leere Anschlüsse für die Wertetabellen
+        try
+        {
+            _fans = new FanController(FanSettings.Load());
+            _fans.Discover(_computer);
+        }
+        catch (Exception ex)
+        {
+            _fans = null;
+            _status.Text = "Lüftersteuerung nicht verfügbar: " + ex.Message;
+        }
+
         BuildUi();
 
         // Lüftersteuerung
         try
         {
-            _fans = new FanController(FanSettings.Load());
-            _fans.Discover(_computer);
+            if (_fans == null) throw new InvalidOperationException("keine Lüfter");
             _fanView = new FanView(_fans) { Dock = DockStyle.Fill, Visible = false };
             _fanView.ProfileChanged += UpdateTrayMenu;
             Controls.Add(_fanView);
@@ -460,6 +471,41 @@ sealed class MainForm : Form
         return s.MaxBy(x => x.Value ?? 0)!;
     }
 
+    /// Die Gesamtauslastung eines Bauteils
+    internal static ISensor? MainLoad(IHardware hw)
+    {
+        var loads = AllSensors(hw).Where(s => s.SensorType == SensorType.Load).ToList();
+        if (loads.Count == 0) return null;
+        string[] prefs = hw.HardwareType switch
+        {
+            HardwareType.Cpu => new[] { "CPU Total", "Total" },
+            HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel => new[] { "GPU Core", "D3D 3D", "Core" },
+            HardwareType.Memory => new[] { "Memory" },
+            HardwareType.Storage => new[] { "Total Activity", "Activity" },
+            _ => Array.Empty<string>(),
+        };
+        foreach (var p in prefs)
+        {
+            var hit = loads.FirstOrDefault(x => x.Name.Equals(p, StringComparison.OrdinalIgnoreCase))
+                      ?? loads.FirstOrDefault(x => x.Name.Contains(p, StringComparison.OrdinalIgnoreCase));
+            if (hit != null) return hit;
+        }
+        return loads[0];
+    }
+
+    /// Last zu einem Temperatursensor: gleicher Name (z. B. "CPU Core #3") oder die Gesamtlast
+    ISensor? LoadFor(IHardware hw, ISensor temp)
+    {
+        var same = AllSensors(hw).FirstOrDefault(s => s.SensorType == SensorType.Load && s.Name == temp.Name);
+        if (same != null) return same;
+        if (hw.HardwareType == HardwareType.Motherboard)
+            return _computer.Hardware.Where(h => h.HardwareType == HardwareType.Cpu).Select(MainLoad).FirstOrDefault();
+        return MainLoad(hw);
+    }
+
+    /// Lüfteranschlüsse ohne Lüfter in den Tabellen weglassen
+    static bool IsHiddenSensor(ISensor s) => FanNaming.Hidden.Contains(s.Identifier.ToString());
+
     // ---------------------------------------------------------------------
     // Oberfläche aufbauen
     // ---------------------------------------------------------------------
@@ -515,7 +561,10 @@ sealed class MainForm : Form
             var g = cat.Count() == 1 ? cat.First()
                 : cat.MaxBy(x => PickMain(x.Hw, x.Sensors).Value ?? 0);
             var main = PickMain(g.Hw, g.Sensors);
-            var hero = new SensorCard(cat.Key, g.Hw.Name, Theme.ForCategory(cat.Key), big: true);
+            var hero = new SensorCard(cat.Key, g.Hw.Name, Theme.ForCategory(cat.Key), big: true)
+            {
+                LoadSensor = LoadFor(g.Hw, main),
+            };
             hero.Push(main.Value);
             _cards.Add((main, hero));
             _heroes.Add((cat.Key switch
@@ -528,11 +577,21 @@ sealed class MainForm : Form
         }
         if (lastHero != null) _flow.SetFlowBreak(lastHero, true);
 
-        // ===== Details: jedes Bauteil aufklappbar – Temperatur-Graphen + alle Werte wie bei HWMonitor =====
+        // ===== Details: als Ganzes ein-/ausklappbar, darin jedes Bauteil einzeln =====
         int total = 0;
+        var details = new CollapsibleHeader("Alle Werte im Detail", "", Theme.Accent, "details", defaultExpanded: false)
+        {
+            Height = (int)(46 * K),
+            Margin = new Padding((int)(6 * K), (int)(18 * K), (int)(6 * K), (int)(4 * K)),
+            Big = true,
+        };
+        _fullWidth.Add(details);
+        _flow.Controls.Add(details);
+        _flow.SetFlowBreak(details, true);
+
         foreach (var hw in _computer.Hardware.OrderBy(h => Order(h.HardwareType)))
         {
-            var all = AllSensors(hw).Where(s => s.Value.HasValue).ToList();
+            var all = AllSensors(hw).Where(s => s.Value.HasValue && !IsHiddenSensor(s)).ToList();
             if (all.Count == 0) continue;
             total += all.Count;
 
@@ -550,13 +609,14 @@ sealed class MainForm : Form
             _fullWidth.Add(header);
             _flow.Controls.Add(header);
             _flow.SetFlowBreak(header, true);
+            details.AddContent(header);
 
             // Temperatur-Graphen
             SensorCard? last = null;
             foreach (var s in all.Where(IsUsefulTemp))
             {
                 string sub = s.Hardware.Name != hw.Name ? s.Hardware.Name : cat;
-                var card = new SensorCard(s.Name, sub, accent, big: false);
+                var card = new SensorCard(s.Name, sub, accent, big: false) { LoadSensor = LoadFor(hw, s) };
                 card.Push(s.Value);
                 _cards.Add((s, card));
                 _flow.Controls.Add(card);
@@ -574,6 +634,8 @@ sealed class MainForm : Form
             header.AddContent(table);
         }
 
+        details.Count = $"{total} Werte · zum Aufklappen klicken";
+        details.ApplyVisibility(true);
         ResizeFullWidth();
         _flow.ResumeLayout();
         _status.Text = $"{total} Werte gefunden";
@@ -803,7 +865,12 @@ sealed class SensorCard : Control
     static readonly Font BadgeFont   = new("Segoe UI Semibold", 8.5f);
 
     readonly List<float> _hist = new();
+    readonly List<float> _loadHist = new();
     readonly string _title, _subtitle;
+    float? _load;
+
+    /// Optional: passende Auslastung – wird als gestrichelte Linie mitgezeichnet
+    public ISensor? LoadSensor { get; set; }
     readonly Color _accent;
     readonly bool _big;
     float? _cur;
@@ -842,19 +909,19 @@ sealed class SensorCard : Control
             if (_hist.Count > MaxPoints) _hist.RemoveAt(0);
             _min = Math.Min(_min, v);
             _max = Math.Max(_max, v);
+
+            if (LoadSensor != null)
+            {
+                _load = LoadSensor.Value;
+                _loadHist.Add(Math.Clamp(_load ?? 0, 0, 100));
+                if (_loadHist.Count > MaxPoints) _loadHist.RemoveAt(0);
+            }
         }
     }
 
     public void Push(float? value)
     {
-        _cur = value;
-        if (value is float v)
-        {
-            _hist.Add(v);
-            if (_hist.Count > MaxPoints) _hist.RemoveAt(0);
-            _min = Math.Min(_min, v);
-            _max = Math.Max(_max, v);
-        }
+        PushSilent(value);
         Invalidate();
     }
 
@@ -908,7 +975,10 @@ sealed class SensorCard : Control
             if (_cur is float vv) DrawBadge(g, Theme.Status(vv), col, new Point(Width - S(16), S(66)), k);
             if (_max > float.MinValue)
                 TextRenderer.DrawText(g, $"min {_min:0}°  ·  max {_max:0}°", SmallFont,
-                    new Rectangle(S(100), S(90), Width - S(116), S(16)), Theme.Muted, R);
+                    new Rectangle(S(100), S(92), Width - S(116), S(16)), Theme.Muted, R);
+            if (_load is float ld)
+                TextRenderer.DrawText(g, $"Last {ld:0} %", BadgeFont,
+                    new Rectangle(S(150), S(44), Width - S(166), S(18)), Theme.Accent, R);
 
             graph = new Rectangle(S(16), S(116), Width - S(32), Height - S(130));
             DrawGraph(g, graph, col, k, axis: false);
@@ -917,6 +987,8 @@ sealed class SensorCard : Control
         {
             TextRenderer.DrawText(g, _title, TitleFont, new Rectangle(S(12), S(10), Width - S(130), S(22)), Theme.Text, L);
             TextRenderer.DrawText(g, _subtitle, SmallFont, new Rectangle(S(12), S(31), Width - S(130), S(16)), Theme.Muted, L);
+            if (_load is float ld)
+                TextRenderer.DrawText(g, $"Last {ld:0} %", SmallFont, new Rectangle(S(12), S(44), S(120), S(14)), Theme.Accent, L);
             TextRenderer.DrawText(g, _cur is float v ? $"{v:0.0} °C" : "–", ValueFont,
                 new Rectangle(Width - S(130), S(8), S(118), S(30)), col, R);
             if (_max > float.MinValue)
@@ -993,6 +1065,19 @@ sealed class SensorCard : Control
             g.FillPolygon(fill, poly);
             using var line = new Pen(col, (_big ? 2.5f : 2f) * k) { LineJoin = LineJoin.Round };
             g.DrawLines(line, pts);
+        }
+
+        // Auslastung (0–100 %) als gestrichelte Linie auf eigener Skala
+        if (_loadHist.Count >= 2)
+        {
+            var lp = new PointF[_loadHist.Count];
+            for (int i = 0; i < _loadHist.Count; i++)
+                lp[i] = new PointF(gr.Right - (_loadHist.Count - 1 - i) * dx,
+                                   gr.Bottom - _loadHist[i] / 100f * gr.Height);
+            using var lpen = new Pen(Color.FromArgb(200, Theme.Accent), 1.5f * k) { DashStyle = DashStyle.Dash };
+            g.DrawLines(lpen, lp);
+            TextRenderer.DrawText(g, "- - Last", SmallFont, new Rectangle(gr.Right - S(60), gr.Top - S(1), S(60), S(14)),
+                Theme.Accent, R);
         }
 
         var p = pts[^1];

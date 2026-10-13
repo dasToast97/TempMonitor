@@ -4,25 +4,43 @@ using LibreHardwareMonitor.Hardware;
 namespace TempMonitor;
 
 // ===========================================================================
-// Profile
+// Grundbegriffe
 // ===========================================================================
 enum FanProfile { Bios, Eco, Balanced, Performance, Max, Custom }
 
+/// Nach welchem Bauteil ein Lüfter regelt
+enum Component { Cpu = 0, Gpu = 1, Board = 2 }
+
+enum FanKind { Fan, Pump }
+
+static class Components
+{
+    public static readonly Component[] All = { Component.Cpu, Component.Gpu, Component.Board };
+
+    public static string Name(Component c) => c switch
+    {
+        Component.Cpu => "CPU",
+        Component.Gpu => "GPU",
+        _ => "Mainboard",
+    };
+}
+
 sealed record ProfileInfo(
     FanProfile Profile, string Title, string Description, bool Adaptive,
-    float CpuTarget, float GpuTarget, float MinPercent, float UpRate, float DownRate);
+    float MinPercent, float UpRate, float DownRate, float[] DefaultTargets);
 
 static class Profiles
 {
     // UpRate / DownRate = maximale Änderung in % pro Sekunde (verhindert nerviges Auf- und Abheulen)
+    // DefaultTargets = Zieltemperaturen CPU, GPU, Mainboard (einstellbar)
     public static readonly ProfileInfo[] All =
     {
-        new(FanProfile.Bios,        "Standard (BIOS)",  "Mainboard und Grafikkarte regeln selbst",       false,  0,  0,   0,   0,   0),
-        new(FanProfile.Eco,         "Energiesparend",   "So leise wie möglich – Ziel CPU 78 °C",          true,  78, 75,  20,   4,   1),
-        new(FanProfile.Balanced,    "Ausgewogen",       "Ruhig und kühl – Ziel CPU 68 °C",                true,  68, 70,  25,   6,   2),
-        new(FanProfile.Performance, "Leistung",         "Kühl für Spiele & Rendern – Ziel CPU 58 °C",     true,  58, 62,  35,  10,   2),
-        new(FanProfile.Max,         "Maximale Kühlung", "Alle Lüfter dauerhaft auf 100 %",               false,  0,  0, 100, 100, 100),
-        new(FanProfile.Custom,      "Eigene Kurve",     "Für jeden Lüfter eine eigene Kurve festlegen",  false,  0,  0,   0,   8,   3),
+        new(FanProfile.Bios,        "Standard (BIOS)",  "Mainboard und Grafikkarte regeln selbst",      false,   0,   0,   0, new float[] { 0, 0, 0 }),
+        new(FanProfile.Eco,         "Energiesparend",   "So leise wie möglich",                         true,   20,   4,   1, new float[] { 78, 75, 55 }),
+        new(FanProfile.Balanced,    "Ausgewogen",       "Ruhig und kühl",                               true,   25,   6,   2, new float[] { 68, 70, 48 }),
+        new(FanProfile.Performance, "Leistung",         "Kühl für Spiele & Rendern",                    true,   35,  10,   2, new float[] { 58, 62, 42 }),
+        new(FanProfile.Max,         "Maximale Kühlung", "Alle Lüfter dauerhaft auf 100 %",              false, 100, 100, 100, new float[] { 0, 0, 0 }),
+        new(FanProfile.Custom,      "Eigene Kurve",     "Für jeden Lüfter eine eigene Kurve festlegen", false,   0,   8,   3, new float[] { 0, 0, 0 }),
     };
 
     public static ProfileInfo Get(FanProfile p) => All.First(i => i.Profile == p);
@@ -33,11 +51,16 @@ static class Profiles
 // ===========================================================================
 sealed class FanChannelSettings
 {
-    public string? SourceId { get; set; }
+    public string? CustomName { get; set; }
+    public FanKind? Kind { get; set; }           // null = automatisch erkennen
+    public bool SourcesInitialized { get; set; }
+    public bool UseCpu { get; set; }
+    public bool UseGpu { get; set; }
+    public bool UseBoard { get; set; }
     public List<float[]> Curve { get; set; } = DefaultCurve();
     public float Kp { get; set; } = 3.0f;
     public float Ki { get; set; } = 0.15f;
-    /// Gelernte Lüfterleistung je Auslastungsstufe (0–10 %, 10–20 % …) pro Profil; -1 = noch unbekannt
+    /// Gelernte Lüfterleistung je Auslastungsstufe (0–10 %, 10–20 % …) pro Profil und Bauteil; -1 = unbekannt
     public Dictionary<string, float[]> Learned { get; set; } = new();
 
     public static List<float[]> DefaultCurve() => new()
@@ -45,9 +68,26 @@ sealed class FanChannelSettings
         new[] { 30f, 25f }, new[] { 50f, 35f }, new[] { 65f, 55f }, new[] { 75f, 75f }, new[] { 85f, 100f },
     };
 
-    public float[] LearnedFor(FanProfile p)
+    public bool Uses(Component c) => c switch
     {
-        string key = p.ToString();
+        Component.Cpu => UseCpu,
+        Component.Gpu => UseGpu,
+        _ => UseBoard,
+    };
+
+    public void SetUse(Component c, bool v)
+    {
+        switch (c)
+        {
+            case Component.Cpu: UseCpu = v; break;
+            case Component.Gpu: UseGpu = v; break;
+            default: UseBoard = v; break;
+        }
+    }
+
+    public float[] LearnedFor(FanProfile p, Component c)
+    {
+        string key = $"{p}|{c}";
         if (!Learned.TryGetValue(key, out var t) || t.Length != 11)
         {
             t = Enumerable.Repeat(-1f, 11).ToArray();
@@ -63,11 +103,19 @@ sealed class FanSettings
     public bool WarningAccepted { get; set; }
     public bool TrayHintShown { get; set; }
 
+    /// Zieltemperaturen je Profil: [CPU, GPU, Mainboard]
+    public Dictionary<string, float[]> Targets { get; set; } = new();
+
     // Sicherheitsfunktionen – standardmäßig aus, in den Einstellungen einschaltbar
     public bool EmergencyEnabled { get; set; }
     public float CpuCritical { get; set; } = 90f;
     public float GpuCritical { get; set; } = 85f;
+    public float BoardCritical { get; set; } = 80f;
     public bool StallDetection { get; set; }
+
+    /// Mindestleistung für Pumpen (Wasserkühlung), damit sie nie zu langsam laufen
+    public float PumpMinPercent { get; set; } = 60f;
+
     public Dictionary<string, FanChannelSettings> Fans { get; set; } = new();
 
     static readonly string Dir = Path.Combine(
@@ -101,35 +149,100 @@ sealed class FanSettings
         if (!Fans.TryGetValue(id, out var s)) { s = new(); Fans[id] = s; }
         return s;
     }
+
+    public float[] TargetsFor(FanProfile p)
+    {
+        string key = p.ToString();
+        if (!Targets.TryGetValue(key, out var t) || t.Length != 3)
+        {
+            t = (float[])Profiles.Get(p).DefaultTargets.Clone();
+            Targets[key] = t;
+        }
+        return t;
+    }
+
+    public float Critical(Component c) => c switch
+    {
+        Component.Cpu => CpuCritical,
+        Component.Gpu => GpuCritical,
+        _ => BoardCritical,
+    };
+}
+
+// ===========================================================================
+// Namen & ausgeblendete Anschlüsse – auch für die Wertetabellen
+// ===========================================================================
+static class FanNaming
+{
+    /// Drehzahl- und Steuer-Sensor-ID -> Anzeigename + Art
+    public static readonly Dictionary<string, FanChannel> BySensor = new();
+    /// Sensor-IDs von Anschlüssen ohne angeschlossenen Lüfter
+    public static readonly HashSet<string> Hidden = new();
+
+    public static string Label(ISensor s)
+    {
+        if (BySensor.TryGetValue(s.Identifier.ToString(), out var ch))
+        {
+            string icon = ch.Kind == FanKind.Pump ? "Pumpe" : "Lüfter";
+            string nm = ch.DisplayName;
+            return nm == s.Name ? $"{nm}  ({icon})" : $"{nm}  ({icon} · {s.Name})";
+        }
+        return s.Name;
+    }
 }
 
 // ===========================================================================
 // Ein steuerbarer Lüfter
 // ===========================================================================
+sealed class SourceState
+{
+    public float? Smooth;
+    public float Integral;
+    public int LastBucket = -1;
+    public int SteadyTicks;
+    public int FarTicks;
+    public readonly Queue<int> Signs = new();
+}
+
 sealed class FanChannel
 {
     public required IControl Control { get; init; }
     public required ISensor ControlSensor { get; init; }
     public ISensor? Rpm { get; init; }
-    public ISensor? Load { get; init; }
     public required string Id { get; init; }
-    public required string Name { get; init; }
+    public required string DefaultName { get; init; }
     public required string HardwareName { get; init; }
     public bool IsGpu { get; init; }
     public required FanChannelSettings Cfg { get; init; }
 
+    public string DisplayName => string.IsNullOrWhiteSpace(Cfg.CustomName) ? DefaultName : Cfg.CustomName!;
+
+    public FanKind AutoKind =>
+        DefaultName.Contains("pump", StringComparison.OrdinalIgnoreCase)
+        || DefaultName.Contains("aio", StringComparison.OrdinalIgnoreCase)
+            ? FanKind.Pump : FanKind.Fan;
+
+    public FanKind Kind => Cfg.Kind ?? AutoKind;
+
     // Laufzeit-Zustand
     public float Output = -1;
-    public float? SmoothTemp;
-    public float? SourceTemp;
-    public float Integral;
-    public int LastBucket = -1;
-    public int SteadyTicks;
-    public int FarTicks;
-    public int NoSpinTicks;
     public bool Faulted;
+    public int NoSpinTicks;
     public string Status = "";
-    public readonly Queue<int> Signs = new();
+    public DateTime IdentifyUntil = DateTime.MinValue;
+    public bool Identifying;
+    public Component? Driver;          // Bauteil, das gerade die Drehzahl bestimmt
+    public float? DriverTemp;
+    public readonly Dictionary<Component, SourceState> States = new()
+    {
+        [Component.Cpu] = new(), [Component.Gpu] = new(), [Component.Board] = new(),
+    };
+
+    public void ResetStates()
+    {
+        foreach (var c in Components.All) States[c] = new SourceState();
+        Driver = null;
+    }
 }
 
 // ===========================================================================
@@ -137,90 +250,141 @@ sealed class FanChannel
 // ===========================================================================
 sealed class FanController
 {
-    public const string MaxSourceId = "max";
-
     readonly object _lock = new();
     readonly FanSettings _s;
     DateTime _lastSave = DateTime.Now;
 
     public List<FanChannel> Channels { get; } = new();
-    public List<ISensor> TempSensors { get; } = new();
-    public ISensor? CpuMain { get; private set; }
-    public ISensor? GpuMain { get; private set; }
+    public int HiddenCount { get; private set; }
     public FanSettings Settings => _s;
     public FanProfile Profile => _s.Profile;
+
+    readonly Dictionary<Component, ISensor?> _temp = new();
+    ISensor? _cpuLoad, _gpuLoad;
 
     public FanController(FanSettings settings) => _s = settings;
 
     // ---------------------------------------------------------------------
+    // Hauptwerte je Bauteil
+    // ---------------------------------------------------------------------
+    public ISensor? TempSensor(Component c) => _temp.TryGetValue(c, out var s) ? s : null;
+
+    public float? Temp(Component c) =>
+        TempSensor(c)?.Value is float v && v > 1 && v < 125 ? v : null;
+
+    public float? Load(Component c) => c switch
+    {
+        Component.Cpu => _cpuLoad?.Value,
+        Component.Gpu => _gpuLoad?.Value,
+        // Mainboard wird von CPU und GPU aufgeheizt -> die höhere Last zählt
+        _ => Math.Max(_cpuLoad?.Value ?? 0, _gpuLoad?.Value ?? 0),
+    };
+
+    public bool HasComponent(Component c) => TempSensor(c) != null;
+
+    // ---------------------------------------------------------------------
     // Lüfter suchen
     // ---------------------------------------------------------------------
+    static bool IsGpu(HardwareType t) =>
+        t is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel;
+
     public void Discover(IComputer computer)
     {
         Channels.Clear();
-        TempSensors.Clear();
-
-        var cpu = computer.Hardware.FirstOrDefault(h => h.HardwareType == HardwareType.Cpu);
-        _cpuLoad = cpu?.Sensors.FirstOrDefault(s => s.SensorType == SensorType.Load
-                                                    && s.Name.Contains("Total", StringComparison.OrdinalIgnoreCase));
+        FanNaming.BySensor.Clear();
+        FanNaming.Hidden.Clear();
+        HiddenCount = 0;
 
         foreach (var hw in computer.Hardware)
         {
             var temps = MainForm.AllSensors(hw).Where(MainForm.IsUsefulTemp).ToList();
-            TempSensors.AddRange(temps);
-            if (temps.Count == 0) continue;
-            if (hw.HardwareType == HardwareType.Cpu && CpuMain == null) CpuMain = MainForm.PickMain(hw, temps);
-            if (IsGpu(hw.HardwareType) && GpuMain == null) GpuMain = MainForm.PickMain(hw, temps);
+            var all = MainForm.AllSensors(hw).ToList();
+
+            if (hw.HardwareType == HardwareType.Cpu && !_temp.ContainsKey(Component.Cpu))
+            {
+                if (temps.Count > 0) _temp[Component.Cpu] = MainForm.PickMain(hw, temps);
+                _cpuLoad = MainForm.MainLoad(hw);
+            }
+            else if (IsGpu(hw.HardwareType) && !_temp.ContainsKey(Component.Gpu))
+            {
+                if (temps.Count > 0) _temp[Component.Gpu] = MainForm.PickMain(hw, temps);
+                _gpuLoad = MainForm.MainLoad(hw);
+            }
+            else if (hw.HardwareType == HardwareType.Motherboard && !_temp.ContainsKey(Component.Board) && temps.Count > 0)
+            {
+                _temp[Component.Board] = MainForm.PickMain(hw, temps);
+            }
         }
 
         foreach (var hw in computer.Hardware)
             AddChannels(hw, hw);
     }
 
-    static bool IsGpu(HardwareType t) =>
-        t is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel;
-
     void AddChannels(IHardware top, IHardware hw)
     {
+        bool gpu = IsGpu(top.HardwareType);
+        var fans = hw.Sensors.Where(s => s.SensorType == SensorType.Fan).ToList();
+
         foreach (var sensor in hw.Sensors.Where(s => s.SensorType == SensorType.Control && s.Control != null))
         {
-            bool gpu = IsGpu(top.HardwareType);
             string baseName = sensor.Name.Replace("Control", "", StringComparison.OrdinalIgnoreCase).Replace("  ", " ").Trim();
-            var fans = hw.Sensors.Where(s => s.SensorType == SensorType.Fan).ToList();
             var rpm = fans.FirstOrDefault(f => f.Name.Equals(baseName, StringComparison.OrdinalIgnoreCase))
                       ?? (gpu ? fans.FirstOrDefault() : null);
 
-            // Auslastung für die vorausschauende Regelung: GPU-Last bzw. CPU-Gesamtlast
-            var load = gpu
-                ? MainForm.AllSensors(top).FirstOrDefault(s => s.SensorType == SensorType.Load && s.Name.Contains("Core", StringComparison.OrdinalIgnoreCase))
-                : _cpuLoad;
+            // Nicht angeschlossen: Mainboard-Anschluss ohne Drehzahl.
+            // GPU-Lüfter bleiben immer, da sie im Leerlauf oft absichtlich stehen.
+            bool connected = gpu || (rpm?.Value ?? 0) > 0;
+            if (!connected)
+            {
+                HiddenCount++;
+                FanNaming.Hidden.Add(sensor.Identifier.ToString());
+                if (rpm != null) FanNaming.Hidden.Add(rpm.Identifier.ToString());
+                continue;
+            }
 
             string id = sensor.Control.Identifier.ToString();
             var cfg = _s.For(id);
+
+            string defName = gpu
+                ? (fans.Count > 1 && rpm != null ? $"Grafikkarte · {rpm.Name}" : "Grafikkarten-Lüfter")
+                : FriendlyName(rpm?.Name ?? baseName);
 
             var ch = new FanChannel
             {
                 Control = sensor.Control,
                 ControlSensor = sensor,
                 Rpm = rpm,
-                Load = load,
                 Id = id,
-                Name = rpm?.Name ?? baseName,
+                DefaultName = defName,
                 HardwareName = top.Name,
                 IsGpu = gpu,
                 Cfg = cfg,
             };
 
-            cfg.SourceId ??= gpu ? GpuMain?.Identifier.ToString() : CpuMain?.Identifier.ToString();
+            if (!cfg.SourcesInitialized)
+            {
+                if (gpu) cfg.UseGpu = true;
+                else if (ch.Kind == FanKind.Pump || defName.Contains("CPU", StringComparison.OrdinalIgnoreCase)) cfg.UseCpu = true;
+                else cfg.UseCpu = cfg.UseGpu = cfg.UseBoard = true;   // Gehäuselüfter: kühlen alles
+                cfg.SourcesInitialized = true;
+            }
+
             Channels.Add(ch);
+            FanNaming.BySensor[sensor.Identifier.ToString()] = ch;
+            if (rpm != null) FanNaming.BySensor[rpm.Identifier.ToString()] = ch;
         }
         foreach (var sub in hw.SubHardware) AddChannels(top, sub);
     }
 
-    ISensor? _cpuLoad;
+    /// "Fan #2" -> "Mainboard-Anschluss 2"; vom Mainboard benannte Anschlüsse (z. B. "CPU Fan") bleiben
+    static string FriendlyName(string n)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(n, @"^Fan\s*#?(\d+)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return m.Success ? $"Mainboard-Anschluss {m.Groups[1].Value}" : n;
+    }
 
     // ---------------------------------------------------------------------
-    // Profil wechseln
+    // Profil wechseln / Erkennen / Speichern
     // ---------------------------------------------------------------------
     public void SetProfile(FanProfile p)
     {
@@ -231,11 +395,27 @@ sealed class FanController
             {
                 ch.Faulted = false;
                 ch.NoSpinTicks = 0;
-                ch.Integral = 0;
-                ch.Signs.Clear();
-                ch.SteadyTicks = ch.FarTicks = 0;
+                ch.ResetStates();
                 if (p == FanProfile.Bios) SafeDefault(ch);
             }
+            _s.Save();
+        }
+    }
+
+    /// Lässt einen Lüfter 5 Sekunden auf 100 % laufen, damit man ihn zuordnen kann
+    public void Identify(FanChannel ch)
+    {
+        lock (_lock) ch.IdentifyUntil = DateTime.Now.AddSeconds(5);
+    }
+
+    public void ResetLearning(FanChannel ch)
+    {
+        lock (_lock)
+        {
+            ch.Cfg.Learned.Clear();
+            ch.Cfg.Kp = 3.0f;
+            ch.Cfg.Ki = 0.15f;
+            ch.ResetStates();
             _s.Save();
         }
     }
@@ -285,23 +465,22 @@ sealed class FanController
         }
     }
 
-    public float? ReadSource(FanChannelSettings cfg)
-    {
-        if (cfg.SourceId == MaxSourceId)
-        {
-            float? a = CpuMain?.Value, b = GpuMain?.Value;
-            if (a is null) return b;
-            if (b is null) return a;
-            return Math.Max(a.Value, b.Value);
-        }
-        var s = TempSensors.FirstOrDefault(x => x.Identifier.ToString() == cfg.SourceId);
-        return s?.Value is float v && v > 1 && v < 125 ? v : null;
-    }
-
     void TickChannel(FanChannel ch, ProfileInfo prof)
     {
-        float? t = ReadSource(ch.Cfg);
-        ch.SourceTemp = t;
+        // ----- Erkennen: 5 Sekunden volle Drehzahl -----
+        if (DateTime.Now < ch.IdentifyUntil)
+        {
+            ch.Identifying = true;
+            ch.Output = 100;
+            ch.Control.SetSoftware(100);
+            ch.Status = "Erkennen: dieser Lüfter läuft gerade auf 100 % …";
+            return;
+        }
+        if (ch.Identifying)
+        {
+            ch.Identifying = false;
+            if (prof.Profile == FanProfile.Bios) SafeDefault(ch);
+        }
 
         if (prof.Profile == FanProfile.Bios)
         {
@@ -311,38 +490,55 @@ sealed class FanController
         }
         if (ch.Faulted) return;
 
-        if (t is not float temp)
-        {
-            SafeDefault(ch);
-            ch.Status = "Kein Temperaturwert – BIOS übernimmt";
-            return;
-        }
+        // ----- Für jedes gewählte Bauteil die nötige Leistung bestimmen, die höchste gewinnt -----
+        var targets = _s.TargetsFor(prof.Profile);
+        float desired = -1;
+        Component? driver = null;
+        float? driverTemp = null;
+        float driverTarget = 0;
+        bool emergency = false;
 
-        // Startwert = aktuelle Drehzahl-Einstellung
         if (ch.Output < 0) ch.Output = ch.ControlSensor.Value ?? 50f;
 
-        ch.SmoothTemp = ch.SmoothTemp is float st ? st + 0.35f * (temp - st) : temp;
-        float T = ch.SmoothTemp.Value;
-
-        float critical = ch.IsGpu ? _s.GpuCritical : _s.CpuCritical;
-        float desired;
-
-        switch (prof.Profile)
+        foreach (var c in Components.All)
         {
-            case FanProfile.Max:
-                desired = 100;
-                ch.Status = "Volle Leistung";
-                break;
-            case FanProfile.Custom:
-                desired = Interpolate(ch.Cfg.Curve, T);
-                ch.Status = $"Eigene Kurve · {T:0} °C → {desired:0} %";
-                break;
-            default:
-                desired = Adaptive(ch, T, prof);
-                break;
+            if (!ch.Cfg.Uses(c) || Temp(c) is not float raw) continue;
+            var st = ch.States[c];
+            st.Smooth = st.Smooth is float sm ? sm + 0.35f * (raw - sm) : raw;
+            float T = st.Smooth.Value;
+            float target = targets[(int)c];
+
+            float d = prof.Profile switch
+            {
+                FanProfile.Max => 100,
+                FanProfile.Custom => Interpolate(ch.Cfg.Curve, T),
+                _ => Adaptive(ch, c, st, T, target, prof, isDriver: ch.Driver == c),
+            };
+
+            if (_s.EmergencyEnabled && raw >= _s.Critical(c)) emergency = true;
+
+            if (d > desired)
+            {
+                desired = d;
+                driver = c;
+                driverTemp = T;
+                driverTarget = target;
+            }
         }
 
-        float min = Math.Max(prof.MinPercent, ch.Control.MinSoftwareValue);
+        if (driver is null)
+        {
+            SafeDefault(ch);
+            ch.Driver = null;
+            ch.Status = "Keine Temperaturquelle gewählt – BIOS übernimmt";
+            return;
+        }
+        ch.Driver = driver;
+        ch.DriverTemp = driverTemp;
+
+        float min = prof.MinPercent;
+        if (ch.Kind == FanKind.Pump) min = Math.Max(min, _s.PumpMinPercent);
+        min = Math.Max(min, ch.Control.MinSoftwareValue);
         float max = Math.Min(100f, ch.Control.MaxSoftwareValue > 0 ? ch.Control.MaxSoftwareValue : 100f);
         desired = Math.Clamp(desired, min, max);
 
@@ -351,11 +547,20 @@ sealed class FanController
             ? Math.Min(desired, ch.Output + prof.UpRate)
             : Math.Max(desired, ch.Output - prof.DownRate);
 
+        string who = Components.Name(driver.Value);
+        ch.Status = prof.Profile switch
+        {
+            FanProfile.Max => "Volle Leistung",
+            FanProfile.Custom => $"Eigene Kurve · bestimmt von {who} ({driverTemp:0} °C)",
+            _ => $"Smart · bestimmt von {who}: {driverTemp:0} °C, Ziel {driverTarget:0} °C · " +
+                 $"{ch.Cfg.LearnedFor(prof.Profile, driver.Value).Count(v => v >= 0)}/11 Laststufen gelernt",
+        };
+
         // Sicherheit (optional): zu heiß -> sofort volle Kühlung
-        if (_s.EmergencyEnabled && temp >= critical)
+        if (emergency)
         {
             next = max;
-            ch.Status = $"⚠ Notkühlung – {temp:0} °C";
+            ch.Status = "⚠ Notkühlung – Grenzwert erreicht";
         }
 
         next = Math.Clamp(next, min, max);
@@ -376,79 +581,77 @@ sealed class FanController
     }
 
     // ---------------------------------------------------------------------
-    // Smart-Automatik: lernende Regelung
+    // Smart-Automatik: lernende Regelung je Bauteil
     //  1) Merkt sich pro Auslastungsstufe, welche Leistung die Zieltemperatur hält
     //     -> reagiert auf Laständerungen sofort (vorausschauend), bevor es heiß wird
     //  2) PI-Regler gleicht den Rest aus
     //  3) Passt die eigene Reaktionsstärke an: schwingt es, wird sie ruhiger;
     //     bleibt es zu lange daneben, wird sie kräftiger
     // ---------------------------------------------------------------------
-    float Adaptive(FanChannel ch, float T, ProfileInfo p)
+    float Adaptive(FanChannel ch, Component c, SourceState st, float T, float target, ProfileInfo p, bool isDriver)
     {
         var cfg = ch.Cfg;
-        float target = ch.IsGpu ? p.GpuTarget : p.CpuTarget;
         float e = T - target;
 
-        float load = ch.Load?.Value ?? _cpuLoad?.Value ?? 0f;
+        float load = Load(c) ?? 0f;
         int bucket = Math.Clamp((int)(load / 10f), 0, 10);
-        var table = cfg.LearnedFor(p.Profile);
+        var table = cfg.LearnedFor(p.Profile, c);
 
-        if (ch.LastBucket != bucket && ch.LastBucket >= 0)
-            ch.Integral *= 0.5f;   // neue Last -> Grundwert übernimmt, Rest neu einregeln
-        ch.LastBucket = bucket;
+        if (st.LastBucket != bucket && st.LastBucket >= 0)
+            st.Integral *= 0.5f;   // neue Last -> Grundwert übernimmt, Rest neu einregeln
+        st.LastBucket = bucket;
 
         float basePct = LearnedBase(table, bucket, p.MinPercent);
 
-        // PI mit Totzone
-        if (Math.Abs(e) > 0.8f) ch.Integral += cfg.Ki * e;
-        ch.Integral = Math.Clamp(ch.Integral, -60f, 60f);
+        if (Math.Abs(e) > 0.8f) st.Integral += cfg.Ki * e;
+        st.Integral = Math.Clamp(st.Integral, -60f, 60f);
 
-        float output = basePct + cfg.Kp * e + ch.Integral;
+        float output = basePct + cfg.Kp * e + st.Integral;
 
-        // Anti-Windup: an der Grenze nicht weiter aufaddieren
+        // Anti-Windup
         if ((output >= 100 && e > 0) || (output <= p.MinPercent && e < 0))
-            ch.Integral -= cfg.Ki * e;
+            st.Integral -= cfg.Ki * e;
+
+        // Gelernt wird nur vom Bauteil, das gerade wirklich die Drehzahl bestimmt
+        if (!isDriver) return output;
 
         // --- Lernen 1: stabiler Zustand -> Grundwert für diese Last merken ---
-        if (Math.Abs(e) < 1.5f) ch.SteadyTicks++; else ch.SteadyTicks = 0;
-        if (ch.SteadyTicks >= 20 && ch.Output >= 0)
+        if (Math.Abs(e) < 1.5f) st.SteadyTicks++; else st.SteadyTicks = 0;
+        if (st.SteadyTicks >= 20 && ch.Output >= 0)
         {
             table[bucket] = table[bucket] < 0 ? ch.Output : table[bucket] * 0.9f + ch.Output * 0.1f;
-            ch.Integral *= 0.9f;   // Grundwert trägt jetzt mehr
+            st.Integral *= 0.9f;
         }
 
         // --- Lernen 2: Reaktionsstärke anpassen ---
         int sign = e > 1 ? 1 : e < -1 ? -1 : 0;
-        if (sign != 0) ch.Signs.Enqueue(sign);
-        while (ch.Signs.Count > 60) ch.Signs.Dequeue();
+        if (sign != 0) st.Signs.Enqueue(sign);
+        while (st.Signs.Count > 60) st.Signs.Dequeue();
         int flips = 0;
         int? prev = null;
-        foreach (var s in ch.Signs) { if (prev.HasValue && prev != s) flips++; prev = s; }
+        foreach (var s in st.Signs) { if (prev.HasValue && prev != s) flips++; prev = s; }
         if (flips > 8)
         {
             cfg.Kp = Math.Max(0.8f, cfg.Kp * 0.85f);
             cfg.Ki = Math.Max(0.03f, cfg.Ki * 0.85f);
-            ch.Signs.Clear();
+            st.Signs.Clear();
         }
 
         bool saturated = output >= 99 || output <= p.MinPercent + 0.5f;
-        if (Math.Abs(e) > 4 && !saturated) ch.FarTicks++; else ch.FarTicks = 0;
-        if (ch.FarTicks >= 45)
+        if (Math.Abs(e) > 4 && !saturated) st.FarTicks++; else st.FarTicks = 0;
+        if (st.FarTicks >= 45)
         {
             cfg.Kp = Math.Min(8f, cfg.Kp * 1.1f);
             cfg.Ki = Math.Min(0.6f, cfg.Ki * 1.15f);
-            ch.FarTicks = 0;
+            st.FarTicks = 0;
         }
 
-        int known = table.Count(v => v >= 0);
-        ch.Status = $"Smart · Ziel {target:0} °C · {known}/11 Laststufen gelernt";
         return output;
     }
 
     static float LearnedBase(float[] table, int bucket, float min)
     {
         if (table[bucket] >= 0) return table[bucket];
-        // nächsten bekannten Nachbarn nehmen
         for (int d = 1; d <= 10; d++)
         {
             if (bucket - d >= 0 && table[bucket - d] >= 0) return table[bucket - d] + d * 3;

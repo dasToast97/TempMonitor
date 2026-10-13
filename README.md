@@ -16,23 +16,27 @@ für jeden Sensor einen Verlaufsgraphen der letzten 5 Minuten zeigt.
 | Profil | Was es macht |
 |---|---|
 | Standard (BIOS) | Programm greift nicht ein |
-| Energiesparend | Smart-Automatik, Ziel CPU ~78 °C, so leise wie möglich |
-| Ausgewogen | Smart-Automatik, Ziel CPU ~68 °C |
-| Leistung | Smart-Automatik, Ziel CPU ~58 °C |
+| Energiesparend | Smart-Automatik, so leise wie möglich |
+| Ausgewogen | Smart-Automatik, ruhig und kühl |
+| Leistung | Smart-Automatik, kühl für Spiele & Rendern |
 | Maximale Kühlung | Alle Lüfter 100 % |
 | Eigene Kurve | Kurve pro Lüfter mit der Maus ziehen |
 
-Die **Smart-Automatik** lernt, welche Drehzahl bei welcher Auslastung die Zieltemperatur hält,
-reagiert dadurch schon beim Lastanstieg und passt ihre Reaktionsstärke selbst an (kein Auf- und Abheulen).
-Das Gelernte wird in `%AppData%\TempMonitor\fans.json` gespeichert.
+- Jeder Lüfter regelt nach **CPU, GPU und/oder Mainboard** (Häkchen auf der Karte) – das Bauteil,
+  das gerade mehr Kühlung braucht, bestimmt die Drehzahl.
+- **Zieltemperaturen** für CPU, GPU und Mainboard sind je Profil einstellbar.
+- Lüfter lassen sich **umbenennen**, als **Lüfter oder Pumpe** kennzeichnen und per **„Erkennen“**
+  (5 Sekunden 100 %) zuordnen. Pumpen haben eine einstellbare Mindestleistung.
+- Leere Anschlüsse ohne Lüfter werden ausgeblendet.
+- Die **Smart-Automatik** lernt je Bauteil, welche Drehzahl bei welcher Auslastung die Zieltemperatur hält,
+  und reagiert dadurch schon beim Lastanstieg. Gespeichert in `%AppData%\TempMonitor\fans.json`.
 
-**Sicherheit (optional, standardmäßig aus):** Notkühlung mit einstellbaren Grenzwerten für CPU und GPU
-(Voreinstellung 90 °C / 85 °C) und Stillstand-Erkennung – beides im Abschnitt „Sicherheit“ im Lüfter-Reiter.
-Beim Beenden oder Absturz übernimmt immer wieder das BIOS.
+**Sicherheit (optional, standardmäßig aus):** Notkühlung mit einstellbaren Grenzwerten für CPU, GPU und Mainboard
+und Stillstand-Erkennung. Beim Beenden oder Absturz übernimmt immer wieder das BIOS.
 Bei aktiver Steuerung läuft das Programm beim Schließen im Infobereich weiter.
 
-Mainboard-Lüfter brauchen den Treiber **PawnIO**. Hersteller-Tools (Armoury Crate, MSI Center, iCUE …)
-sollten nicht gleichzeitig die Lüfter steuern.
+Mainboard-Lüfter brauchen den Treiber **PawnIO** (der Installer bietet ihn an). Hersteller-Tools
+(Armoury Crate, MSI Center, iCUE …) sollten nicht gleichzeitig die Lüfter steuern.
 
 Sensoren kommen aus [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor).
 

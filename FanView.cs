@@ -4,7 +4,7 @@ using System.Drawing.Text;
 namespace TempMonitor;
 
 // ===========================================================================
-// Bereich "Lüfter": Profilauswahl + eine Karte pro Lüfter
+// Bereich "Lüfter": Profilauswahl, Zielwerte, eine Karte pro Lüfter, Sicherheit
 // ===========================================================================
 sealed class FanView : FlowLayoutPanel
 {
@@ -13,8 +13,10 @@ sealed class FanView : FlowLayoutPanel
     readonly List<FanCard> _cards = new();
     readonly List<Control> _fullWidth = new();
     Label? _profileInfo;
+    TargetsPanel? _targets;
 
     float K => DeviceDpi / 96f;
+    int S(float px) => (int)(px * K);
 
     public event Action? ProfileChanged;
 
@@ -23,7 +25,7 @@ sealed class FanView : FlowLayoutPanel
         _ctl = ctl;
         AutoScroll = true;
         BackColor = Theme.Background;
-        Padding = new Padding((int)(12 * K), (int)(6 * K), (int)(12 * K), (int)(12 * K));
+        Padding = new Padding(S(12), S(6), S(12), S(12));
         Resize += (_, _) => ResizeFullWidth();
         Build();
     }
@@ -53,61 +55,71 @@ sealed class FanView : FlowLayoutPanel
         {
             ForeColor = Theme.Muted,
             AutoSize = false,
-            Height = (int)(44 * K),
-            Margin = new Padding((int)(8 * K), (int)(4 * K), (int)(8 * K), 0),
+            Height = S(40),
+            Margin = new Padding(S(8), S(4), S(8), 0),
             Font = new Font("Segoe UI", 9.5f),
         };
-        _fullWidth.Add(_profileInfo);
-        Controls.Add(_profileInfo);
-        SetFlowBreak(_profileInfo, true);
+        AddFull(_profileInfo);
+
+        _targets = new TargetsPanel(_ctl) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+        AddFull(_targets);
         UpdateProfileInfo();
 
-        // ----- Sicherheit (optional) -----
-        AddSection("Sicherheit (optional)", Theme.Hot);
-        var safety = BuildSafetyPanel();
-        _fullWidth.Add(safety);
-        Controls.Add(safety);
-        SetFlowBreak(safety, true);
-
         // ----- Lüfter -----
-        AddSection("Lüfter", Color.FromArgb(56, 189, 248));
+        string count = _ctl.HiddenCount > 0
+            ? $"Lüfter & Pumpen  ·  {_ctl.Channels.Count} angeschlossen, {_ctl.HiddenCount} leere Anschlüsse ausgeblendet"
+            : $"Lüfter & Pumpen  ·  {_ctl.Channels.Count} angeschlossen";
+        AddSection(count, Color.FromArgb(56, 189, 248));
         if (_ctl.Channels.Count == 0)
         {
             var hint = new Label
             {
                 Text = "Keine steuerbaren Lüfter gefunden.\n\n" +
                        "•  Programm als Administrator starten\n" +
-                       "•  Treiber PawnIO installieren (https://pawnio.eu) – nötig für Mainboard-Lüfter\n" +
+                       "•  Treiber PawnIO installieren – nötig für Mainboard-Lüfter (Hinweis im Reiter „Temperaturen“)\n" +
                        "•  Im BIOS die Lüfter auf „PWM“ bzw. „DC“ stellen, nicht auf „Full Speed“\n" +
                        "•  Hersteller-Programme (Armoury Crate, MSI Center, iCUE, Fan Xpert …) schließen,\n" +
                        "    sie können die Steuerung blockieren",
                 ForeColor = Theme.Muted,
                 AutoSize = true,
                 Font = new Font("Segoe UI", 10.5f),
-                Margin = new Padding((int)(10 * K), (int)(10 * K), 0, 0),
+                Margin = new Padding(S(10), S(10), 0, 0),
             };
             Controls.Add(hint);
+            SetFlowBreak(hint, true);
         }
         else
         {
+            FanCard? lastCard = null;
             foreach (var ch in _ctl.Channels)
             {
                 var card = new FanCard(ch, _ctl);
                 _cards.Add(card);
                 Controls.Add(card);
+                lastCard = card;
             }
+            if (lastCard != null) SetFlowBreak(lastCard, true);
         }
+
+        // ----- Sicherheit (optional) -----
+        AddSection("Sicherheit (optional)", Theme.Hot);
+        AddFull(BuildSafetyPanel());
 
         ApplyCustomMode();
         ResizeFullWidth();
         ResumeLayout();
     }
 
+    void AddFull(Control c)
+    {
+        _fullWidth.Add(c);
+        Controls.Add(c);
+        SetFlowBreak(c, true);
+    }
+
     Control BuildSafetyPanel()
     {
         var s = _ctl.Settings;
-        int S(float px) => (int)(px * K);
-
         var panel = new Panel
         {
             Height = S(118),
@@ -117,45 +129,40 @@ sealed class FanView : FlowLayoutPanel
 
         var emergency = new CheckBox
         {
-            Text = "Notkühlung: alle Lüfter auf 100 %, sobald eine Temperatur den Grenzwert erreicht",
+            Text = "Notkühlung: alle Lüfter auf 100 %, sobald ein Bauteil seinen Grenzwert erreicht",
             Checked = s.EmergencyEnabled,
             ForeColor = Theme.Text,
             AutoSize = true,
             Location = new Point(S(14), S(12)),
         };
 
-        NumericUpDown Num(float value, int min, int max, int x) => new()
+        var controls = new List<Control> { emergency };
+        var nums = new List<NumericUpDown>();
+        int x = S(36);
+        foreach (var c in Components.All)
         {
-            Minimum = min,
-            Maximum = max,
-            Value = (decimal)Math.Clamp(value, min, max),
-            Width = S(58),
-            Location = new Point(x, S(40)),
-            BackColor = Theme.CardHero,
-            ForeColor = Theme.Text,
-            BorderStyle = BorderStyle.FixedSingle,
-        };
-        Label Lbl(string text, int x) => new()
-        {
-            Text = text,
-            ForeColor = Theme.Muted,
-            AutoSize = true,
-            Location = new Point(x, S(43)),
-        };
+            var lbl = new Label { Text = $"{Components.Name(c)} ab", ForeColor = Theme.Muted, AutoSize = true, Location = new Point(x, S(43)) };
+            x += TextRenderer.MeasureText(lbl.Text, lbl.Font).Width + S(6);
+            var num = Ui.Number(s.Critical(c), 40, 110, new Point(x, S(40)), K);
+            var comp = c;
+            num.ValueChanged += (_, _) =>
+            {
+                float v = (float)num.Value;
+                if (comp == Component.Cpu) s.CpuCritical = v;
+                else if (comp == Component.Gpu) s.GpuCritical = v;
+                else s.BoardCritical = v;
+                _ctl.Save();
+            };
+            x += num.Width + S(4);
+            var unit = new Label { Text = "°C", ForeColor = Theme.Muted, AutoSize = true, Location = new Point(x, S(43)) };
+            x += S(40);
+            controls.AddRange(new Control[] { lbl, num, unit });
+            nums.Add(num);
+        }
 
-        var cpuLbl = Lbl("CPU ab", S(36));
-        var cpu = Num(s.CpuCritical, 50, 110, S(90));
-        var cpuUnit = Lbl("°C", S(152));
-        var gpuLbl = Lbl("GPU ab", S(192));
-        var gpu = Num(s.GpuCritical, 50, 110, S(248));
-        var gpuUnit = Lbl("°C", S(310));
-
-        void SyncEnabled() => cpu.Enabled = gpu.Enabled = emergency.Checked;
+        void SyncEnabled() { foreach (var n in nums) n.Enabled = emergency.Checked; }
         SyncEnabled();
-
         emergency.CheckedChanged += (_, _) => { s.EmergencyEnabled = emergency.Checked; SyncEnabled(); _ctl.Save(); };
-        cpu.ValueChanged += (_, _) => { s.CpuCritical = (float)cpu.Value; _ctl.Save(); };
-        gpu.ValueChanged += (_, _) => { s.GpuCritical = (float)gpu.Value; _ctl.Save(); };
 
         var stall = new CheckBox
         {
@@ -166,8 +173,9 @@ sealed class FanView : FlowLayoutPanel
             Location = new Point(S(14), S(80)),
         };
         stall.CheckedChanged += (_, _) => { s.StallDetection = stall.Checked; _ctl.Save(); };
+        controls.Add(stall);
 
-        panel.Controls.AddRange(new Control[] { emergency, cpuLbl, cpu, cpuUnit, gpuLbl, gpu, gpuUnit, stall });
+        panel.Controls.AddRange(controls.ToArray());
         return panel;
     }
 
@@ -175,17 +183,15 @@ sealed class FanView : FlowLayoutPanel
     {
         var h = new SectionHeader(text, accent)
         {
-            Height = (int)(40 * K),
-            Margin = new Padding((int)(6 * K), (int)(14 * K), (int)(6 * K), (int)(4 * K)),
+            Height = S(40),
+            Margin = new Padding(S(6), S(14), S(6), S(4)),
         };
-        _fullWidth.Add(h);
-        Controls.Add(h);
-        SetFlowBreak(h, true);
+        AddFull(h);
     }
 
     void ResizeFullWidth()
     {
-        int w = Math.Max(100, ClientSize.Width - Padding.Horizontal - (int)(16 * K));
+        int w = Math.Max(100, ClientSize.Width - Padding.Horizontal - S(16));
         foreach (var c in _fullWidth) c.Width = w;
     }
 
@@ -209,8 +215,8 @@ sealed class FanView : FlowLayoutPanel
 
         _ctl.SetProfile(p);
         foreach (var b in _buttons) b.Selected = b.Info.Profile == p;
-        UpdateProfileInfo();
         SuspendLayout();
+        UpdateProfileInfo();
         ApplyCustomMode();
         ResumeLayout();
         ProfileChanged?.Invoke();
@@ -230,15 +236,126 @@ sealed class FanView : FlowLayoutPanel
         {
             FanProfile.Bios => "Das Programm greift nicht ein – die Lüfter laufen wie vom BIOS bzw. Grafiktreiber vorgegeben.",
             FanProfile.Max => "Alle steuerbaren Lüfter laufen mit voller Drehzahl. Maximale Kühlung, aber am lautesten.",
-            FanProfile.Custom => "Ziehe die Punkte der Kurve mit der Maus: links/rechts = Temperatur, hoch/runter = Lüfterleistung. Wird sofort übernommen.",
-            _ => $"Smart-Automatik: hält CPU bei ca. {p.CpuTarget:0} °C und GPU bei ca. {p.GpuTarget:0} °C. Sie lernt, welche Drehzahl bei welcher Auslastung nötig ist, " +
-                 $"und reagiert dadurch schon beim Lastanstieg. Mindestleistung {p.MinPercent:0} %.",
+            FanProfile.Custom => "Ziehe die Punkte der Kurve mit der Maus. Jeder Lüfter folgt dem heißesten der bei ihm angehakten Bauteile.",
+            _ => "Smart-Automatik: Jeder Lüfter regelt nach allen bei ihm angehakten Bauteilen – wer gerade mehr Kühlung braucht, bestimmt. " +
+                 "Sie lernt, welche Drehzahl bei welcher Auslastung nötig ist, und reagiert dadurch schon beim Lastanstieg.",
         };
+        _targets?.ShowFor(p);
     }
 
     public void RefreshValues()
     {
         foreach (var c in _cards) c.RefreshValues();
+    }
+}
+
+// ===========================================================================
+// Kleine Helfer für Eingabefelder im dunklen Design
+// ===========================================================================
+static class Ui
+{
+    public static NumericUpDown Number(float value, int min, int max, Point location, float k) => new()
+    {
+        Minimum = min,
+        Maximum = max,
+        Value = (decimal)Math.Clamp(value, min, max),
+        Width = (int)(56 * k),
+        Location = location,
+        BackColor = Theme.CardHero,
+        ForeColor = Theme.Text,
+        BorderStyle = BorderStyle.FixedSingle,
+        TextAlign = HorizontalAlignment.Right,
+    };
+}
+
+// ===========================================================================
+// Zielwerte je Profil: CPU / GPU / Mainboard + Mindestleistung Pumpen
+// ===========================================================================
+sealed class TargetsPanel : Panel
+{
+    readonly FanController _ctl;
+    readonly Label _title;
+    readonly Dictionary<Component, NumericUpDown> _nums = new();
+    readonly NumericUpDown _pump;
+    ProfileInfo? _profile;
+    bool _loading;
+
+    public TargetsPanel(FanController ctl)
+    {
+        _ctl = ctl;
+        float k = DeviceDpi / 96f;
+        int S(float px) => (int)(px * k);
+        Height = S(84);
+        BackColor = Theme.Card;
+
+        _title = new Label
+        {
+            ForeColor = Theme.Text,
+            Font = new Font("Segoe UI Semibold", 9.5f),
+            AutoSize = true,
+            Location = new Point(S(14), S(10)),
+        };
+        Controls.Add(_title);
+
+        int x = S(14);
+        foreach (var c in Components.All)
+        {
+            var lbl = new Label { Text = $"Ziel {Components.Name(c)}", ForeColor = Theme.Muted, AutoSize = true, Location = new Point(x, S(45)) };
+            x += TextRenderer.MeasureText(lbl.Text, lbl.Font).Width + S(6);
+            var num = Ui.Number(60, 30, 100, new Point(x, S(42)), k);
+            x += num.Width + S(4);
+            var unit = new Label { Text = "°C", ForeColor = Theme.Muted, AutoSize = true, Location = new Point(x, S(45)) };
+            x += S(34);
+            var comp = c;
+            num.ValueChanged += (_, _) =>
+            {
+                if (_loading || _profile is null) return;
+                _ctl.Settings.TargetsFor(_profile.Profile)[(int)comp] = (float)num.Value;
+                _ctl.Save();
+            };
+            _nums[c] = num;
+            Controls.AddRange(new Control[] { lbl, num, unit });
+        }
+
+        var pumpLbl = new Label { Text = "Pumpen mindestens", ForeColor = Theme.Muted, AutoSize = true, Location = new Point(x + S(10), S(45)) };
+        int px = x + S(10) + TextRenderer.MeasureText(pumpLbl.Text, pumpLbl.Font).Width + S(6);
+        _pump = Ui.Number(_ctl.Settings.PumpMinPercent, 20, 100, new Point(px, S(42)), k);
+        _pump.ValueChanged += (_, _) => { _ctl.Settings.PumpMinPercent = (float)_pump.Value; _ctl.Save(); };
+        var pumpUnit = new Label { Text = "%", ForeColor = Theme.Muted, AutoSize = true, Location = new Point(px + _pump.Width + S(4), S(45)) };
+        Controls.AddRange(new Control[] { pumpLbl, _pump, pumpUnit });
+
+        var reset = new LinkLabel
+        {
+            Text = "Standardwerte",
+            LinkColor = Theme.Accent,
+            ActiveLinkColor = Theme.Text,
+            AutoSize = true,
+            Location = new Point(px + _pump.Width + S(40), S(45)),
+        };
+        reset.Click += (_, _) =>
+        {
+            if (_profile is null) return;
+            _ctl.Settings.Targets.Remove(_profile.Profile.ToString());
+            _ctl.Save();
+            ShowFor(_profile);
+        };
+        Controls.Add(reset);
+    }
+
+    public void ShowFor(ProfileInfo p)
+    {
+        _profile = p;
+        Visible = p.Adaptive;
+        if (!p.Adaptive) return;
+        _loading = true;
+        _title.Text = $"Zieltemperaturen für „{p.Title}“ – die Lüfter regeln so, dass diese Werte gehalten werden:";
+        var t = _ctl.Settings.TargetsFor(p.Profile);
+        foreach (var c in Components.All)
+        {
+            _nums[c].Value = (decimal)Math.Clamp(t[(int)c], 30, 100);
+            _nums[c].Enabled = _ctl.HasComponent(c);
+        }
+        _loading = false;
     }
 }
 
@@ -322,26 +439,30 @@ sealed class ProfileButton : Control
     }
 }
 
+
 // ===========================================================================
-// Karte pro Lüfter
+// Karte pro Lüfter / Pumpe
 // ===========================================================================
 sealed class FanCard : Control
 {
-    static readonly Font TitleFont = new("Segoe UI Semibold", 11f);
+    static readonly Font NameFont = new("Segoe UI Semibold", 11f);
     static readonly Font SmallFont = new("Segoe UI", 8.5f);
     static readonly Font BigFont = new("Segoe UI Semibold", 20f);
 
     readonly FanChannel _ch;
     readonly FanController _ctl;
-    readonly ComboBox _source;
+    readonly TextBox _name;
+    readonly ComboBox _kind;
+    readonly Button _identify;
+    readonly Dictionary<Component, CheckBox> _sources = new();
     readonly Label _sourceLabel;
     readonly CurveEditor _curve;
     bool _showCurve;
 
-    sealed record SourceItem(string Id, string Label) { public override string ToString() => Label; }
-
     float K => DeviceDpi / 96f;
     int S(float px) => (int)(px * K);
+
+    const int BaseHeight = 236;
 
     public FanCard(FanChannel ch, FanController ctl)
     {
@@ -351,42 +472,94 @@ sealed class FanCard : Control
                  ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
         BackColor = Theme.Background;
 
-        _sourceLabel = new Label
+        // Name – direkt bearbeitbar
+        _name = new TextBox
         {
-            Text = "Richtet sich nach:",
-            ForeColor = Theme.Muted,
+            Text = ch.DisplayName,
+            Font = NameFont,
+            BorderStyle = BorderStyle.None,
             BackColor = Theme.Card,
-            AutoSize = true,
+            ForeColor = Theme.Text,
+            PlaceholderText = ch.DefaultName,
         };
-        _source = new ComboBox
+        new ToolTip().SetToolTip(_name, "Anklicken zum Umbenennen, z. B. „Front oben“ oder „Radiator“");
+        _name.Leave += (_, _) => SaveName();
+        _name.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) { SaveName(); e.SuppressKeyPress = true; Parent?.Focus(); } };
+
+        // Lüfter oder Pumpe
+        _kind = new ComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList,
             FlatStyle = FlatStyle.Flat,
             BackColor = Theme.CardHero,
             ForeColor = Theme.Text,
         };
-        _source.Items.Add(new SourceItem(FanController.MaxSourceId, "Höchster Wert von CPU und GPU"));
-        foreach (var s in ctl.TempSensors)
-            _source.Items.Add(new SourceItem(s.Identifier.ToString(), $"{s.Name}  ({s.Hardware.Name})"));
-        _source.SelectedItem = _source.Items.Cast<SourceItem>().FirstOrDefault(i => i.Id == ch.Cfg.SourceId)
-                               ?? _source.Items[0];
-        _source.SelectedIndexChanged += (_, _) =>
+        _kind.Items.AddRange(new object[] { "Lüfter", "Pumpe" });
+        _kind.SelectedIndex = ch.Kind == FanKind.Pump ? 1 : 0;
+        _kind.SelectedIndexChanged += (_, _) =>
         {
-            if (_source.SelectedItem is SourceItem it)
-            {
-                ch.Cfg.SourceId = it.Id;
-                ch.SmoothTemp = null;
-                ch.Integral = 0;
-                ctl.Save();
-            }
+            ch.Cfg.Kind = _kind.SelectedIndex == 1 ? FanKind.Pump : FanKind.Fan;
+            ctl.Save();
+            Invalidate();
         };
+
+        _identify = new Button
+        {
+            Text = "Erkennen",
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Theme.CardHero,
+            ForeColor = Theme.Text,
+            Cursor = Cursors.Hand,
+        };
+        _identify.FlatAppearance.BorderColor = Theme.Border;
+        new ToolTip().SetToolTip(_identify, "Lässt nur diesen Lüfter 5 Sekunden auf 100 % laufen, damit du ihn findest");
+        _identify.Click += (_, _) => ctl.Identify(ch);
+
+        _sourceLabel = new Label
+        {
+            Text = "Regelt nach:",
+            ForeColor = Theme.Muted,
+            BackColor = Theme.Card,
+            AutoSize = true,
+        };
+
+        foreach (var c in Components.All)
+        {
+            var cb = new CheckBox
+            {
+                Checked = ch.Cfg.Uses(c),
+                Enabled = ctl.HasComponent(c),
+                ForeColor = Theme.Text,
+                BackColor = Theme.Card,
+                AutoSize = false,
+            };
+            var comp = c;
+            cb.CheckedChanged += (_, _) =>
+            {
+                ch.Cfg.SetUse(comp, cb.Checked);
+                ctl.Save();
+            };
+            _sources[c] = cb;
+        }
 
         _curve = new CurveEditor(ch.Cfg.Curve) { Visible = false };
         _curve.CurveChanged += () => ctl.Save();
 
+        Controls.Add(_name);
+        Controls.Add(_kind);
+        Controls.Add(_identify);
         Controls.Add(_sourceLabel);
-        Controls.Add(_source);
+        foreach (var cb in _sources.Values) Controls.Add(cb);
         Controls.Add(_curve);
+        UpdateSourceTexts();
+    }
+
+    void SaveName()
+    {
+        string n = _name.Text.Trim();
+        _ch.Cfg.CustomName = string.IsNullOrEmpty(n) || n == _ch.DefaultName ? null : n;
+        if (string.IsNullOrEmpty(n)) _name.Text = _ch.DefaultName;
+        _ctl.Save();
     }
 
     protected override void OnCreateControl()
@@ -404,20 +577,47 @@ sealed class FanCard : Control
 
     void ApplyLayout()
     {
-        Size = new Size(S(392), _showCurve ? S(392) : S(206));
-        _sourceLabel.Location = new Point(S(16), S(166));
-        _source.SetBounds(S(130), S(162), Width - S(146), S(26));
+        Size = new Size(S(420), _showCurve ? S(BaseHeight + 186) : S(BaseHeight));
+        _name.SetBounds(S(48), S(14), Width - S(210), S(24));
+        _kind.SetBounds(S(16), S(62), S(96), S(26));
+        _identify.SetBounds(S(120), S(61), S(100), S(28));
+        _sourceLabel.Location = new Point(S(16), S(150));
+        int x = S(16), w = (Width - S(32)) / 3;
+        foreach (var c in Components.All)
+        {
+            _sources[c].SetBounds(x, S(168), w, S(24));
+            x += w;
+        }
         _curve.Visible = _showCurve;
-        _curve.SetBounds(S(12), S(204), Width - S(24), S(176));
+        _curve.SetBounds(S(12), S(BaseHeight + 4), Width - S(24), S(176));
         Invalidate();
+    }
+
+    void UpdateSourceTexts()
+    {
+        foreach (var c in Components.All)
+        {
+            string txt = Components.Name(c);
+            if (!_ctl.HasComponent(c)) txt += " (fehlt)";
+            else if (_ctl.Temp(c) is float t)
+            {
+                txt += $" {t:0}°";
+                if (_ctl.Load(c) is float l) txt += $" · {l:0}%";
+            }
+            if (_sources[c].Text != txt) _sources[c].Text = txt;
+            var col = _ch.Driver == c ? Theme.Text : Theme.Muted;
+            if (_sources[c].ForeColor != col) _sources[c].ForeColor = col;
+        }
     }
 
     public void RefreshValues()
     {
-        _curve.CurrentTemp = _ch.SmoothTemp ?? _ch.SourceTemp;
+        UpdateSourceTexts();
+        _curve.CurrentTemp = _ch.DriverTemp;
         _curve.CurrentOutput = _ch.Output >= 0 ? _ch.Output : null;
         if (_showCurve) _curve.Invalidate();
-        Invalidate(new Rectangle(0, 0, Width, S(156)));
+        Invalidate(new Rectangle(0, 0, Width, S(146)));
+        Invalidate(new Rectangle(0, S(196), Width, S(40)));
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -427,7 +627,9 @@ sealed class FanCard : Control
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
         g.Clear(Theme.Background);
 
-        var accent = _ch.IsGpu ? Theme.ForCategory("Grafikkarte") : Theme.ForCategory("Mainboard");
+        bool pump = _ch.Kind == FanKind.Pump;
+        var accent = pump ? Color.FromArgb(56, 189, 248)
+                   : _ch.IsGpu ? Theme.ForCategory("Grafikkarte") : Theme.ForCategory("Mainboard");
         var rect = new Rectangle(0, 0, Width - 1, Height - 1);
         using (var path = Gfx.RoundRect(rect, S(12)))
         using (var bg = new SolidBrush(Theme.Card))
@@ -441,23 +643,26 @@ sealed class FanCard : Control
             g.DrawPath(border, path);
         }
 
+        // Symbol: Lüfter oder Pumpe
+        DrawIcon(g, new RectangleF(S(14), S(14), S(26), S(26)), pump, accent);
+
         const TextFormatFlags L = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding;
         const TextFormatFlags R = TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
 
-        // Name + Bauteil
-        TextRenderer.DrawText(g, _ch.Name, TitleFont, new Rectangle(S(16), S(12), Width - S(170), S(24)), Theme.Text, L);
-        TextRenderer.DrawText(g, _ch.HardwareName, SmallFont, new Rectangle(S(16), S(36), Width - S(170), S(16)), Theme.Muted, L);
+        string sub = (pump ? "Pumpe" : "Lüfter") + " · " + _ch.HardwareName +
+                     (_ch.DisplayName != _ch.DefaultName ? $" · {_ch.DefaultName}" : "");
+        TextRenderer.DrawText(g, sub, SmallFont, new Rectangle(S(48), S(40), Width - S(210), S(16)), Theme.Muted, L);
 
         // Drehzahl groß
         string rpm = _ch.Rpm?.Value is float r ? $"{r:N0}" : "–";
-        TextRenderer.DrawText(g, rpm, BigFont, new Rectangle(Width - S(160), S(8), S(110), S(36)), Theme.Text, R);
-        TextRenderer.DrawText(g, "U/min", SmallFont, new Rectangle(Width - S(48), S(20), S(36), S(16)), Theme.Muted, L);
+        TextRenderer.DrawText(g, rpm, BigFont, new Rectangle(Width - S(160), S(10), S(110), S(36)), Theme.Text, R);
+        TextRenderer.DrawText(g, "U/min", SmallFont, new Rectangle(Width - S(48), S(22), S(36), S(16)), Theme.Muted, L);
 
         // Leistungsbalken
         float pct = _ch.Output >= 0 ? _ch.Output : (_ch.ControlSensor.Value ?? 0);
         bool bios = _ctl.Profile == FanProfile.Bios || _ch.Faulted || _ch.Output < 0;
         var barCol = bios ? Theme.Muted : ProfileButton.ColorFor(_ctl.Profile);
-        var bar = new Rectangle(S(16), S(70), Width - S(32), S(12));
+        var bar = new Rectangle(S(16), S(102), Width - S(32), S(12));
         using (var p = Gfx.RoundRect(bar, bar.Height / 2))
         using (var b = new SolidBrush(Theme.Grid))
             g.FillPath(b, p);
@@ -469,15 +674,48 @@ sealed class FanCard : Control
             using var b = new SolidBrush(barCol);
             g.FillPath(b, p);
         }
-        TextRenderer.DrawText(g, $"Leistung {pct:0} %", SmallFont, new Rectangle(S(16), S(88), S(160), S(18)), Theme.Text, L);
-        if (_ch.SourceTemp is float t)
-            TextRenderer.DrawText(g, $"Temperatur {t:0} °C", SmallFont,
-                new Rectangle(Width - S(176), S(88), S(160), S(18)), Theme.ForTemp(t), R);
+        TextRenderer.DrawText(g, $"Leistung {pct:0} %", SmallFont, new Rectangle(S(16), S(120), S(160), S(18)), Theme.Text, L);
+        if (_ch.Driver is Component d && _ch.DriverTemp is float t && !bios)
+            TextRenderer.DrawText(g, $"bestimmt von {Components.Name(d)} · {t:0} °C", SmallFont,
+                new Rectangle(Width - S(236), S(120), S(220), S(18)), Theme.ForTemp(t), R);
 
         // Status
-        var statusCol = _ch.Faulted || _ch.Status.StartsWith("⚠") ? Theme.Hot : Theme.Muted;
-        TextRenderer.DrawText(g, _ch.Status, SmallFont, new Rectangle(S(16), S(116), Width - S(32), S(34)), statusCol,
+        var statusCol = _ch.Faulted || _ch.Status.StartsWith("⚠") ? Theme.Hot
+                      : _ch.Identifying ? Theme.Ok : Theme.Muted;
+        TextRenderer.DrawText(g, _ch.Status, SmallFont, new Rectangle(S(16), S(198), Width - S(32), S(34)), statusCol,
             TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
+    }
+
+    static void DrawIcon(Graphics g, RectangleF r, bool pump, Color col)
+    {
+        using var pen = new Pen(col, Math.Max(1.5f, r.Width / 13f));
+        using var brush = new SolidBrush(col);
+        float cx = r.X + r.Width / 2, cy = r.Y + r.Height / 2;
+        if (pump)
+        {
+            // Tropfen
+            using var path = new GraphicsPath();
+            path.AddBezier(cx, r.Top, cx + r.Width * 0.1f, r.Top + r.Height * 0.25f,
+                           r.Right - r.Width * 0.12f, r.Top + r.Height * 0.45f, r.Right - r.Width * 0.12f, cy + r.Height * 0.15f);
+            path.AddArc(r.X + r.Width * 0.12f, cy - r.Height * 0.2f, r.Width * 0.76f, r.Height * 0.7f, 0, 180);
+            path.AddBezier(r.X + r.Width * 0.12f, cy + r.Height * 0.15f, r.X + r.Width * 0.12f, r.Top + r.Height * 0.45f,
+                           cx - r.Width * 0.1f, r.Top + r.Height * 0.25f, cx, r.Top);
+            g.FillPath(brush, path);
+        }
+        else
+        {
+            // Lüfter: Rahmen + drei Flügel
+            g.DrawEllipse(pen, r);
+            for (int i = 0; i < 3; i++)
+            {
+                var state = g.Save();
+                g.TranslateTransform(cx, cy);
+                g.RotateTransform(i * 120);
+                g.FillEllipse(brush, -r.Width * 0.09f, -r.Height * 0.40f, r.Width * 0.22f, r.Height * 0.36f);
+                g.Restore(state);
+            }
+            g.FillEllipse(brush, cx - r.Width * 0.09f, cy - r.Height * 0.09f, r.Width * 0.18f, r.Height * 0.18f);
+        }
     }
 }
 

@@ -122,23 +122,26 @@ static class SensorFormat
 }
 
 // ===========================================================================
-// Aufklappbare Überschrift für ein Bauteil
+// Aufklappbare Überschrift. Kann verschachtelt werden ("Alle Werte" -> Bauteile).
 // ===========================================================================
 sealed class CollapsibleHeader : Control
 {
     static readonly Font HeadFont = new("Segoe UI Semibold", 12f);
+    static readonly Font BigFont = new("Segoe UI Semibold", 13f);
     static readonly Font CountFont = new("Segoe UI", 9f);
 
     readonly Color _accent;
-    readonly string _count;
     readonly string _key;
     readonly List<Control> _content = new();
-    bool _expanded, _hover;
+    bool _expanded, _hover, _parentVisible = true;
+
+    public string Count { get; set; }
+    public bool Big { get; set; }
 
     public CollapsibleHeader(string text, string count, Color accent, string key, bool defaultExpanded)
     {
         Text = text;
-        _count = count;
+        Count = count;
         _accent = accent;
         _key = key;
         _expanded = UiState.Instance.IsExpanded(key, defaultExpanded);
@@ -153,7 +156,20 @@ sealed class CollapsibleHeader : Control
     public void AddContent(Control c)
     {
         _content.Add(c);
-        c.Visible = _expanded;
+        c.Visible = _parentVisible && _expanded;
+    }
+
+    /// Sichtbarkeit von oben nach unten weitergeben
+    public void ApplyVisibility(bool parentVisible)
+    {
+        _parentVisible = parentVisible;
+        Visible = parentVisible;
+        bool show = parentVisible && _expanded;
+        foreach (var c in _content)
+        {
+            if (c is CollapsibleHeader h) h.ApplyVisibility(show);
+            else c.Visible = show;
+        }
     }
 
     protected override void OnClick(EventArgs e)
@@ -162,7 +178,7 @@ sealed class CollapsibleHeader : Control
         _expanded = !_expanded;
         UiState.Instance.Set(_key, _expanded);
         Parent?.SuspendLayout();
-        foreach (var c in _content) c.Visible = _expanded;
+        ApplyVisibility(_parentVisible);
         Parent?.ResumeLayout();
         Invalidate();
     }
@@ -175,28 +191,43 @@ sealed class CollapsibleHeader : Control
         var g = e.Graphics;
         float k = DeviceDpi / 96f;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.Clear(_hover ? Theme.Header : Theme.Background);
 
-        using (var b = new SolidBrush(_accent))
+        if (Big)
+        {
+            g.Clear(Theme.Background);
+            var r = new Rectangle(0, 0, Width - 1, Height - 1);
+            using var path = Gfx.RoundRect(r, (int)(10 * k));
+            using var bg = new SolidBrush(_hover ? Theme.CardHero : Theme.Card);
+            g.FillPath(bg, path);
+            using var bp = new Pen(Theme.Border);
+            g.DrawPath(bp, path);
+        }
+        else
+        {
+            g.Clear(_hover ? Theme.Header : Theme.Background);
+            using var b = new SolidBrush(_accent);
             g.FillRectangle(b, 0, (int)(Height * 0.28f), (int)(4 * k), (int)(Height * 0.5f));
+        }
 
         // Pfeil ▶ / ▼
         float cx = 22 * k, cy = Height / 2f, s = 5 * k;
         var tri = _expanded
             ? new[] { new PointF(cx - s, cy - s / 2), new PointF(cx + s, cy - s / 2), new PointF(cx, cy + s * 0.8f) }
             : new[] { new PointF(cx - s / 2, cy - s), new PointF(cx - s / 2, cy + s), new PointF(cx + s * 0.8f, cy) };
-        using (var b = new SolidBrush(Theme.Muted)) g.FillPolygon(b, tri);
+        using (var b = new SolidBrush(Big ? _accent : Theme.Muted)) g.FillPolygon(b, tri);
 
         int x = (int)(36 * k);
-        var sz = TextRenderer.MeasureText(Text, HeadFont);
-        TextRenderer.DrawText(g, Text, HeadFont, new Rectangle(x, 0, Width - x - (int)(120 * k), Height), Theme.Text,
+        TextRenderer.DrawText(g, Text, Big ? BigFont : HeadFont, new Rectangle(x, 0, Width - x - (int)(240 * k), Height), Theme.Text,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
-        TextRenderer.DrawText(g, _count, CountFont,
-            new Rectangle(Width - (int)(220 * k), 0, (int)(210 * k), Height), Theme.Muted,
+        TextRenderer.DrawText(g, Count, CountFont,
+            new Rectangle(Width - (int)(250 * k), 0, (int)(236 * k), Height), Theme.Muted,
             TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
 
-        using var line = new Pen(Theme.Border);
-        g.DrawLine(line, 0, Height - 1, Width, Height - 1);
+        if (!Big)
+        {
+            using var line = new Pen(Theme.Border);
+            g.DrawLine(line, 0, Height - 1, Width, Height - 1);
+        }
     }
 }
 
@@ -381,7 +412,7 @@ sealed class SensorTable : Control
             }
             else
             {
-                string name = s.Name;
+                string name = s.SensorType is SensorType.Fan or SensorType.Control ? FanNaming.Label(s) : s.Name;
                 if (s.Hardware.Name != _hwName) name += $"   · {s.Hardware.Name}";
                 var valCol = s.SensorType == SensorType.Temperature && s.Value is float tv ? Theme.ForTemp(tv) : Theme.Text;
                 TextRenderer.DrawText(g, name, RowFont, new Rectangle(pad + (int)(16 * k), y, nameW - (int)(16 * k), rh), Theme.Text, L);
