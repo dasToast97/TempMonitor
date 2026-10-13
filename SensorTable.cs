@@ -17,6 +17,8 @@ sealed class UiState
     public List<TileConfig> Tiles { get; set; } = new();
     public bool TilesInitialized { get; set; }
     public List<string> HiddenSensors { get; set; } = new();
+    /// Bauteile, deren Sensoren direkt in der Übersicht (unter den Kacheln) stehen
+    public List<string> DashboardSections { get; set; } = new();
 
     public bool IsHidden(string id) => HiddenSensors.Contains(id);
 

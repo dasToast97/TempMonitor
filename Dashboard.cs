@@ -488,6 +488,7 @@ sealed class DashboardView : FlowLayoutPanel
     readonly Action<IHardware> _open;
     readonly Func<Control?> _banner;
     readonly List<SensorTile> _tiles = new();
+    readonly List<SensorTable> _tables = new();
     readonly List<Control> _full = new();
 
     float K => DeviceDpi / 96f;
@@ -534,6 +535,7 @@ sealed class DashboardView : FlowLayoutPanel
         Controls.Clear();
         foreach (var c in old) c.Dispose();
         _tiles.Clear();
+        _tables.Clear();
         _full.Clear();
 
         if (_banner() is Control b) AddFull(b);
@@ -568,10 +570,69 @@ sealed class DashboardView : FlowLayoutPanel
                 Margin = new Padding(S(10), S(16), 0, 0),
             };
             Controls.Add(hint);
+            SetFlowBreak(hint, true);
         }
+        else SetFlowBreak(_tiles[^1], true);
+
+        // ----- Sensor-Bereiche der ausgewählten Bauteile -----
+        var sections = UiState.Instance.DashboardSections;
+        foreach (var hw in _computer.Hardware.OrderBy(h => MainForm.Order(h.HardwareType))
+                                             .Where(h => sections.Contains(h.Identifier.ToString())))
+            AddSensorSection(hw);
 
         ResizeFull();
         ResumeLayout();
+    }
+
+    void AddSensorSection(IHardware hw)
+    {
+        string cat = Hw.Category(hw);
+        var accent = Theme.ForCategory(cat);
+        string hid = hw.Identifier.ToString();
+        var all = MainForm.AllSensors(hw)
+            .Where(s => s.Value.HasValue && !Hw.IsEmptyFanPort(s) && !UiState.Instance.IsHidden(s.Identifier.ToString()))
+            .ToList();
+        if (all.Count == 0) return;
+
+        var header = new CollapsibleHeader($"{cat}  ·  {hw.Name}", $"{all.Count} Werte", accent, "dash|" + hid, defaultExpanded: true)
+        {
+            Height = S(42),
+            Margin = new Padding(S(6), S(14), S(6), S(4)),
+        };
+        var hm = new ContextMenuStrip();
+        hm.Items.Add("Detailseite öffnen", null, (_, _) => BeginInvoke(() => _open(hw)));
+        hm.Items.Add("Aus der Übersicht entfernen", null, (_, _) => Change(() => UiState.Instance.DashboardSections.Remove(hid)));
+        header.ContextMenuStrip = hm;
+        AddFull(header);
+
+        // Temperatur-Graphen
+        SensorTile? last = null;
+        foreach (var s in all.Where(MainForm.IsUsefulTemp))
+        {
+            string sub = s.Hardware.Name != hw.Name ? s.Hardware.Name : cat;
+            var tile = new SensorTile(_hist, s, Hw.LoadFor(_computer, hw, s), s.Name, sub, accent, TileSize.Medium, component: false);
+            var sensor = s;
+            var m = new ContextMenuStrip();
+            m.Items.Add("Ausblenden", null, (_, _) => Change(() => UiState.Instance.ToggleHidden(sensor.Identifier.ToString())));
+            m.Items.Add("Als eigene Kachel anheften", null, (_, _) => BeginInvoke(() => AddSensorTile(sensor)));
+            m.Items.Add("Min/Max zurücksetzen", null, (_, _) => { sensor.ResetMin(); sensor.ResetMax(); });
+            tile.ContextMenuStrip = m;
+            _tiles.Add(tile);
+            Controls.Add(tile);
+            header.AddContent(tile);
+            last = tile;
+        }
+        if (last != null) SetFlowBreak(last, true);
+
+        // Alle Werte
+        var table = new SensorTable(hw, all, accent) { IsHidden = s => UiState.Instance.IsHidden(s.Identifier.ToString()) };
+        table.HideToggled += s => Change(() => UiState.Instance.ToggleHidden(s.Identifier.ToString()));
+        table.Pinned += s => AddSensorTile(s);
+        _tables.Add(table);
+        AddFull(table);
+        header.AddContent(table);
+
+        header.ApplyVisibility(true);
     }
 
     SensorTile? CreateTile(TileConfig cfg)
@@ -615,6 +676,13 @@ sealed class DashboardView : FlowLayoutPanel
         m.Items.Add("Nach hinten", null, (_, _) => Change(() => Move(cfg, +1)));
         m.Items.Add("Aus der Übersicht entfernen", null, (_, _) => Change(() => UiState.Instance.Tiles.Remove(cfg)));
         m.Items.Add(new ToolStripSeparator());
+        if (cfg.Kind == "hw")
+        {
+            var secs = UiState.Instance.DashboardSections;
+            var show = new ToolStripMenuItem("Sensoren in der Übersicht anzeigen") { Checked = secs.Contains(cfg.Id) };
+            show.Click += (_, _) => Change(() => { if (!secs.Remove(cfg.Id)) secs.Add(cfg.Id); });
+            m.Items.Add(show);
+        }
         m.Items.Add("Detailseite öffnen", null, (_, _) => tile.BeginInvoke(() =>
         {
             if (cfg.Kind == "hw" && Hw.Find(_computer, cfg.Id) is IHardware h) _open(h);
@@ -657,7 +725,8 @@ sealed class DashboardView : FlowLayoutPanel
 
     public void RefreshValues()
     {
-        foreach (var t in _tiles) t.Invalidate();
+        foreach (var t in _tiles) if (t.Visible) t.Invalidate();
+        foreach (var t in _tables) if (t.Visible) t.Invalidate();
     }
 }
 
@@ -809,6 +878,8 @@ sealed class CustomizeDialog : Form
     readonly TreeView _tree;
     readonly ListBox _list;
     readonly ComboBox _size;
+    readonly CheckedListBox _sections;
+    readonly List<string> _sectionIds = new();
     bool _sync;
 
     public CustomizeDialog(IComputer computer)
@@ -824,8 +895,9 @@ sealed class CustomizeDialog : Form
         BackColor = Theme.Header;
         ForeColor = Theme.Text;
         Font = new Font("Segoe UI", 9.5f);
-        ClientSize = new Size(S(900), S(620));
-        MinimumSize = new Size(S(700), S(480));
+        ClientSize = new Size(S(900), S(684));
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = false;
         ShowInTaskbar = false;
         MinimizeBox = false;
 
@@ -845,7 +917,7 @@ sealed class CustomizeDialog : Form
             ShowLines = false,
             FullRowSelect = true,
             ItemHeight = S(24),
-            Bounds = new Rectangle(S(16), S(52), S(470), S(500)),
+            Bounds = new Rectangle(S(16), S(52), S(470), S(570)),
             Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left,
         };
 
@@ -863,7 +935,7 @@ sealed class CustomizeDialog : Form
             BorderStyle = BorderStyle.None,
             IntegralHeight = false,
             ItemHeight = S(22),
-            Bounds = new Rectangle(S(504), S(52), S(380), S(380)),
+            Bounds = new Rectangle(S(504), S(52), S(380), S(300)),
             Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
         };
 
@@ -877,7 +949,7 @@ sealed class CustomizeDialog : Form
             return b;
         }
 
-        int by = S(442);
+        int by = S(362);
         var up = Btn("▲  Nach vorne", S(504), by, 120);
         var down = Btn("▼  Nach hinten", S(630), by, 120);
         var remove = Btn("Entfernen", S(756), by, 128);
@@ -892,9 +964,34 @@ sealed class CustomizeDialog : Form
             Anchor = AnchorStyles.Bottom | AnchorStyles.Left,
         };
         _size.Items.AddRange(new object[] { "Klein", "Mittel", "Groß" });
-        var reset = Btn("Standard wiederherstellen", S(16), S(572), 200);
-        var ok = Btn("Übernehmen", S(668), S(572), 110);
-        var cancel = Btn("Abbrechen", S(784), S(572), 100);
+        var secLbl = new Label
+        {
+            Text = "Sensoren dieser Bauteile in der Übersicht zeigen (unter den Kacheln, aufklappbar):",
+            ForeColor = Theme.Muted, AutoSize = false,
+            Bounds = new Rectangle(S(504), S(452), S(380), S(36)),
+        };
+        _sections = new CheckedListBox
+        {
+            BackColor = Theme.Card,
+            ForeColor = Theme.Text,
+            BorderStyle = BorderStyle.None,
+            CheckOnClick = true,
+            IntegralHeight = false,
+            Bounds = new Rectangle(S(504), S(490), S(380), S(132)),
+        };
+        foreach (var hw in computer.Hardware.OrderBy(h => MainForm.Order(h.HardwareType)))
+        {
+            if (!MainForm.AllSensors(hw).Any(s => s.Value.HasValue)) continue;
+            string id = hw.Identifier.ToString();
+            _sectionIds.Add(id);
+            _sections.Items.Add($"{Hw.Category(hw)} · {hw.Name}", UiState.Instance.DashboardSections.Contains(id));
+        }
+        Controls.Add(secLbl);
+        Controls.Add(_sections);
+
+        var reset = Btn("Standard wiederherstellen", S(16), S(638), 200);
+        var ok = Btn("Übernehmen", S(668), S(638), 110);
+        var cancel = Btn("Abbrechen", S(784), S(638), 100);
         reset.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
         ok.Anchor = cancel.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
         ok.BackColor = Theme.Accent;
@@ -939,6 +1036,7 @@ sealed class CustomizeDialog : Form
         ok.Click += (_, _) =>
         {
             UiState.Instance.Tiles = _tiles;
+            UiState.Instance.DashboardSections = _sections.CheckedIndices.Cast<int>().Select(i => _sectionIds[i]).ToList();
             UiState.Instance.TilesInitialized = true;
             UiState.Instance.Save();
             DialogResult = DialogResult.OK;
