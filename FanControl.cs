@@ -214,6 +214,8 @@ sealed class FanChannel
     public required string HardwareName { get; init; }
     public bool IsGpu { get; init; }
     public required FanChannelSettings Cfg { get; init; }
+    /// AMD RX 6000+: Steuerung über Overdrive 8 statt über die Bibliothek
+    public AmdOd8Fan? Od8 { get; init; }
 
     public string DisplayName => string.IsNullOrWhiteSpace(Cfg.CustomName) ? DefaultName : Cfg.CustomName!;
 
@@ -381,8 +383,16 @@ sealed class FanController
                 ? (fans.Count > 1 && rpm != null ? $"Grafikkarte · {rpm.Name}" : "Grafikkarten-Lüfter")
                 : FriendlyName(rpm?.Name ?? baseName);
 
+            // AMD-Grafikkarten ab RX 6000: eigener Weg über Overdrive 8
+            AmdOd8Fan? od8 = null;
+            if (top.HardwareType == HardwareType.GpuAmd && !Channels.Any(c => c.Od8 != null && c.HardwareName == top.Name))
+            {
+                try { od8 = AmdOd8Fan.TryCreate(top); } catch { od8 = null; }
+            }
+
             var ch = new FanChannel
             {
+                Od8 = od8,
                 Control = sensor.Control,
                 ControlSensor = sensor,
                 Rpm = rpm,
@@ -483,8 +493,16 @@ sealed class FanController
 
     static void SafeDefault(FanChannel ch)
     {
+        if (ch.Od8 != null) { try { ch.Od8.Restore(); } catch { } }
         try { ch.Control.SetDefault(); } catch { }
         ch.Output = -1;
+    }
+
+    /// Drehzahl setzen – bei AMD RX 6000+ über Overdrive 8, sonst über die Bibliothek
+    static void Write(FanChannel ch, float pct)
+    {
+        if (ch.Od8 != null) ch.Od8.SetPercent(pct);
+        else ch.Control.SetSoftware(pct);
     }
 
     // ---------------------------------------------------------------------
@@ -521,7 +539,7 @@ sealed class FanController
         {
             ch.Identifying = true;
             ch.Output = 100;
-            ch.Control.SetSoftware(100);
+            Write(ch, 100);
             ch.Status = "Erkennen: dieser Lüfter läuft gerade auf 100 % …";
             return;
         }
@@ -544,7 +562,9 @@ sealed class FanController
 
         if (ch.NotControllable)
         {
-            ch.Status = ch.IsGpu
+            ch.Status = ch.Od8 != null
+                ? "Lässt sich nicht steuern – der AMD-Treiber nimmt die Lüfterkurve nicht an. „Erkennen“ testet erneut."
+                : ch.IsGpu
                 ? "Lässt sich nicht steuern – der Grafiktreiber regelt diesen Lüfter selbst. „Erkennen“ testet erneut."
                 : "Lässt sich nicht steuern – der Lüfter reagiert nicht auf Befehle. „Erkennen“ testet erneut.";
             return;
@@ -635,7 +655,9 @@ sealed class FanController
 
         next = Math.Clamp(next, min, max);
         ch.Output = next;
-        ch.Control.SetSoftware(next);
+        Write(ch, next);
+        if (ch.Od8?.LastError is string err)
+            ch.Status += $" · {err}";
         CheckResponse(ch, next);
         if (ch.NotControllable) return;
 

@@ -34,6 +34,11 @@ für jeden Sensor einen Verlaufsgraphen der letzten 5 Minuten zeigt.
 **Sicherheit (optional, standardmäßig aus):** Notkühlung mit einstellbaren Grenzwerten für CPU, GPU und Mainboard
 und Stillstand-Erkennung. Beim Beenden oder Absturz übernimmt immer wieder das BIOS.
 
+**AMD-Grafikkarten ab RX 6000:** Die Lüfter werden über AMD Overdrive 8 gesteuert (wie das Lüfter-Tuning
+der AMD Software): Für die gewünschte Leistung werden alle 5 Kurvenpunkte auf diesen Wert gesetzt. Nur Lüfterwerte
+und der Tuning-Modus werden verändert, nie Takt oder Spannung. Beim Beenden werden die ursprünglichen Werte
+zurückgeschrieben. Lüfter, die trotzdem nicht reagieren, erkennt das Programm und meldet sie.
+
 Mainboard-Lüfter brauchen den Treiber **PawnIO** (der Installer bietet ihn an). Hersteller-Tools
 (Armoury Crate, MSI Center, iCUE …) sollten nicht gleichzeitig die Lüfter steuern.
 

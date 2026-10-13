@@ -662,7 +662,7 @@ sealed class FanCard : Control
         const TextFormatFlags L = TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding;
         const TextFormatFlags R = TextFormatFlags.NoPrefix | TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
 
-        string sub = (pump ? "Pumpe" : "Lüfter") + " · " + _ch.HardwareName +
+        string sub = (pump ? "Pumpe" : "Lüfter") + " · " + _ch.HardwareName + (_ch.Od8 != null ? " · AMD Overdrive 8" : "") +
                      (_ch.DisplayName != _ch.DefaultName ? $" · {_ch.DefaultName}" : "");
         TextRenderer.DrawText(g, sub, SmallFont, new Rectangle(S(48), S(40), Width - S(210), S(16)), Theme.Muted, L);
 
