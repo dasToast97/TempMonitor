@@ -242,6 +242,7 @@ sealed class FanChannel
     public float TestFromPct, TestToPct, TestStartRpm;
     public float LastTestedPct = -1;
     public float IdentifyStartRpm = -1;
+    public int ReadbackMismatchTicks;
     public float? DriverTemp;
     public readonly Dictionary<Component, SourceState> States = new()
     {
@@ -446,6 +447,7 @@ sealed class FanController
                 ch.NoSpinTicks = 0;
                 ch.TestStart = null;
                 ch.LastTestedPct = -1;
+                ch.ReadbackMismatchTicks = 0;
                 ch.ResetStates();
                 if (p == FanProfile.Bios) SafeDefault(ch);
             }
@@ -586,7 +588,15 @@ sealed class FanController
         float driverTarget = 0;
         bool emergency = false;
 
-        if (ch.Output < 0) ch.Output = ch.ControlSensor.Value ?? 50f;
+        if (ch.Output < 0)
+        {
+            ch.Output = ch.ControlSensor.Value ?? 50f;
+            if (ch.LastTestedPct < 0 && ch.Rpm?.Value is float r0)
+            {
+                ch.LastTestedPct = ch.Output;
+                ch.TestStartRpm = r0;
+            }
+        }
 
         foreach (var c in Components.All)
         {
@@ -681,34 +691,57 @@ sealed class FanController
     // ---------------------------------------------------------------------
     static void CheckResponse(FanChannel ch, float now)
     {
+        // a) Rückmeldung des Treibers: meldet er dauerhaft eine ganz andere Leistung als befohlen?
+        //    (bei AMD Overdrive 8 nicht, dort ist die Rückmeldung der Bibliothek nicht aussagekräftig)
+        if (ch.Od8 == null && ch.ControlSensor.Value is float rb && rb >= 0 && rb <= 100)
+        {
+            if (Math.Abs(rb - now) > 15) ch.ReadbackMismatchTicks++;
+            else ch.ReadbackMismatchTicks = 0;
+            if (ch.ReadbackMismatchTicks >= 20)
+            {
+                ch.NotControllable = true;
+                SafeDefault(ch);
+                return;
+            }
+        }
+
         if (ch.Rpm?.Value is not float rpm) return;
 
         if (ch.TestStart is DateTime start)
         {
             if ((DateTime.Now - start).TotalSeconds < 12) return;
+            ch.TestToPct = now;   // tatsächliche Änderung bis jetzt
             float dir = Math.Sign(ch.TestToPct - ch.TestFromPct);
             float change = (rpm - ch.TestStartRpm) * dir;
             bool reacted = change >= Math.Max(60f, ch.TestStartRpm * 0.08f);
             // Lüfter im Stillstand-Modus (0 U/min) und Befehl nach unten: nichts zu prüfen
             if (dir < 0 && ch.TestStartRpm < 100) reacted = true;
+            // Großer Sprung ohne Reaktion: ein Fehlschlag genügt, sonst zwei
+            int needed = Math.Abs(ch.TestToPct - ch.TestFromPct) >= 30 ? 1 : 2;
             if (reacted) ch.TestFailures = 0;
-            else if (++ch.TestFailures >= 2)
+            else if (++ch.TestFailures >= needed)
             {
                 ch.NotControllable = true;
                 SafeDefault(ch);
             }
             ch.TestStart = null;
             ch.LastTestedPct = now;
+            ch.TestStartRpm = rpm;
             return;
         }
 
-        if (ch.LastTestedPct < 0) { ch.LastTestedPct = now; return; }
+        // Ausgangspunkt: Leistung + Drehzahl, bevor wir deutlich etwas ändern
+        if (ch.LastTestedPct < 0) { ch.LastTestedPct = now; ch.TestStartRpm = rpm; return; }
         if (Math.Abs(now - ch.LastTestedPct) >= 25)
         {
             ch.TestStart = DateTime.Now;
             ch.TestFromPct = ch.LastTestedPct;
             ch.TestToPct = now;
-            ch.TestStartRpm = rpm;
+            // TestStartRpm bleibt die Drehzahl vom Ausgangspunkt
+        }
+        else if (Math.Abs(now - ch.LastTestedPct) < 3)
+        {
+            ch.TestStartRpm = rpm;   // stabil: Ausgangsdrehzahl aktuell halten
         }
     }
 
