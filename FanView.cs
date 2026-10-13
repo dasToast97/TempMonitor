@@ -528,8 +528,8 @@ sealed class FanCard : Control
             var cb = new CheckBox
             {
                 Checked = ch.Cfg.Uses(c),
-                // GPU-Lüfter: nur nach der GPU regeln
-                Enabled = ctl.HasComponent(c) && (!ch.IsGpu || c == Component.Gpu),
+                Enabled = ctl.HasComponent(c),
+                Visible = !ch.IsGpu,   // GPU-Lüfter regeln fest nach der GPU – keine Auswahl nötig
                 ForeColor = Theme.Text,
                 BackColor = Theme.Card,
                 AutoSize = false,
@@ -582,7 +582,7 @@ sealed class FanCard : Control
         _name.SetBounds(S(48), S(14), Width - S(210), S(24));
         _kind.SetBounds(S(16), S(62), S(96), S(26));
         _identify.SetBounds(S(120), S(61), S(100), S(28));
-        _sourceLabel.Location = new Point(S(16), S(150));
+        _sourceLabel.Location = new Point(S(16), _ch.IsGpu ? S(160) : S(150));
         int x = S(16), w = (Width - S(32)) / 3;
         foreach (var c in Components.All)
         {
@@ -596,11 +596,21 @@ sealed class FanCard : Control
 
     void UpdateSourceTexts()
     {
+        if (_ch.IsGpu)
+        {
+            string txt = "Regelt nach der Grafikkarte";
+            if (_ctl.Temp(Component.Gpu) is float gt)
+            {
+                txt += $":  {gt:0} °C";
+                if (_ctl.Load(Component.Gpu) is float gl) txt += $"  ·  Last {gl:0} %";
+            }
+            if (_sourceLabel.Text != txt) _sourceLabel.Text = txt;
+            return;
+        }
         foreach (var c in Components.All)
         {
             string txt = Components.Name(c);
             if (!_ctl.HasComponent(c)) txt += " (fehlt)";
-            else if (_ch.IsGpu && c != Component.Gpu) txt += " (nicht für GPU)";
             else if (_ctl.Temp(c) is float t)
             {
                 txt += $" {t:0}°";
