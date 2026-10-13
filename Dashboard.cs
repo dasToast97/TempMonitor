@@ -837,19 +837,23 @@ sealed class ComponentPage : FlowLayoutPanel
         var bar = new PageBar($"{cat}", _hw.Name, K) { Margin = new Padding(S(6), S(4), S(6), S(2)) };
         var back = PageBar.Button("←  Übersicht", K, 130);
         back.Click += (_, _) => _back();
-        var show = new CheckBox
+        // Nur wenn etwas ausgeblendet ist: gut lesbarer Link zum Ein-/Ausblenden
+        if (hiddenCount > 0 || _showHidden)
         {
-            Text = hiddenCount > 0 ? $"Ausgeblendete anzeigen ({hiddenCount})" : "Ausgeblendete anzeigen",
-            Checked = _showHidden,
-            ForeColor = Theme.Muted,
-            Width = S(230),
-            CheckAlign = ContentAlignment.MiddleRight,
-            TextAlign = ContentAlignment.MiddleRight,
-            Enabled = hiddenCount > 0 || _showHidden,
-        };
-        show.CheckedChanged += (_, _) => { _showHidden = show.Checked; BeginInvoke(Build); };
-        bar.AddRight(show);
-        bar.AddRight(new Panel { Width = S(12), BackColor = Theme.Background });
+            var link = new LinkLabel
+            {
+                Text = _showHidden ? "Ausgeblendete wieder verstecken" : $"{hiddenCount} ausgeblendete einblenden",
+                LinkColor = Theme.Accent,
+                ActiveLinkColor = Theme.Text,
+                LinkBehavior = LinkBehavior.HoverUnderline,
+                TextAlign = ContentAlignment.MiddleRight,
+                Width = S(230),
+                UseMnemonic = false,
+            };
+            link.Click += (_, _) => { _showHidden = !_showHidden; BeginInvoke(Build); };
+            bar.AddRight(link);
+            bar.AddRight(new Panel { Width = S(12), BackColor = Theme.Background });
+        }
         bar.AddRight(back);
         AddFull(bar);
 
