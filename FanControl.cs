@@ -262,6 +262,9 @@ sealed class FanController
     readonly Dictionary<Component, ISensor?> _temp = new();
     ISensor? _cpuLoad, _gpuLoad;
 
+    /// Die laufende Steuerung (für die Lüfter-Kachel in der Übersicht)
+    public static FanController? Current { get; set; }
+
     public FanController(FanSettings settings) => _s = settings;
 
     // ---------------------------------------------------------------------

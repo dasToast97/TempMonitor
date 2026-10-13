@@ -266,6 +266,7 @@ sealed class MainForm : Form
         {
             _fans = new FanController(FanSettings.Load());
             _fans.Discover(_computer);
+            FanController.Current = _fans;
         }
         catch (Exception ex)
         {
@@ -530,6 +531,7 @@ sealed class MainForm : Form
         foreach (var c in _tempArea.Controls.Cast<Control>().ToList()) c.Dispose();
         _tempArea.Controls.Clear();
         _dash = new DashboardView(_computer, _history, OpenPage, CreateBanner) { Dock = DockStyle.Fill };
+        _dash.OpenFans = () => BeginInvoke(() => ShowTab(true));
         _tempArea.Controls.Add(_dash);
         _tempArea.ResumeLayout();
 

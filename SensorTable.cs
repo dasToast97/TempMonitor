@@ -19,6 +19,7 @@ sealed class UiState
     public List<string> HiddenSensors { get; set; } = new();
     /// Bauteile, deren Sensoren direkt in der Übersicht (unter den Kacheln) stehen
     public List<string> DashboardSections { get; set; } = new();
+    public bool FansTileOffered { get; set; }
 
     public bool IsHidden(string id) => HiddenSensors.Contains(id);
 

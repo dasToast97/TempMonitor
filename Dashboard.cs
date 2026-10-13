@@ -123,6 +123,8 @@ static class Hw
                 or HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel;
             list.Add(new TileConfig { Kind = "hw", Id = hw.Identifier.ToString(), Size = big ? TileSize.Medium : TileSize.Small });
         }
+        if (FanController.Current is { Channels.Count: > 0 })
+            list.Insert(Math.Min(3, list.Count), new TileConfig { Kind = "fans", Id = "fans", Size = TileSize.Medium });
         return list;
     }
 }
@@ -204,6 +206,10 @@ sealed class SensorTile : Control
 
     bool IsTemp => Sensor.SensorType == SensorType.Temperature;
 
+    /// Mainboard hat keine eigene Last -> dort wird die CPU-Last gezeigt und so beschriftet
+    string LoadLabel => Load != null && Load.Hardware.HardwareType == HardwareType.Cpu
+                        && Sensor.Hardware.HardwareType != HardwareType.Cpu ? "CPU-Last" : "Last";
+
     string ValueText(float v, bool compact) => IsTemp
         ? (compact ? $"{v:0}°" : $"{v:0}°")
         : SensorFormat.Value(Sensor.SensorType, v);
@@ -245,7 +251,7 @@ sealed class SensorTile : Control
             TextRenderer.DrawText(g, cur is float v ? ValueText(v, true) : "–", ValueS,
                 new Rectangle(S(10), S(52), Width - S(20), S(44)), valCol, L);
             if (load is float ld)
-                TextRenderer.DrawText(g, $"Last {ld:0} %", BadgeFont, new Rectangle(S(90), S(68), Width - S(104), S(18)), Theme.Accent, R);
+                TextRenderer.DrawText(g, $"{LoadLabel} {ld:0} %", BadgeFont, new Rectangle(S(90), S(68), Width - S(104), S(18)), Theme.Accent, R);
         }
         else
         {
@@ -257,7 +263,7 @@ sealed class SensorTile : Control
             // rechte Spalte: Status, Last, Min/Max
             if (cur is float vv && IsTemp) DrawBadge(g, Theme.Status(vv), Theme.ForTemp(vv), new Point(Width - S(16), S(58)), k);
             if (load is float ld)
-                TextRenderer.DrawText(g, $"Last {ld:0} %", BadgeFont, new Rectangle(Width - S(150), S(84), S(134), S(18)), Theme.Accent, R);
+                TextRenderer.DrawText(g, $"{LoadLabel} {ld:0} %", BadgeFont, new Rectangle(Width - S(150), S(84), S(134), S(18)), Theme.Accent, R);
             if (Sensor.Min is float mn && Sensor.Max is float mx)
             {
                 string mm = IsTemp ? $"min {mn:0}°  ·  max {mx:0}°"
@@ -456,6 +462,164 @@ sealed class SensorTile : Control
 }
 
 // ===========================================================================
+// Lüfter-Kachel: alle Lüfter/Pumpen mit Drehzahl, Leistung und kleinem Verlauf
+// ===========================================================================
+sealed class FansTile : Control
+{
+    static readonly Font TitleS = new("Segoe UI Semibold", 10f);
+    static readonly Font TitleM = new("Segoe UI Semibold", 12f);
+    static readonly Font SubFont = new("Segoe UI", 8.5f);
+    static readonly Font NameFont = new("Segoe UI", 9f);
+    static readonly Font RpmFont = new("Segoe UI Semibold", 10f);
+    static readonly Font ValueS = new("Segoe UI Semibold", 20f);
+    static readonly Color Accent = Color.FromArgb(56, 189, 248);
+
+    readonly HistoryStore _hist;
+    readonly FanController _ctl;
+    bool _hover;
+
+    public TileSize TileSize { get; }
+    public event Action? Opened;
+
+    public FansTile(HistoryStore hist, FanController ctl, TileSize size)
+    {
+        _hist = hist;
+        _ctl = ctl;
+        TileSize = size;
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                 ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+        BackColor = Theme.Background;
+        Cursor = Cursors.Hand;
+    }
+
+    float K => DeviceDpi / 96f;
+    int S(float px) => (int)(px * K);
+
+    protected override void OnCreateControl() { base.OnCreateControl(); ApplySize(); }
+    protected override void OnParentChanged(EventArgs e) { base.OnParentChanged(e); ApplySize(); }
+
+    void ApplySize()
+    {
+        int rows = Math.Max(1, _ctl.Channels.Count);
+        Size = TileSize switch
+        {
+            TileSize.Small => new Size(S(196), S(112)),
+            // so hoch, dass alle Lüfter Platz haben, aber mindestens so hoch wie die anderen Kacheln
+            TileSize.Large => new Size(S(596), Math.Max(S(240), S(66 + rows * 38))),
+            _ => new Size(S(292), Math.Max(S(240), S(66 + rows * 38))),
+        };
+        Margin = new Padding(S(6));
+    }
+
+    protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { _hover = false; Invalidate(); base.OnMouseLeave(e); }
+
+    protected override void OnMouseClick(MouseEventArgs e)
+    {
+        base.OnMouseClick(e);
+        if (e.Button == MouseButtons.Left) Opened?.Invoke();
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        float k = K;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+        g.Clear(Theme.Background);
+
+        var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+        using (var path = Gfx.RoundRect(rect, S(12)))
+        {
+            using var bg = new SolidBrush(_hover ? Theme.CardHero : Theme.Card);
+            g.FillPath(bg, path);
+            var oldClip = g.Clip;
+            g.SetClip(path);
+            using (var acc = new SolidBrush(Accent)) g.FillRectangle(acc, 0, 0, Width, S(3));
+            g.Clip = oldClip;
+            using var border = new Pen(_hover ? Color.FromArgb(120, Accent) : Theme.Border);
+            g.DrawPath(border, path);
+        }
+
+        const TextFormatFlags L = TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding;
+        const TextFormatFlags R = TextFormatFlags.NoPrefix | TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
+
+        var chans = _ctl.Channels;
+        string profile = $"Profil: {Profiles.Get(_ctl.Profile).Title}";
+
+        if (TileSize == TileSize.Small)
+        {
+            TextRenderer.DrawText(g, "Lüfter & Pumpen", TitleS, new Rectangle(S(14), S(10), Width - S(28), S(20)), Accent, L);
+            TextRenderer.DrawText(g, profile, SubFont, new Rectangle(S(14), S(30), Width - S(28), S(16)), Theme.Muted, L);
+            var fans = chans.Where(c => c.Kind == FanKind.Fan && c.Rpm?.Value is float).ToList();
+            string big = fans.Count > 0 ? $"Ø {fans.Average(c => c.Rpm!.Value ?? 0):N0}" : "–";
+            TextRenderer.DrawText(g, big, ValueS, new Rectangle(S(10), S(52), Width - S(20), S(44)), Theme.Text, L);
+            TextRenderer.DrawText(g, "U/min", SubFont, new Rectangle(S(100), S(68), Width - S(114), S(18)), Theme.Muted, R);
+            return;
+        }
+
+        TextRenderer.DrawText(g, "Lüfter & Pumpen", TitleM, new Rectangle(S(16), S(12), Width - S(32), S(24)), Accent, L);
+        TextRenderer.DrawText(g, profile, SubFont, new Rectangle(S(16), S(36), Width - S(32), S(16)), Theme.Muted, L);
+
+        int y = S(62);
+        int rowH = S(38);
+        bool wide = TileSize == TileSize.Large;
+        int nameW = wide ? S(190) : Width - S(140);
+        foreach (var ch in chans)
+        {
+            float? rpm = ch.Rpm?.Value;
+            float pct = ch.Output >= 0 ? ch.Output : (ch.ControlSensor.Value ?? 0);
+            string kind = ch.Kind == FanKind.Pump ? "Pumpe" : "";
+
+            // Zeile 1: Name + Drehzahl
+            TextRenderer.DrawText(g, ch.DisplayName + (kind != "" ? "  · Pumpe" : ""), NameFont,
+                new Rectangle(S(16), y, nameW, S(18)), Theme.Text, L);
+            TextRenderer.DrawText(g, rpm is float r ? $"{r:N0} U/min" : "–", RpmFont,
+                new Rectangle(Width - S(136), y, S(120), S(18)), Theme.Text, R);
+
+            // Zeile 2: Leistungsbalken links, Drehzahl-Verlauf rechts daneben
+            int barW = wide ? S(120) : S(70);
+            var bar = new Rectangle(S(16), y + S(23), barW, S(6));
+            using (var bb = new SolidBrush(Theme.Grid)) g.FillRectangle(bb, bar);
+            using (var bf = new SolidBrush(Accent))
+                g.FillRectangle(bf, bar.X, bar.Y, (int)(bar.Width * Math.Clamp(pct, 0, 100) / 100f), bar.Height);
+            TextRenderer.DrawText(g, $"{pct:0} %", SubFont, new Rectangle(bar.Right + S(6), y + S(18), S(40), S(16)), Theme.Muted, L);
+
+            var spark = new Rectangle(bar.Right + S(50), y + S(19), Width - bar.Right - S(66), S(14));
+            DrawSpark(g, spark, ch.Rpm, k);
+
+            y += rowH;
+        }
+    }
+
+    void DrawSpark(Graphics g, Rectangle r, ISensor? sensor, float k)
+    {
+        var d = _hist.Get(sensor);
+        if (d.Length < 2 || r.Width < 20) return;
+        // auf ~1 Punkt je 3 px verdichten
+        int step = Math.Max(1, (int)Math.Ceiling(HistoryStore.MaxPoints / (r.Width / 3f)));
+        var vals = new List<float>();
+        for (int i = d.Length % step; i < d.Length; i += step)
+        {
+            int end = Math.Min(d.Length, i + step);
+            float sum = 0;
+            for (int j = i; j < end; j++) sum += d[j];
+            vals.Add(sum / (end - i));
+        }
+        if (vals.Count < 2) return;
+        float max = Math.Max(vals.Max() * 1.1f, 100);
+        float dx = r.Width / (float)(HistoryStore.MaxPoints / step - 1);
+        var pts = new PointF[vals.Count];
+        for (int i = 0; i < vals.Count; i++)
+            pts[i] = new PointF(r.Right - (vals.Count - 1 - i) * dx, r.Bottom - vals[i] / max * r.Height);
+        var poly = new List<PointF>(pts) { new(pts[^1].X, r.Bottom), new(pts[0].X, r.Bottom) };
+        using (var f = new SolidBrush(Color.FromArgb(40, Accent))) g.FillPolygon(f, poly.ToArray());
+        using var pen = new Pen(Accent, 1.4f * k) { LineJoin = LineJoin.Round };
+        g.DrawLines(pen, pts);
+    }
+}
+
+// ===========================================================================
 // Kopfzeile einer Seite: Titel links, Knöpfe rechts
 // ===========================================================================
 sealed class PageBar : Panel
@@ -521,12 +685,15 @@ sealed class DashboardView : FlowLayoutPanel
     readonly HistoryStore _hist;
     readonly Action<IHardware> _open;
     readonly Func<Control?> _banner;
-    readonly List<SensorTile> _tiles = new();
+    readonly List<Control> _tiles = new();
     readonly List<SensorTable> _tables = new();
     readonly List<Control> _full = new();
 
     float K => DeviceDpi / 96f;
     int S(float px) => (int)(px * K);
+
+    /// Klick auf die Lüfter-Kachel: zum Reiter "Lüfter" wechseln
+    public Action? OpenFans { get; set; }
 
     public DashboardView(IComputer computer, HistoryStore hist, Action<IHardware> open, Func<Control?> banner)
     {
@@ -544,6 +711,15 @@ sealed class DashboardView : FlowLayoutPanel
         {
             ui.Tiles = Hw.DefaultTiles(computer);
             ui.TilesInitialized = true;
+            ui.FansTileOffered = true;
+            ui.Save();
+        }
+        else if (!ui.FansTileOffered)
+        {
+            // Bestehende Übersicht: Lüfter-Kachel einmalig dazulegen
+            if (FanController.Current is { Channels.Count: > 0 } && !ui.Tiles.Any(t => t.Kind == "fans"))
+                ui.Tiles.Insert(Math.Min(3, ui.Tiles.Count), new TileConfig { Kind = "fans", Id = "fans", Size = TileSize.Medium });
+            ui.FansTileOffered = true;
             ui.Save();
         }
         Rebuild();
@@ -669,8 +845,15 @@ sealed class DashboardView : FlowLayoutPanel
         header.ApplyVisibility(true);
     }
 
-    SensorTile? CreateTile(TileConfig cfg)
+    Control? CreateTile(TileConfig cfg)
     {
+        if (cfg.Kind == "fans")
+        {
+            if (FanController.Current is not { } fc || fc.Channels.Count == 0) return null;
+            var ft = new FansTile(_hist, fc, cfg.Size);
+            ft.Opened += () => OpenFans?.Invoke();
+            return ft;
+        }
         if (cfg.Kind == "hw")
         {
             var hw = Hw.Find(_computer, cfg.Id);
@@ -695,7 +878,7 @@ sealed class DashboardView : FlowLayoutPanel
         }
     }
 
-    ContextMenuStrip TileMenu(TileConfig cfg, SensorTile tile)
+    ContextMenuStrip TileMenu(TileConfig cfg, Control tile)
     {
         var m = new ContextMenuStrip();
         var size = new ToolStripMenuItem("Größe");
@@ -717,9 +900,10 @@ sealed class DashboardView : FlowLayoutPanel
             show.Click += (_, _) => Change(() => { if (!secs.Remove(cfg.Id)) secs.Add(cfg.Id); });
             m.Items.Add(show);
         }
-        m.Items.Add("Detailseite öffnen", null, (_, _) => tile.BeginInvoke(() =>
+        m.Items.Add(cfg.Kind == "fans" ? "Lüfter-Reiter öffnen" : "Detailseite öffnen", null, (_, _) => tile.BeginInvoke(() =>
         {
-            if (cfg.Kind == "hw" && Hw.Find(_computer, cfg.Id) is IHardware h) _open(h);
+            if (cfg.Kind == "fans") OpenFans?.Invoke();
+            else if (cfg.Kind == "hw" && Hw.Find(_computer, cfg.Id) is IHardware h) _open(h);
             else if (Hw.FindSensor(_computer, cfg.Id) is { } f) _open(f.Top);
         }));
         m.Items.Add("Übersicht anpassen …", null, (_, _) => BeginInvoke(Customize));
@@ -1093,6 +1277,14 @@ sealed class CustomizeDialog : Form
         _sync = true;
         _tree.BeginUpdate();
         _tree.Nodes.Clear();
+        if (FanController.Current is { Channels.Count: > 0 })
+        {
+            _tree.Nodes.Add(new TreeNode("Lüfter & Pumpen · Drehzahlen aller Lüfter")
+            {
+                Tag = new TileConfig { Kind = "fans", Id = "fans", Size = TileSize.Medium },
+                Checked = _tiles.Any(t => t.Kind == "fans"),
+            });
+        }
         foreach (var hw in _computer.Hardware.OrderBy(h => MainForm.Order(h.HardwareType)))
         {
             var sensors = MainForm.AllSensors(hw).Where(s => s.Value.HasValue && !Hw.IsEmptyFanPort(s)).ToList();
@@ -1121,7 +1313,8 @@ sealed class CustomizeDialog : Form
     string Describe(TileConfig t)
     {
         string name;
-        if (t.Kind == "hw") name = Hw.Find(_computer, t.Id) is IHardware h ? $"{Hw.Category(h)} · {h.Name}" : "(nicht gefunden)";
+        if (t.Kind == "fans") name = "Lüfter & Pumpen";
+        else if (t.Kind == "hw") name = Hw.Find(_computer, t.Id) is IHardware h ? $"{Hw.Category(h)} · {h.Name}" : "(nicht gefunden)";
         else name = Hw.FindSensor(_computer, t.Id) is { } f ? $"{Hw.SensorLabel(f.Sensor)}  ({Hw.Category(f.Top)})" : "(nicht gefunden)";
         return $"{TileSizes.Name(t.Size),-7}  {name}";
     }
