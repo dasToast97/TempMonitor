@@ -12,6 +12,7 @@ sealed class HistoryStore
     public const int MaxPoints = 300;
     readonly object _lock = new();
     readonly Dictionary<string, List<float>> _data = new();
+    readonly Dictionary<string, long> _total = new();
 
     /// Wird jede Sekunde im Hintergrund aufgerufen
     public void Record(IComputer computer)
@@ -26,7 +27,21 @@ sealed class HistoryStore
                     if (!_data.TryGetValue(id, out var list)) { list = new List<float>(MaxPoints + 1); _data[id] = list; }
                     list.Add(v);
                     if (list.Count > MaxPoints) list.RemoveAt(0);
+                    _total[id] = (_total.TryGetValue(id, out var n) ? n : 0) + 1;
                 }
+        }
+    }
+
+    /// Werte + Anzahl aller bisherigen Messungen (damit Abschnitte fest an der Zeit hängen)
+    public (float[] Data, long Total) GetWithTotal(ISensor? s)
+    {
+        if (s == null) return (Array.Empty<float>(), 0);
+        lock (_lock)
+        {
+            string id = s.Identifier.ToString();
+            return _data.TryGetValue(id, out var l)
+                ? (l.ToArray(), _total.TryGetValue(id, out var n) ? n : l.Count)
+                : (Array.Empty<float>(), 0);
         }
     }
 
@@ -165,8 +180,8 @@ sealed class SensorTile : Control
         Size = TileSize switch
         {
             TileSize.Small => new Size(S(196), S(112)),
-            TileSize.Large => new Size(S(596), S(222)),
-            _ => new Size(S(292), S(222)),
+            TileSize.Large => new Size(S(596), S(240)),
+            _ => new Size(S(292), S(240)),
         };
         Margin = new Padding(S(6));
         Cursor = Clickable ? Cursors.Hand : Cursors.Default;
@@ -251,7 +266,7 @@ sealed class SensorTile : Control
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             }
 
-            DrawGraph(g, new Rectangle(S(16), S(126), Width - S(32), Height - S(140)), IsTemp && cur is float t ? Theme.ForTemp(t) : _accent, k);
+            DrawGraph(g, new Rectangle(S(16), S(124), Width - S(32), Height - S(136)), IsTemp && cur is float t ? Theme.ForTemp(t) : _accent, k);
         }
 
         if (Dimmed)
@@ -289,26 +304,41 @@ sealed class SensorTile : Control
         return r;
     }
 
-    /// Auf etwa einen Punkt pro 3 Pixel verdichten (Mittelwert je Abschnitt)
-    static (float[] Values, int[] Index) Compress(float[] d, int maxPoints)
+    /// Verdichten in Abschnitte, die fest an der Zeit hängen: Abschnitt = (Messung Nr.) / step.
+    /// So bleibt die Kurve stabil und nur das Stück ganz rechts bewegt sich.
+    static (float[] Values, float[] Pos) Bucket(float[] d, long total, int step)
     {
-        if (d.Length <= maxPoints) return (d, Enumerable.Range(0, d.Length).ToArray());
-        int step = (int)Math.Ceiling(d.Length / (double)maxPoints);
-        var v = new List<float>();
-        var idx = new List<int>();
-        // vom Ende her, damit der neueste Wert immer genau am rechten Rand liegt
-        for (int end = d.Length; end > 0; end -= step)
+        if (step <= 1) return (d, Enumerable.Range(0, d.Length).Select(i => (float)i).ToArray());
+        var vals = new List<float>();
+        var pos = new List<float>();
+        long first = total - d.Length;
+        long cur = long.MinValue;
+        float sum = 0, psum = 0;
+        int n = 0;
+        for (int i = 0; i < d.Length; i++)
         {
-            int start = Math.Max(0, end - step);
-            float sum = 0;
-            for (int i = start; i < end; i++) sum += d[i];
-            v.Add(sum / (end - start));
-            idx.Add(end - 1);
+            long b = (first + i) / step;
+            if (b != cur && n > 0)
+            {
+                vals.Add(sum / n);
+                pos.Add(psum / n);
+                sum = psum = 0;
+                n = 0;
+            }
+            cur = b;
+            sum += d[i];
+            psum += i;
+            n++;
         }
-        v.Reverse();
-        idx.Reverse();
-        return (v.ToArray(), idx.ToArray());
+        if (n > 0)
+        {
+            vals.Add(sum / n);
+            pos.Add(d.Length - 1);   // letzter Punkt immer ganz rechts ("jetzt")
+        }
+        return (vals.ToArray(), pos.ToArray());
     }
+
+    float? _lo, _hi;   // Skala mit Trägheit
 
     /// Wert für die große Zahl: Mittel der letzten 3 Sekunden (flackert nicht)
     float? Display()
@@ -321,102 +351,106 @@ sealed class SensorTile : Control
         return sum / n;
     }
 
-    void DrawGraph(Graphics g, Rectangle area, Color col, float k)
+    void DrawGraph(Graphics g, Rectangle gr, Color col, float k)
     {
-        var raw = _hist.Get(Sensor);
-        if (raw.Length < 2 || area.Width < 20 || area.Height < 20) return;
+        var (raw, total) = _hist.GetWithTotal(Sensor);
+        if (raw.Length < 2 || gr.Width < 20 || gr.Height < 20) return;
 
-        var loadRaw = _hist.Get(Load);
-        bool hasLoad = loadRaw.Length >= 2;
+        int step = Math.Max(1, (int)Math.Ceiling(HistoryStore.MaxPoints / (gr.Width / Math.Max(2f, 3 * k))));
+        var (data, pos) = Bucket(Smooth(raw, 5), total, step);
 
-        // Bereiche: oben der Wert, darunter (getrennt) ein schmales Lastband
-        int bandH = hasLoad ? Math.Max((int)(14 * k), area.Height / 5) : 0;
-        int gap = hasLoad ? (int)(6 * k) : 0;
-        var gr = new Rectangle(area.X, area.Y, area.Width, area.Height - bandH - gap);
-        var band = new Rectangle(area.X, gr.Bottom + gap, area.Width, bandH);
-
-        int maxPts = Math.Max(20, gr.Width / (int)Math.Max(2, 3 * k));
-        var (data, idx) = Compress(Smooth(raw, 5), maxPts);
-
-        // Skala (nur in Stufen ändern, damit nichts springt)
+        // ----- Skala: in 10er-Stufen, ändert sich nur, wenn Werte herauslaufen oder viel Platz frei ist -----
         float lo, hi;
         string type = Sensor.SensorType.ToString();
         if (type is "Load" or "Control" or "Level" or "Humidity") { lo = 0; hi = 100; }
-        else if (IsTemp)
-        {
-            float dMin = data.Min(), dMax = data.Max();
-            lo = (float)Math.Floor((dMin - 2) / 10f) * 10f;
-            hi = (float)Math.Ceiling((dMax + 2) / 10f) * 10f;
-            if (lo < 0 && dMin >= 0) lo = 0;
-            if (hi - lo < 20) hi = lo + 20;
-        }
         else
         {
             float dMin = data.Min(), dMax = data.Max();
-            float pad = Math.Max((dMax - dMin) * 0.15f, Math.Abs(dMax) * 0.02f + 0.001f);
-            lo = dMin - pad; hi = dMax + pad;
-            if (lo < 0 && dMin >= 0) lo = 0;
+            float needLo, needHi;
+            if (IsTemp)
+            {
+                needLo = (float)Math.Floor((dMin - 3) / 10f) * 10f;
+                needHi = (float)Math.Ceiling((dMax + 3) / 10f) * 10f;
+                if (needLo < 0 && dMin >= 0) needLo = 0;
+                if (needHi - needLo < 20) needHi = needLo + 20;
+            }
+            else
+            {
+                float pad = Math.Max((dMax - dMin) * 0.2f, Math.Abs(dMax) * 0.03f + 0.001f);
+                needLo = dMin - pad; needHi = dMax + pad;
+                if (needLo < 0 && dMin >= 0) needLo = 0;
+            }
+            bool outside = _lo is null || dMin < _lo || dMax > _hi;
+            bool tooLoose = _lo is float l0 && _hi is float h0 && (h0 - l0) > (needHi - needLo) * 1.8f;
+            if (outside || tooLoose) { _lo = needLo; _hi = needHi; }
+            lo = _lo!.Value; hi = _hi!.Value;
         }
 
-        // dezente Hilfslinien + Skalenwerte am rechten Rand
-        using (var gridPen = new Pen(Theme.Grid) { DashStyle = DashStyle.Dot })
+        // ----- Hilfslinien -----
+        using (var gridPen = new Pen(Color.FromArgb(70, Theme.Grid)) { DashStyle = DashStyle.Dot })
         {
             g.DrawLine(gridPen, gr.Left, gr.Top, gr.Right, gr.Top);
             g.DrawLine(gridPen, gr.Left, gr.Top + gr.Height / 2f, gr.Right, gr.Top + gr.Height / 2f);
-            g.DrawLine(gridPen, gr.Left, gr.Bottom, gr.Right, gr.Bottom);
         }
-        if (IsTemp)
-        {
-            var f = TextFormatFlags.Left | TextFormatFlags.NoPadding;
-            TextRenderer.DrawText(g, $"{hi:0}°", TinyFont, new Point(gr.Left + 2, gr.Top + 1), Theme.Muted, f);
-            TextRenderer.DrawText(g, $"{lo:0}°", TinyFont, new Point(gr.Left + 2, gr.Bottom - (int)(13 * k)), Theme.Muted, f);
-        }
+        using (var basePen = new Pen(Theme.Grid))
+            g.DrawLine(basePen, gr.Left, gr.Bottom, gr.Right, gr.Bottom);
 
         float dx = gr.Width / (float)(HistoryStore.MaxPoints - 1);
-        float X(int i, int len) => gr.Right - (len - 1 - i) * dx;
 
+        // ----- Auslastung: ruhige Fläche im Hintergrund (0–100 % der Höhe) -----
+        var (loadRaw, loadTotal) = _hist.GetWithTotal(Load);
+        if (loadRaw.Length >= 2)
+        {
+            var (ld, lpos) = Bucket(Smooth(loadRaw, 8), loadTotal, step);
+            var lp = new List<PointF>(ld.Length + 2);
+            for (int i = 0; i < ld.Length; i++)
+                lp.Add(new PointF(gr.Right - (loadRaw.Length - 1 - lpos[i]) * dx,
+                                  gr.Bottom - Math.Clamp(ld[i], 0, 100) / 100f * gr.Height));
+            if (lp.Count >= 2)
+            {
+                using var path = new GraphicsPath();
+                path.AddLines(lp.ToArray());
+                path.AddLine(lp[^1].X, lp[^1].Y, lp[^1].X, gr.Bottom);
+                path.AddLine(lp[^1].X, gr.Bottom, lp[0].X, gr.Bottom);
+                path.CloseFigure();
+                using (var lf = new SolidBrush(Color.FromArgb(34, Theme.Accent))) g.FillPath(lf, path);
+                using var edge = new Pen(Color.FromArgb(80, Theme.Accent), 1f * k) { LineJoin = LineJoin.Round };
+                g.DrawLines(edge, lp.ToArray());
+            }
+        }
+
+        // ----- Wert als Linie davor -----
         var pts = new PointF[data.Length];
         for (int i = 0; i < data.Length; i++)
-            pts[i] = new PointF(X(idx[i], raw.Length),
+            pts[i] = new PointF(gr.Right - (raw.Length - 1 - pos[i]) * dx,
                                 gr.Bottom - Math.Clamp((data[i] - lo) / (hi - lo), 0, 1) * gr.Height);
 
         if (pts.Length >= 2)
         {
-            using var path = new GraphicsPath();
-            path.AddCurve(pts, 0.4f);
-            using (var fillPath = (GraphicsPath)path.Clone())
+            using var line = new GraphicsPath();
+            line.AddCurve(pts, 0.35f);
+            using (var fillPath = (GraphicsPath)line.Clone())
             {
                 fillPath.AddLine(pts[^1].X, pts[^1].Y, pts[^1].X, gr.Bottom);
                 fillPath.AddLine(pts[^1].X, gr.Bottom, pts[0].X, gr.Bottom);
                 fillPath.CloseFigure();
                 using var fill = new LinearGradientBrush(new Rectangle(gr.X, gr.Y - 1, gr.Width, gr.Height + 2),
-                    Color.FromArgb(70, col), Color.FromArgb(4, col), LinearGradientMode.Vertical);
+                    Color.FromArgb(55, col), Color.FromArgb(0, col), LinearGradientMode.Vertical);
                 g.FillPath(fill, fillPath);
             }
-            using var line = new Pen(col, 2f * k) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
-            g.DrawPath(line, path);
+            using var pen = new Pen(col, 2f * k) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
+            g.DrawPath(pen, line);
         }
         var p = pts[^1];
         using (var dot = new SolidBrush(col))
             g.FillEllipse(dot, p.X - 3.5f * k, p.Y - 3.5f * k, 7f * k, 7f * k);
 
-        // Lastband: eigene Fläche 0–100 %, klar getrennt von der Temperatur
-        if (hasLoad)
+        // ----- Skala-Werte, klein in der Ecke -----
+        if (IsTemp)
         {
-            using (var bg = new SolidBrush(Color.FromArgb(18, Theme.Accent)))
-                g.FillRectangle(bg, band);
-            var (ld, lidx) = Compress(Smooth(loadRaw, 5), maxPts);
-            var lp = new List<PointF>(ld.Length + 2);
-            for (int i = 0; i < ld.Length; i++)
-                lp.Add(new PointF(X(lidx[i], loadRaw.Length), band.Bottom - Math.Clamp(ld[i], 0, 100) / 100f * band.Height));
-            if (lp.Count >= 2)
-            {
-                var poly = new List<PointF>(lp) { new(lp[^1].X, band.Bottom), new(lp[0].X, band.Bottom) };
-                using (var lf = new SolidBrush(Color.FromArgb(70, Theme.Accent)))
-                    g.FillPolygon(lf, poly.ToArray());
-                using var lpen = new Pen(Color.FromArgb(170, Theme.Accent), 1.2f * k) { LineJoin = LineJoin.Round };
-                g.DrawLines(lpen, lp.ToArray());
-            }
+            var f = TextFormatFlags.Left | TextFormatFlags.NoPadding;
+            TextRenderer.DrawText(g, $"{hi:0}°", TinyFont, new Point(gr.Left + 2, gr.Top + 2), Theme.Muted, f);
+            TextRenderer.DrawText(g, $"{lo:0}°", TinyFont, new Point(gr.Left + 2, gr.Bottom - (int)(14 * k)), Theme.Muted, f);
         }
     }
 }
