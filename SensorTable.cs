@@ -298,7 +298,7 @@ sealed class SensorTable : Control
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
                  ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
         BackColor = Theme.Background;
-        new ToolTip().SetToolTip(this, "Gruppe anklicken: auf-/zuklappen · Doppelklick auf einen Wert: Min/Max zurücksetzen");
+        new ToolTip().SetToolTip(this, "Kopfzeile: alle auf-/zuklappen · Gruppe anklicken: auf-/zuklappen · Rechtsklick auf einen Wert: ausblenden, anheften, Min/Max zurücksetzen");
     }
 
     public int SensorCount => _groups.Sum(g => g.Sensors.Count);
@@ -336,9 +336,26 @@ sealed class SensorTable : Control
         return null;
     }
 
+    bool AnyExpanded => _groups.Any(g => g.Expanded);
+
     protected override void OnMouseClick(MouseEventArgs e)
     {
         base.OnMouseClick(e);
+        if (e.Button == MouseButtons.Left && e.Y < RowH)
+        {
+            bool expand = !AnyExpanded;
+            foreach (var g in _groups)
+            {
+                g.Expanded = expand;
+                UiState.Instance.Expanded[g.Key] = expand;
+            }
+            UiState.Instance.Save();
+            Parent?.SuspendLayout();
+            UpdateHeight();
+            Parent?.ResumeLayout();
+            Invalidate();
+            return;
+        }
         if (RowAt(e.Y) is { S: null } row)
         {
             row.G.Expanded = !row.G.Expanded;
@@ -380,7 +397,7 @@ sealed class SensorTable : Control
         base.OnMouseMove(e);
         int r = e.Y / RowH;
         if (r != _hoverRow) { _hoverRow = r; Invalidate(); }
-        Cursor = RowAt(e.Y) is { S: null } ? Cursors.Hand : Cursors.Default;
+        Cursor = e.Y < RowH || RowAt(e.Y) is { S: null } ? Cursors.Hand : Cursors.Default;
     }
 
     protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); _hoverRow = -1; Invalidate(); }
@@ -414,7 +431,16 @@ sealed class SensorTable : Control
         const TextFormatFlags R = TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
 
         // Spaltenkopf
-        TextRenderer.DrawText(g, "Sensor", HeadFont, new Rectangle(pad, 0, nameW, rh), Theme.Muted, L);
+        {
+            bool open = AnyExpanded;
+            float cx = pad + 4 * k, cy = rh / 2f, sz = 4.5f * k;
+            var tri = open
+                ? new[] { new PointF(cx - sz, cy - sz / 2), new PointF(cx + sz, cy - sz / 2), new PointF(cx, cy + sz * 0.8f) }
+                : new[] { new PointF(cx - sz / 2, cy - sz), new PointF(cx - sz / 2, cy + sz), new PointF(cx + sz * 0.8f, cy) };
+            using (var b = new SolidBrush(_hoverRow == 0 ? Theme.Text : Theme.Muted)) g.FillPolygon(b, tri);
+            TextRenderer.DrawText(g, open ? "Sensor  ·  alle zuklappen" : "Sensor  ·  alle aufklappen", HeadFont,
+                new Rectangle(pad + (int)(16 * k), 0, nameW, rh), _hoverRow == 0 ? Theme.Text : Theme.Muted, L);
+        }
         TextRenderer.DrawText(g, "Wert", HeadFont, new Rectangle(xVal, 0, colW, rh), Theme.Muted, R);
         TextRenderer.DrawText(g, "Min", HeadFont, new Rectangle(xMin, 0, colW, rh), Theme.Muted, R);
         TextRenderer.DrawText(g, "Max", HeadFont, new Rectangle(xMax, 0, colW, rh), Theme.Muted, R);
