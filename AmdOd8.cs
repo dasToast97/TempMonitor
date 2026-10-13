@@ -55,6 +55,12 @@ sealed class AmdOd8Fan : IDisposable
     static extern int ADL2_Overdrive8_Current_SettingX2_Get(IntPtr context, int adapterIndex, ref int numberOfFeatures, ref IntPtr currentSettingList);
 
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    static extern int ADL2_Overdrive8_Init_Setting_Get(IntPtr context, int adapterIndex, IntPtr initSetting);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    static extern int ADL2_Overdrive8_Current_Setting_Get(IntPtr context, int adapterIndex, IntPtr currentSetting);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
     static extern int ADL2_Overdrive8_Setting_Set(IntPtr context, int adapterIndex, IntPtr setSetting, IntPtr currentSetting);
 
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
@@ -211,26 +217,64 @@ sealed class AmdOd8Fan : IDisposable
         if (rc != ADL_OK) { why = $"Overdrive-Abfrage fehlgeschlagen (Code {rc})"; return null; }
         if (version != 8) { why = $"Overdrive-Version {version} statt 8"; return null; }
 
-        int caps = 0, n = 0;
+        int caps = 0;
+        int[]? min = null, max = null;
+
+        // a) neuere Abfrage – die Anzahl muss wie im AMD-Beispiel vorbelegt sein
+        int n = OD8_COUNT;
         IntPtr list = IntPtr.Zero;
-        rc = ADL2_Overdrive8_Init_SettingX2_Get(ctx, adapter, ref caps, ref n, ref list);
+        try { rc = ADL2_Overdrive8_Init_SettingX2_Get(ctx, adapter, ref caps, ref n, ref list); }
+        catch (EntryPointNotFoundException) { rc = -8; }
         log.AppendLine($"[{adapter}] Init_SettingX2 = {rc}, Merkmale {n}, Fähigkeiten 0x{caps:X}");
-        if (rc != ADL_OK || list == IntPtr.Zero || n <= OD8_FAN_CURVE_SPEED_5)
+        if (rc == ADL_OK && list != IntPtr.Zero && n > OD8_FAN_CURVE_SPEED_5)
         {
-            if (list != IntPtr.Zero) Marshal.FreeHGlobal(list);
-            why = $"Overdrive-8-Grenzwerte nicht lesbar (Code {rc}, {n} Merkmale)";
+            min = new int[n];
+            max = new int[n];
+            for (int i = 0; i < n; i++)
+            {
+                // ADLOD8SingleInitSetting { featureID, minValue, maxValue, defaultValue } = 16 Byte
+                IntPtr p = list + i * 16;
+                min[i] = Marshal.ReadInt32(p, 4);
+                max[i] = Marshal.ReadInt32(p, 8);
+            }
+        }
+        if (list != IntPtr.Zero) Marshal.FreeHGlobal(list);
+
+        // b) Ausweichweg: ältere Abfrage mit fester Tabelle
+        if (min == null)
+        {
+            // ADLOD8InitSetting { int count; int capabilities; ADLOD8SingleInitSetting[OD8_COUNT] }
+            int size = 8 + OD8_COUNT * 16;
+            IntPtr buf = Marshal.AllocHGlobal(size);
+            try
+            {
+                for (int i = 0; i < size; i += 4) Marshal.WriteInt32(buf, i, 0);
+                Marshal.WriteInt32(buf, 0, OD8_COUNT);
+                try { rc = ADL2_Overdrive8_Init_Setting_Get(ctx, adapter, buf); }
+                catch (EntryPointNotFoundException) { rc = -8; }
+                int cnt = Math.Min(Marshal.ReadInt32(buf, 0), OD8_COUNT);
+                log.AppendLine($"[{adapter}] Init_Setting (alt) = {rc}, Merkmale {cnt}, Fähigkeiten 0x{Marshal.ReadInt32(buf, 4):X}");
+                if (rc == ADL_OK && cnt > OD8_FAN_CURVE_SPEED_5)
+                {
+                    caps = Marshal.ReadInt32(buf, 4);
+                    min = new int[cnt];
+                    max = new int[cnt];
+                    for (int i = 0; i < cnt; i++)
+                    {
+                        IntPtr p = buf + 8 + i * 16;
+                        min[i] = Marshal.ReadInt32(p, 4);
+                        max[i] = Marshal.ReadInt32(p, 8);
+                    }
+                }
+            }
+            finally { Marshal.FreeHGlobal(buf); }
+        }
+
+        if (min == null || max == null)
+        {
+            why = $"Overdrive-8-Grenzwerte nicht lesbar (Code {rc})";
             return null;
         }
-        var min = new int[n];
-        var max = new int[n];
-        for (int i = 0; i < n; i++)
-        {
-            // ADLOD8SingleInitSetting { featureID, minValue, maxValue, defaultValue } = 16 Byte
-            IntPtr p = list + i * 16;
-            min[i] = Marshal.ReadInt32(p, 4);
-            max[i] = Marshal.ReadInt32(p, 8);
-        }
-        Marshal.FreeHGlobal(list);
         log.AppendLine($"[{adapter}] Kurve Temp {min[OD8_FAN_CURVE_TEMPERATURE_1]}–{max[OD8_FAN_CURVE_TEMPERATURE_1]} °C, Drehzahl {min[OD8_FAN_CURVE_TEMPERATURE_1 + 1]}–{max[OD8_FAN_CURVE_TEMPERATURE_1 + 1]} %");
 
         if ((caps & ADL_OD8_FAN_CURVE) == 0) { why = "Karte meldet keine Lüfterkurve (Overdrive 8)"; return null; }
@@ -250,17 +294,37 @@ sealed class AmdOd8Fan : IDisposable
 
     static int[]? ReadCurrent(IntPtr ctx, int adapter)
     {
-        int n = 0;
+        // a) neuere Abfrage (Anzahl vorbelegt wie im AMD-Beispiel)
+        int n = OD8_COUNT;
         IntPtr list = IntPtr.Zero;
-        if (ADL2_Overdrive8_Current_SettingX2_Get(ctx, adapter, ref n, ref list) != ADL_OK || list == IntPtr.Zero)
+        int rc;
+        try { rc = ADL2_Overdrive8_Current_SettingX2_Get(ctx, adapter, ref n, ref list); }
+        catch (EntryPointNotFoundException) { rc = -8; }
+        if (rc == ADL_OK && list != IntPtr.Zero && n > 0)
         {
-            if (list != IntPtr.Zero) Marshal.FreeHGlobal(list);
-            return null;
+            var r = new int[n];
+            Marshal.Copy(list, r, 0, n);
+            Marshal.FreeHGlobal(list);
+            return r;
         }
-        var r = new int[n];
-        Marshal.Copy(list, r, 0, n);
-        Marshal.FreeHGlobal(list);
-        return r;
+        if (list != IntPtr.Zero) Marshal.FreeHGlobal(list);
+
+        // b) Ausweichweg: ADLOD8CurrentSetting { int count; int[OD8_COUNT] }
+        int size = 4 + OD8_COUNT * 4;
+        IntPtr buf = Marshal.AllocHGlobal(size);
+        try
+        {
+            for (int i = 0; i < size; i += 4) Marshal.WriteInt32(buf, i, 0);
+            Marshal.WriteInt32(buf, 0, OD8_COUNT);
+            try { rc = ADL2_Overdrive8_Current_Setting_Get(ctx, adapter, buf); }
+            catch (EntryPointNotFoundException) { return null; }
+            if (rc != ADL_OK) return null;
+            int cnt = Math.Clamp(Marshal.ReadInt32(buf, 0), 0, OD8_COUNT);
+            var r = new int[cnt];
+            Marshal.Copy(buf + 4, r, 0, cnt);
+            return r;
+        }
+        finally { Marshal.FreeHGlobal(buf); }
     }
 
     /// Ein Satz Änderungen: (Kennung, Wert)
