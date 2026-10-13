@@ -11,6 +11,28 @@ für jeden Sensor einen Verlaufsgraphen der letzten 5 Minuten zeigt.
 - **Eingebauter Updater**: sucht beim Start nach neuen GitHub Releases, fragt nach
   („Jetzt aktualisieren“ / „Später“ / „Diese Version überspringen“) und installiert sich selbst neu
 
+### Lüftersteuerung (Reiter „Lüfter“)
+
+| Profil | Was es macht |
+|---|---|
+| Standard (BIOS) | Programm greift nicht ein |
+| Energiesparend | Smart-Automatik, Ziel CPU ~78 °C, so leise wie möglich |
+| Ausgewogen | Smart-Automatik, Ziel CPU ~68 °C |
+| Leistung | Smart-Automatik, Ziel CPU ~58 °C |
+| Maximale Kühlung | Alle Lüfter 100 % |
+| Eigene Kurve | Kurve pro Lüfter mit der Maus ziehen |
+
+Die **Smart-Automatik** lernt, welche Drehzahl bei welcher Auslastung die Zieltemperatur hält,
+reagiert dadurch schon beim Lastanstieg und passt ihre Reaktionsstärke selbst an (kein Auf- und Abheulen).
+Das Gelernte wird in `%AppData%\TempMonitor\fans.json` gespeichert.
+
+**Sicherheit:** ab 90 °C CPU / 85 °C GPU sofort 100 % · nie unter die Mindestdrehzahl · Lüfter, die trotz
+Befehl stehen bleiben, gehen zurück ans BIOS · beim Beenden oder Absturz übernimmt wieder das BIOS.
+Bei aktiver Steuerung läuft das Programm beim Schließen im Infobereich weiter.
+
+Mainboard-Lüfter brauchen den Treiber **PawnIO**. Hersteller-Tools (Armoury Crate, MSI Center, iCUE …)
+sollten nicht gleichzeitig die Lüfter steuern.
+
 Sensoren kommen aus [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor).
 
 ## Benutzen

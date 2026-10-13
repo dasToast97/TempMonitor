@@ -46,7 +46,7 @@ Name: "german"; MessagesFile: "compiler:Languages\German.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Verknüpfung auf dem Desktop erstellen"; GroupDescription: "Zusätzliche Verknüpfungen:"
-Name: "autostart"; Description: "Beim Windows-Start automatisch öffnen"; GroupDescription: "Zusätzliche Optionen:"; Flags: unchecked
+Name: "autostart"; Description: "Beim Windows-Start im Infobereich starten (nötig, damit die Lüftersteuerung immer aktiv ist)"; GroupDescription: "Zusätzliche Optionen:"; Flags: unchecked
 
 [Files]
 Source: "..\publish\{#MyAppExe}"; DestDir: "{app}"; Flags: ignoreversion
@@ -56,12 +56,16 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"
 Name: "{group}\{#MyAppName} deinstallieren"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Tasks: desktopicon
 
-[Registry]
-; Autostart: über die Aufgabenplanung wäre ohne UAC-Abfrage, aber das hier ist einfacher und transparent
-Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "TempMonitor"; ValueData: """{app}\{#MyAppExe}"""; Flags: uninsdeletevalue; Tasks: autostart
-
 [Run]
+; Autostart über die Aufgabenplanung: startet mit Adminrechten ohne UAC-Abfrage bei der Anmeldung
+Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /TN ""TempMonitor"" /TR ""\""{app}\{#MyAppExe}\"" /tray"" /SC ONLOGON /RL HIGHEST"; Flags: runhidden; Tasks: autostart
+; Kein 72-Stunden-Zeitlimit, auch im Akkubetrieb laufen lassen
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; Set-ScheduledTask -TaskName 'TempMonitor' -Settings $s"""; Flags: runhidden; Tasks: autostart
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""TempMonitor"""; Flags: runhidden; Tasks: not autostart
 ; Nach normaler Installation: Häkchen "Programm starten"
 Filename: "{app}\{#MyAppExe}"; Description: "Temperatur-Monitor jetzt starten"; Flags: nowait postinstall skipifsilent shellexec
 ; Nach automatischem Update (stille Installation): direkt wieder starten
 Filename: "{app}\{#MyAppExe}"; Flags: nowait shellexec; Check: WizardSilent
+
+[UninstallRun]
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""TempMonitor"""; Flags: runhidden; RunOnceId: "DelTask"

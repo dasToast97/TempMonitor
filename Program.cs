@@ -6,15 +6,27 @@ namespace TempMonitor;
 
 static class Program
 {
+    /// Mit "/tray" gestartet (z. B. per Autostart): direkt unsichtbar im Infobereich
+    public static bool StartInTray { get; private set; }
+
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
         // Nur eine Instanz gleichzeitig (wichtig auch für den Updater)
         using var mutex = new Mutex(true, "TempMonitor_SingleInstance", out bool first);
         if (!first) return;
 
+        StartInTray = args.Any(a => a.Equals("/tray", StringComparison.OrdinalIgnoreCase));
+
         ApplicationConfiguration.Initialize();
-        Application.Run(new MainForm());
+        var form = new MainForm();
+
+        // Egal wie das Programm endet: Lüfter zurück an das BIOS geben
+        Application.ThreadException += (_, e) => { form.EmergencyRestore(); MessageBox.Show(e.Exception.Message, "Fehler"); };
+        AppDomain.CurrentDomain.UnhandledException += (_, _) => form.EmergencyRestore();
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => form.EmergencyRestore();
+
+        Application.Run(form);
     }
 }
 
@@ -90,6 +102,13 @@ sealed class MainForm : Form
     readonly List<(ISensor Sensor, SensorCard Card)> _cards = new();
     readonly List<Control> _fullWidth = new();
     bool _busy;
+
+    FanController? _fans;
+    FanView? _fanView;
+    readonly NotifyIcon _tray;
+    readonly TabButton _tempTab, _fanTab;
+    readonly List<(string Short, ISensor Sensor)> _heroes = new();
+    bool _exiting, _shownOnce, _loaded;
 
     float K => DeviceDpi / 96f;
 
@@ -190,14 +209,41 @@ sealed class MainForm : Form
         };
         _flow.Controls.Add(loading);
 
+        // ---------- Reiter ----------
+        var nav = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = (int)(44 * K),
+            BackColor = Theme.Header,
+            Padding = new Padding((int)(14 * K), 0, 0, 0),
+        };
+        _fanTab = new TabButton("Lüfter") { Dock = DockStyle.Left, Width = (int)(130 * K) };
+        _tempTab = new TabButton("Temperaturen") { Dock = DockStyle.Left, Width = (int)(150 * K), Selected = true };
+        _tempTab.Click += (_, _) => ShowTab(false);
+        _fanTab.Click += (_, _) => ShowTab(true);
+        nav.Controls.Add(_fanTab);   // Dock Left: zuletzt hinzugefügt steht ganz links
+        nav.Controls.Add(_tempTab);
+
+        // ---------- Symbol im Infobereich ----------
+        _tray = new NotifyIcon
+        {
+            Icon = Icon ?? SystemIcons.Application,
+            Text = "Temperatur-Monitor",
+            Visible = true,
+        };
+        _tray.DoubleClick += (_, _) => RestoreFromTray();
+
         Controls.Add(_flow);
         Controls.Add(bottom);
+        Controls.Add(nav);
         Controls.Add(top);
     }
 
     protected override async void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
+        if (_loaded) return;   // kann beim Start mit /tray früh aufgerufen werden
+        _loaded = true;
         try
         {
             await Task.Run(() =>
@@ -213,6 +259,25 @@ sealed class MainForm : Form
         }
 
         BuildUi();
+
+        // Lüftersteuerung
+        try
+        {
+            _fans = new FanController(FanSettings.Load());
+            _fans.Discover(_computer);
+            _fanView = new FanView(_fans) { Dock = DockStyle.Fill, Visible = false };
+            _fanView.ProfileChanged += UpdateTrayMenu;
+            Controls.Add(_fanView);
+            _fanView.BringToFront();
+            _fanTab.Text = _fans.Channels.Count > 0 ? $"Lüfter ({_fans.Channels.Count})" : "Lüfter";
+        }
+        catch (Exception ex)
+        {
+            _fans = null;
+            _status.Text = "Lüftersteuerung nicht verfügbar: " + ex.Message;
+        }
+        UpdateTrayMenu();
+
         _timer.Tick += async (_, _) => await RefreshAsync();
         _timer.Start();
 
@@ -220,20 +285,123 @@ sealed class MainForm : Form
         await Updater.CheckAsync(this, manual: false);
     }
 
+    // ---------------------------------------------------------------------
+    // Reiter, Infobereich (Tray), Beenden
+    // ---------------------------------------------------------------------
+    void ShowTab(bool fans)
+    {
+        _tempTab.Selected = !fans;
+        _fanTab.Selected = fans;
+        if (fans && _fanView != null)
+        {
+            _fanView.Visible = true;
+            _flow.Visible = false;
+            _fanView.RefreshValues();
+        }
+        else
+        {
+            _flow.Visible = true;
+            if (_fanView != null) _fanView.Visible = false;
+        }
+    }
+
+    void UpdateTrayMenu()
+    {
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("Öffnen", null, (_, _) => RestoreFromTray());
+        if (_fans != null && _fans.Channels.Count > 0)
+        {
+            menu.Items.Add(new ToolStripSeparator());
+            foreach (var p in Profiles.All)
+            {
+                var item = new ToolStripMenuItem(p.Title) { Checked = _fans.Profile == p.Profile };
+                var prof = p.Profile;
+                item.Click += (_, _) => { RestoreFromTray(); _fanView?.SelectProfile(prof); };
+                menu.Items.Add(item);
+            }
+        }
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Beenden", null, (_, _) => { _exiting = true; Close(); });
+        var old = _tray.ContextMenuStrip;
+        _tray.ContextMenuStrip = menu;
+        old?.Dispose();
+    }
+
+    void RestoreFromTray()
+    {
+        Show();
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        Activate();
+    }
+
+    protected override void SetVisibleCore(bool value)
+    {
+        // Beim Start mit /tray das Fenster gar nicht erst zeigen
+        if (Program.StartInTray && !_shownOnce)
+        {
+            _shownOnce = true;
+            if (!IsHandleCreated) CreateHandle();
+            OnLoad(EventArgs.Empty);
+            base.SetVisibleCore(false);
+            return;
+        }
+        _shownOnce = true;
+        base.SetVisibleCore(value);
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        // Minimieren -> in den Infobereich, damit die Lüftersteuerung weiterläuft
+        if (WindowState == FormWindowState.Minimized && _fans != null && _fans.Profile != FanProfile.Bios)
+        {
+            Hide();
+            if (!_fans.Settings.TrayHintShown)
+            {
+                _tray.ShowBalloonTip(4000, "Läuft weiter",
+                    "Die Lüftersteuerung läuft im Infobereich weiter. Doppelklick auf das Symbol öffnet das Fenster.",
+                    ToolTipIcon.Info);
+                _fans.Settings.TrayHintShown = true;
+                _fans.Save();
+            }
+        }
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        // Schließen-Knopf bei aktiver Lüftersteuerung = in den Infobereich
+        if (!_exiting && e.CloseReason == CloseReason.UserClosing && _fans != null && _fans.Profile != FanProfile.Bios)
+        {
+            e.Cancel = true;
+            WindowState = FormWindowState.Minimized;
+            return;
+        }
+        base.OnFormClosing(e);
+    }
+
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         _timer.Stop();
+        EmergencyRestore();
+        _tray.Visible = false;
+        _tray.Dispose();
         try { _computer.Close(); } catch { }
         base.OnFormClosed(e);
+    }
+
+    /// Lüfter sofort zurück an BIOS / Treiber geben
+    public void EmergencyRestore()
+    {
+        try { _fans?.RestoreAll(); } catch { }
     }
 
     // ---------------------------------------------------------------------
     // Sensor-Auswahl
     // ---------------------------------------------------------------------
-    static IEnumerable<ISensor> AllSensors(IHardware hw) =>
+    internal static IEnumerable<ISensor> AllSensors(IHardware hw) =>
         hw.Sensors.Concat(hw.SubHardware.SelectMany(AllSensors));
 
-    static bool IsUsefulTemp(ISensor s) =>
+    internal static bool IsUsefulTemp(ISensor s) =>
         s.SensorType == SensorType.Temperature
         && s.Value is float v && v > 1 && v < 125
         && !s.Name.Contains("Distance", StringComparison.OrdinalIgnoreCase)
@@ -263,7 +431,7 @@ sealed class MainForm : Form
     };
 
     /// Der "wichtigste" Sensor eines Bauteils für die Übersicht
-    static ISensor PickMain(IHardware hw, List<ISensor> s)
+    internal static ISensor PickMain(IHardware hw, List<ISensor> s)
     {
         string[] prefs = hw.HardwareType switch
         {
@@ -323,6 +491,11 @@ sealed class MainForm : Form
             var hero = new SensorCard(cat.Key, g.Hw.Name, Theme.ForCategory(cat.Key), big: true);
             hero.Push(main.Value);
             _cards.Add((main, hero));
+            _heroes.Add((cat.Key switch
+            {
+                "Prozessor" => "CPU", "Grafikkarte" => "GPU", "Mainboard" => "Board",
+                "Laufwerk" => "SSD", "Arbeitsspeicher" => "RAM", _ => cat.Key,
+            }, main));
             _flow.Controls.Add(hero);
             lastHero = hero;
         }
@@ -376,9 +549,31 @@ sealed class MainForm : Form
         _busy = true;
         try
         {
-            await Task.Run(() => _computer.Accept(_visitor));
-            foreach (var (sensor, card) in _cards) card.Push(sensor.Value);
-            _status.Text = $"Live · aktualisiert {DateTime.Now:HH:mm:ss}";
+            var fans = _fans;
+            await Task.Run(() =>
+            {
+                _computer.Accept(_visitor);
+                fans?.Tick();
+            });
+
+            if (Visible)
+            {
+                foreach (var (sensor, card) in _cards) card.Push(sensor.Value);
+                if (_fanView is { Visible: true }) _fanView.RefreshValues();
+            }
+            else
+            {
+                // Verlauf trotzdem weiterführen, nur nicht neu zeichnen
+                foreach (var (sensor, card) in _cards) card.PushSilent(sensor.Value);
+            }
+
+            string prof = fans != null && fans.Channels.Count > 0 ? $" · Lüfter: {Profiles.Get(fans.Profile).Title}" : "";
+            _status.Text = $"Live · {DateTime.Now:HH:mm:ss}{prof}";
+
+            // Tooltip im Infobereich: wichtigste Temperaturen
+            string tip = string.Join("  ", _heroes.Select(h => $"{h.Short} {h.Sensor.Value:0}°"));
+            tip = string.IsNullOrEmpty(tip) ? "Temperatur-Monitor" : tip;
+            _tray.Text = tip.Length > 63 ? tip[..63] : tip;
         }
         catch (Exception ex)
         {
@@ -424,6 +619,44 @@ sealed class SectionHeader : Control
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         using var line = new Pen(Theme.Border);
         g.DrawLine(line, 0, Height - 1, Width, Height - 1);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reiter oben ("Temperaturen" / "Lüfter")
+// ---------------------------------------------------------------------------
+sealed class TabButton : Control
+{
+    static readonly Font TabFont = new("Segoe UI Semibold", 10.5f);
+    bool _selected, _hover;
+    public bool Selected { get => _selected; set { _selected = value; Invalidate(); } }
+
+    public TabButton(string text)
+    {
+        Text = text;
+        Cursor = Cursors.Hand;
+        BackColor = Theme.Header;
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                 ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+    }
+
+    protected override void OnTextChanged(EventArgs e) { base.OnTextChanged(e); Invalidate(); }
+    protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { _hover = false; Invalidate(); base.OnMouseLeave(e); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        float k = DeviceDpi / 96f;
+        g.Clear(Theme.Header);
+        var col = _selected ? Theme.Text : _hover ? Theme.Text : Theme.Muted;
+        TextRenderer.DrawText(g, Text, TabFont, new Rectangle(0, 0, Width, Height - (int)(3 * k)), col,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        if (_selected)
+        {
+            using var b = new SolidBrush(Theme.Accent);
+            g.FillRectangle(b, (int)(12 * k), Height - (int)(3 * k), Width - (int)(24 * k), (int)(3 * k));
+        }
     }
 }
 
@@ -522,6 +755,19 @@ sealed class SensorCard : Control
         float k = DeviceDpi / 96f;
         Size = _big ? new Size((int)(292 * k), (int)(214 * k)) : new Size((int)(292 * k), (int)(168 * k));
         Margin = new Padding((int)(6 * k));
+    }
+
+    /// Wert in den Verlauf aufnehmen, ohne neu zu zeichnen (Fenster versteckt)
+    public void PushSilent(float? value)
+    {
+        _cur = value;
+        if (value is float v)
+        {
+            _hist.Add(v);
+            if (_hist.Count > MaxPoints) _hist.RemoveAt(0);
+            _min = Math.Min(_min, v);
+            _max = Math.Max(_max, v);
+        }
     }
 
     public void Push(float? value)
