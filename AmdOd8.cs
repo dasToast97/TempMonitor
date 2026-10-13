@@ -87,70 +87,165 @@ sealed class AmdOd8Fan : IDisposable
         _originalAutoDefault = autoDefault;
     }
 
-    /// Für eine AMD-Grafikkarte mit Overdrive 8 und Lüfterkurve – sonst null
+    // ---------- Adapter-Liste (für die Suche nach dem richtigen Adapter) ----------
+    const int ADL_MAX_PATH = 256;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+    struct ADLAdapterInfo
+    {
+        public int Size;
+        public int AdapterIndex;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = ADL_MAX_PATH)] public string UDID;
+        public int BusNumber;
+        public int DeviceNumber;
+        public int FunctionNumber;
+        public int VendorID;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = ADL_MAX_PATH)] public string AdapterName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = ADL_MAX_PATH)] public string DisplayName;
+        public int Present;
+        public int Exist;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = ADL_MAX_PATH)] public string DriverPath;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = ADL_MAX_PATH)] public string DriverPathExt;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = ADL_MAX_PATH)] public string PNPString;
+        public int OSDisplayIndex;
+    }
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    static extern int ADL2_Adapter_NumberOfAdapters_Get(IntPtr context, ref int numAdapters);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    static extern int ADL2_Adapter_AdapterInfo_Get(IntPtr context, IntPtr info, int size);
+
+    /// Ergebnis der letzten Einrichtung (für Anzeige und Diagnosedatei)
+    public static string LastInitInfo { get; private set; } = "";
+    public static readonly string LogFile = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "amd-od8.log");
+
+    /// Für eine AMD-Grafikkarte mit Overdrive 8 und Lüfterkurve – sonst null (Grund in LastInitInfo)
     public static AmdOd8Fan? TryCreate(IHardware gpu)
     {
-        if (gpu.HardwareType != HardwareType.GpuAmd) return null;
-        // Kennung der Bibliothek: "/gpu-amd/<ADL-Adapter-Nummer>"
-        string last = gpu.Identifier.ToString().TrimEnd('/').Split('/').Last();
-        if (!int.TryParse(last, out int adapter)) return null;
-
+        var log = new System.Text.StringBuilder();
+        log.AppendLine($"Toast Temperatur {Updater.CurrentVersion} · {DateTime.Now:dd.MM.yyyy HH:mm:ss}");
+        log.AppendLine($"GPU: {gpu.Name}  ({gpu.Identifier})");
+        string reason = "unbekannt";
+        AmdOd8Fan? result = null;
         IntPtr ctx = IntPtr.Zero;
+
         try
         {
-            if (ADL2_Main_Control_Create(Alloc, 1, ref ctx) != ADL_OK || ctx == IntPtr.Zero) return null;
+            if (gpu.HardwareType != HardwareType.GpuAmd) { reason = "keine AMD-Grafikkarte"; return null; }
 
-            int supported = 0, enabled = 0, version = 0;
-            if (ADL2_Overdrive_Caps(ctx, adapter, ref supported, ref enabled, ref version) != ADL_OK || version != 8)
+            int rc = ADL2_Main_Control_Create(Alloc, 1, ref ctx);
+            log.AppendLine($"ADL2_Main_Control_Create = {rc}");
+            if (rc != ADL_OK || ctx == IntPtr.Zero) { reason = $"AMD-Schnittstelle startet nicht (Code {rc})"; return null; }
+
+            // Kandidaten: zuerst die Nummer der Bibliothek, dann alle Adapter mit passendem Namen
+            var candidates = new List<int>();
+            string last = gpu.Identifier.ToString().TrimEnd('/').Split('/').Last();
+            if (int.TryParse(last, out int libIndex)) candidates.Add(libIndex);
+
+            int num = 0;
+            if (ADL2_Adapter_NumberOfAdapters_Get(ctx, ref num) == ADL_OK && num > 0 && num < 512)
             {
-                ADL2_Main_Control_Destroy(ctx);
-                return null;
+                int el = Marshal.SizeOf<ADLAdapterInfo>();
+                IntPtr buf = Marshal.AllocHGlobal(el * num);
+                try
+                {
+                    for (int i = 0; i < el * num; i += 4) Marshal.WriteInt32(buf, i, 0);
+                    if (ADL2_Adapter_AdapterInfo_Get(ctx, buf, el * num) == ADL_OK)
+                    {
+                        var same = new List<int>();
+                        var other = new List<int>();
+                        for (int i = 0; i < num; i++)
+                        {
+                            var info = Marshal.PtrToStructure<ADLAdapterInfo>(buf + i * el);
+                            log.AppendLine($"  Adapter {info.AdapterIndex}: \"{info.AdapterName?.Trim()}\" Bus {info.BusNumber} Present {info.Present}");
+                            if (info.BusNumber < 0) continue;
+                            bool nameMatch = !string.IsNullOrWhiteSpace(info.AdapterName)
+                                             && string.Equals(info.AdapterName.Trim(), gpu.Name.Trim(), StringComparison.OrdinalIgnoreCase);
+                            (nameMatch ? same : other).Add(info.AdapterIndex);
+                        }
+                        candidates.AddRange(same);
+                        candidates.AddRange(other);
+                    }
+                }
+                finally { Marshal.FreeHGlobal(buf); }
             }
+            candidates = candidates.Distinct().ToList();
+            log.AppendLine($"Kandidaten: {string.Join(", ", candidates)}");
 
-            // Grenzen + Fähigkeiten
-            int caps = 0, n = 0;
-            IntPtr list = IntPtr.Zero;
-            if (ADL2_Overdrive8_Init_SettingX2_Get(ctx, adapter, ref caps, ref n, ref list) != ADL_OK || list == IntPtr.Zero || n <= OD8_FAN_CURVE_SPEED_5)
+            foreach (int adapter in candidates)
             {
-                if (list != IntPtr.Zero) Marshal.FreeHGlobal(list);
-                ADL2_Main_Control_Destroy(ctx);
-                return null;
+                var r = Probe(ctx, adapter, log, out string why);
+                if (r != null) { result = r; reason = $"aktiv (Adapter {adapter})"; return result; }
+                reason = why;
             }
-            var min = new int[n];
-            var max = new int[n];
-            for (int i = 0; i < n; i++)
-            {
-                // ADLOD8SingleInitSetting { featureID, minValue, maxValue, defaultValue } = 16 Byte
-                IntPtr p = list + i * 16;
-                min[i] = Marshal.ReadInt32(p, 4);
-                max[i] = Marshal.ReadInt32(p, 8);
-            }
-            Marshal.FreeHGlobal(list);
-
-            if ((caps & ADL_OD8_FAN_CURVE) == 0)
-            {
-                ADL2_Main_Control_Destroy(ctx);
-                return null;
-            }
-
-            var current = ReadCurrent(ctx, adapter);
-            if (current == null || current.Length <= OD8_FAN_CURVE_SPEED_5)
-            {
-                ADL2_Main_Control_Destroy(ctx);
-                return null;
-            }
-
-            int autoDefault = 1;
-            try { ADL2_Adapter_RegValueInt_Get(ctx, adapter, 1, null, "IsAutoDefault", ref autoDefault); } catch { }
-
-            return new AmdOd8Fan(ctx, adapter, caps, min, max, current, autoDefault);
-        }
-        catch
-        {
-            // atiadlxx.dll fehlt (kein AMD-Treiber) oder Funktion unbekannt
-            try { if (ctx != IntPtr.Zero) ADL2_Main_Control_Destroy(ctx); } catch { }
             return null;
         }
+        catch (Exception ex)
+        {
+            reason = ex is DllNotFoundException ? "AMD-Treiber-Bibliothek nicht gefunden" : ex.GetType().Name + ": " + ex.Message;
+            log.AppendLine("Fehler: " + ex);
+            return null;
+        }
+        finally
+        {
+            if (result == null && ctx != IntPtr.Zero) { try { ADL2_Main_Control_Destroy(ctx); } catch { } }
+            LastInitInfo = reason;
+            log.AppendLine("Ergebnis: " + reason);
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(LogFile)!);
+                File.WriteAllText(LogFile, log.ToString());
+            }
+            catch { }
+        }
+    }
+
+    /// Prüft einen Adapter Schritt für Schritt; bei Erfolg gibt es die fertige Steuerung zurück
+    static AmdOd8Fan? Probe(IntPtr ctx, int adapter, System.Text.StringBuilder log, out string why)
+    {
+        int supported = 0, enabled = 0, version = 0;
+        int rc = ADL2_Overdrive_Caps(ctx, adapter, ref supported, ref enabled, ref version);
+        log.AppendLine($"[{adapter}] Overdrive_Caps = {rc}, supported {supported}, enabled {enabled}, version {version}");
+        if (rc != ADL_OK) { why = $"Overdrive-Abfrage fehlgeschlagen (Code {rc})"; return null; }
+        if (version != 8) { why = $"Overdrive-Version {version} statt 8"; return null; }
+
+        int caps = 0, n = 0;
+        IntPtr list = IntPtr.Zero;
+        rc = ADL2_Overdrive8_Init_SettingX2_Get(ctx, adapter, ref caps, ref n, ref list);
+        log.AppendLine($"[{adapter}] Init_SettingX2 = {rc}, Merkmale {n}, Fähigkeiten 0x{caps:X}");
+        if (rc != ADL_OK || list == IntPtr.Zero || n <= OD8_FAN_CURVE_SPEED_5)
+        {
+            if (list != IntPtr.Zero) Marshal.FreeHGlobal(list);
+            why = $"Overdrive-8-Grenzwerte nicht lesbar (Code {rc}, {n} Merkmale)";
+            return null;
+        }
+        var min = new int[n];
+        var max = new int[n];
+        for (int i = 0; i < n; i++)
+        {
+            // ADLOD8SingleInitSetting { featureID, minValue, maxValue, defaultValue } = 16 Byte
+            IntPtr p = list + i * 16;
+            min[i] = Marshal.ReadInt32(p, 4);
+            max[i] = Marshal.ReadInt32(p, 8);
+        }
+        Marshal.FreeHGlobal(list);
+        log.AppendLine($"[{adapter}] Kurve Temp {min[OD8_FAN_CURVE_TEMPERATURE_1]}–{max[OD8_FAN_CURVE_TEMPERATURE_1]} °C, Drehzahl {min[OD8_FAN_CURVE_TEMPERATURE_1 + 1]}–{max[OD8_FAN_CURVE_TEMPERATURE_1 + 1]} %");
+
+        if ((caps & ADL_OD8_FAN_CURVE) == 0) { why = "Karte meldet keine Lüfterkurve (Overdrive 8)"; return null; }
+
+        var current = ReadCurrent(ctx, adapter);
+        log.AppendLine($"[{adapter}] Current_SettingX2: {(current == null ? "fehlgeschlagen" : current.Length + " Werte")}");
+        if (current == null || current.Length <= OD8_FAN_CURVE_SPEED_5) { why = "aktuelle Overdrive-8-Werte nicht lesbar"; return null; }
+        log.AppendLine($"[{adapter}] Kurve jetzt: " + string.Join(" | ", Enumerable.Range(0, 5).Select(i =>
+            $"{current[OD8_FAN_CURVE_TEMPERATURE_1 + i * 2]}°→{current[OD8_FAN_CURVE_TEMPERATURE_1 + i * 2 + 1]}%")));
+
+        int autoDefault = 1;
+        try { ADL2_Adapter_RegValueInt_Get(ctx, adapter, 1, null, "IsAutoDefault", ref autoDefault); } catch { }
+
+        why = "ok";
+        return new AmdOd8Fan(ctx, adapter, caps, min, max, current, autoDefault);
     }
 
     static int[]? ReadCurrent(IntPtr ctx, int adapter)
@@ -191,6 +286,15 @@ sealed class AmdOd8Fan : IDisposable
             }
             int r = ADL2_Overdrive8_Setting_Set(_ctx, _adapter, set, cur);
             LastError = r == ADL_OK ? null : $"AMD-Treiber meldet Fehler {r}";
+            if (r != ADL_OK)
+            {
+                try
+                {
+                    File.AppendAllText(LogFile, $"{DateTime.Now:HH:mm:ss} Setting_Set [{_adapter}] = {r} für " +
+                        string.Join(", ", items.Select(i => $"{i.Id}={i.Value}")) + Environment.NewLine);
+                }
+                catch { }
+            }
             return r == ADL_OK;
         }
         catch (Exception ex)

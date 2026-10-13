@@ -705,6 +705,8 @@ sealed class DashboardView : FlowLayoutPanel
         BackColor = Theme.Background;
         Padding = new Padding(S(12), S(6), S(12), S(12));
         Resize += (_, _) => ResizeFull();
+        DarkMode.Use(this);
+        DarkMode.NoHorizontalScroll(this);
 
         var ui = UiState.Instance;
         if (!ui.TilesInitialized)
@@ -734,7 +736,7 @@ sealed class DashboardView : FlowLayoutPanel
 
     void ResizeFull()
     {
-        int w = Math.Max(100, ClientSize.Width - Padding.Horizontal - S(16));
+        int w = DarkMode.FullWidth(this, S(16));
         foreach (var c in _full) c.Width = w;
     }
 
@@ -979,6 +981,8 @@ sealed class ComponentPage : FlowLayoutPanel
         BackColor = Theme.Background;
         Padding = new Padding(S(12), S(6), S(12), S(12));
         Resize += (_, _) => ResizeFull();
+        DarkMode.Use(this);
+        DarkMode.NoHorizontalScroll(this);
         Build();
     }
 
@@ -991,7 +995,7 @@ sealed class ComponentPage : FlowLayoutPanel
 
     void ResizeFull()
     {
-        int w = Math.Max(100, ClientSize.Width - Padding.Horizontal - S(16));
+        int w = DarkMode.FullWidth(this, S(16));
         foreach (var c in _full) c.Width = w;
     }
 
@@ -1267,6 +1271,11 @@ sealed class CustomizeDialog : Form
         cancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
         AcceptButton = ok;
         CancelButton = cancel;
+
+        DarkMode.TitleBar(this);
+        DarkMode.Use(_tree);
+        DarkMode.Use(_list);
+        DarkMode.Use(_sections);
 
         BuildTree();
         RefreshList(-1);

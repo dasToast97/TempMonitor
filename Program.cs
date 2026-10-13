@@ -128,6 +128,7 @@ sealed class MainForm : Form
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
         Size = new Size((int)(1260 * K), (int)(880 * K));
         MinimumSize = new Size((int)(520 * K), (int)(360 * K));
+        DarkMode.TitleBar(this);
 
         // ---------- Kopfzeile ----------
         var top = new Panel

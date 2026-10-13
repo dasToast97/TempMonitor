@@ -201,3 +201,55 @@ static class SingleInstance
         t.Start();
     }
 }
+
+// ===========================================================================
+// Dunkles Windows-Design für Scrollbalken, Listen und Titelleiste
+// ===========================================================================
+static class DarkMode
+{
+    [System.Runtime.InteropServices.DllImport("uxtheme.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    static extern int SetWindowTheme(IntPtr hWnd, string pszSubAppName, string? pszSubIdList);
+
+    [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+    static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+    /// Scrollbalken / Listen eines Steuerelements dunkel darstellen
+    public static void Use(Control c)
+    {
+        void Apply() { try { SetWindowTheme(c.Handle, "DarkMode_Explorer", null); } catch { } }
+        if (c.IsHandleCreated) Apply();
+        c.HandleCreated += (_, _) => Apply();
+    }
+
+    /// Dunkle Titelleiste (Windows 10 ab 1809 / Windows 11)
+    public static void TitleBar(Form f)
+    {
+        void Apply()
+        {
+            try
+            {
+                int on = 1;
+                if (DwmSetWindowAttribute(f.Handle, 20, ref on, sizeof(int)) != 0)
+                    DwmSetWindowAttribute(f.Handle, 19, ref on, sizeof(int));
+            }
+            catch { }
+        }
+        if (f.IsHandleCreated) Apply();
+        f.HandleCreated += (_, _) => Apply();
+    }
+
+    /// Nur senkrecht scrollen – nie waagerecht
+    public static void NoHorizontalScroll(ScrollableControl p)
+    {
+        p.AutoScroll = false;
+        p.HorizontalScroll.Maximum = 0;
+        p.HorizontalScroll.Enabled = false;
+        p.HorizontalScroll.Visible = false;
+        p.AutoScroll = true;
+    }
+
+    /// Nutzbare Breite für Elemente über die ganze Breite (Platz für den Scrollbalken freihalten)
+    public static int FullWidth(ScrollableControl p, int extra) =>
+        Math.Max(100, p.ClientSize.Width - p.Padding.Horizontal - extra
+                      - (p.VerticalScroll.Visible ? 0 : SystemInformation.VerticalScrollBarWidth));
+}

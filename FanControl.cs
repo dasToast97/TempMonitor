@@ -216,6 +216,8 @@ sealed class FanChannel
     public required FanChannelSettings Cfg { get; init; }
     /// AMD RX 6000+: Steuerung über Overdrive 8 statt über die Bibliothek
     public AmdOd8Fan? Od8 { get; init; }
+    /// Warum Overdrive 8 nicht eingerichtet werden konnte (nur AMD)
+    public string? Od8Note { get; init; }
 
     public string DisplayName => string.IsNullOrWhiteSpace(Cfg.CustomName) ? DefaultName : Cfg.CustomName!;
 
@@ -386,14 +388,17 @@ sealed class FanController
 
             // AMD-Grafikkarten ab RX 6000: eigener Weg über Overdrive 8
             AmdOd8Fan? od8 = null;
+            string? od8Note = null;
             if (top.HardwareType == HardwareType.GpuAmd && !Channels.Any(c => c.Od8 != null && c.HardwareName == top.Name))
             {
                 try { od8 = AmdOd8Fan.TryCreate(top); } catch { od8 = null; }
+                od8Note = AmdOd8Fan.LastInitInfo;
             }
 
             var ch = new FanChannel
             {
                 Od8 = od8,
+                Od8Note = od8 == null ? od8Note : null,
                 Control = sensor.Control,
                 ControlSensor = sensor,
                 Rpm = rpm,
@@ -566,6 +571,8 @@ sealed class FanController
         {
             ch.Status = ch.Od8 != null
                 ? "Lässt sich nicht steuern – der AMD-Treiber nimmt die Lüfterkurve nicht an. „Erkennen“ testet erneut."
+                : ch.Od8Note != null
+                ? $"Lässt sich nicht steuern – AMD Overdrive 8: {ch.Od8Note}. Details: %AppData%\\TempMonitor\\amd-od8.log"
                 : ch.IsGpu
                 ? "Lässt sich nicht steuern – der Grafiktreiber regelt diesen Lüfter selbst. „Erkennen“ testet erneut."
                 : "Lässt sich nicht steuern – der Lüfter reagiert nicht auf Befehle. „Erkennen“ testet erneut.";

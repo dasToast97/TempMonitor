@@ -27,6 +27,8 @@ sealed class FanView : FlowLayoutPanel
         BackColor = Theme.Background;
         Padding = new Padding(S(12), S(6), S(12), S(12));
         Resize += (_, _) => ResizeFullWidth();
+        DarkMode.Use(this);
+        DarkMode.NoHorizontalScroll(this);
         Build();
     }
 
@@ -191,7 +193,7 @@ sealed class FanView : FlowLayoutPanel
 
     void ResizeFullWidth()
     {
-        int w = Math.Max(100, ClientSize.Width - Padding.Horizontal - S(16));
+        int w = DarkMode.FullWidth(this, S(16));
         foreach (var c in _fullWidth) c.Width = w;
     }
 
@@ -662,7 +664,7 @@ sealed class FanCard : Control
         const TextFormatFlags L = TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding;
         const TextFormatFlags R = TextFormatFlags.NoPrefix | TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
 
-        string sub = (pump ? "Pumpe" : "Lüfter") + " · " + _ch.HardwareName + (_ch.Od8 != null ? " · AMD Overdrive 8" : "") +
+        string sub = (pump ? "Pumpe" : "Lüfter") + " · " + _ch.HardwareName + (_ch.Od8 != null ? " · AMD Overdrive 8" : _ch.Od8Note != null ? " · Overdrive 8 nicht verfügbar" : "") +
                      (_ch.DisplayName != _ch.DefaultName ? $" · {_ch.DefaultName}" : "");
         TextRenderer.DrawText(g, sub, SmallFont, new Rectangle(S(48), S(40), Width - S(210), S(16)), Theme.Muted, L);
 
