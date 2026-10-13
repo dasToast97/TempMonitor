@@ -361,6 +361,13 @@ sealed class FanController
                 Cfg = cfg,
             };
 
+            // Lüfter der Grafikkarte kühlen nur die Grafikkarte
+            if (gpu)
+            {
+                cfg.UseGpu = true;
+                cfg.UseCpu = cfg.UseBoard = false;
+                cfg.SourcesInitialized = true;
+            }
             if (!cfg.SourcesInitialized)
             {
                 if (gpu) cfg.UseGpu = true;
@@ -492,7 +499,7 @@ sealed class FanController
 
         // ----- Für jedes gewählte Bauteil die nötige Leistung bestimmen, die höchste gewinnt -----
         var targets = _s.TargetsFor(prof.Profile);
-        float desired = -1;
+        float desired = float.MinValue;   // Smart-Werte dürfen auch unter 0 liegen (Bauteil sehr kühl)
         Component? driver = null;
         float? driverTemp = null;
         float driverTarget = 0;

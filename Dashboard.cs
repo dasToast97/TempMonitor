@@ -230,8 +230,8 @@ sealed class SensorTile : Control
             g.DrawPath(border, path);
         }
 
-        const TextFormatFlags L = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding;
-        const TextFormatFlags R = TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
+        const TextFormatFlags L = TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding;
+        const TextFormatFlags R = TextFormatFlags.NoPrefix | TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
 
         float? cur = Display();
         var valCol = cur is float c && IsTemp ? Theme.ForTemp(c) : Theme.Text;
@@ -263,7 +263,7 @@ sealed class SensorTile : Control
                 string mm = IsTemp ? $"min {mn:0}°  ·  max {mx:0}°"
                     : $"min {SensorFormat.Value(Sensor.SensorType, mn)}  ·  max {SensorFormat.Value(Sensor.SensorType, mx)}";
                 TextRenderer.DrawText(g, mm, TinyFont, new Rectangle(S(16), S(104), Width - S(32), S(16)), Theme.Muted,
-                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                    TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             }
 
             DrawGraph(g, new Rectangle(S(16), S(124), Width - S(32), Height - S(136)), IsTemp && cur is float t ? Theme.ForTemp(t) : _accent, k);
@@ -274,7 +274,7 @@ sealed class SensorTile : Control
             using var dim = new SolidBrush(Color.FromArgb(150, Theme.Background));
             g.FillRectangle(dim, 0, 0, Width, Height);
             TextRenderer.DrawText(g, "ausgeblendet", BadgeFont, new Rectangle(0, 0, Width, Height), Theme.Muted,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                TextFormatFlags.NoPrefix | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
     }
 
@@ -286,7 +286,7 @@ sealed class SensorTile : Control
         using (var b = new SolidBrush(Color.FromArgb(40, col)))
             g.FillPath(b, p);
         TextRenderer.DrawText(g, text, BadgeFont, r, col,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            TextFormatFlags.NoPrefix | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
     }
 
     /// Gleitender Mittelwert: nimmt das Sekunden-Rauschen der Sensoren raus
@@ -448,7 +448,7 @@ sealed class SensorTile : Control
         // ----- Skala-Werte, klein in der Ecke -----
         if (IsTemp)
         {
-            var f = TextFormatFlags.Left | TextFormatFlags.NoPadding;
+            var f = TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.NoPadding;
             TextRenderer.DrawText(g, $"{hi:0}°", TinyFont, new Point(gr.Left + 2, gr.Top + 2), Theme.Muted, f);
             TextRenderer.DrawText(g, $"{lo:0}°", TinyFont, new Point(gr.Left + 2, gr.Bottom - (int)(14 * k)), Theme.Muted, f);
         }

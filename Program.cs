@@ -708,7 +708,7 @@ sealed class SectionHeader : Control
             x = (int)(12 * k);
         }
         TextRenderer.DrawText(g, Text, HeadFont, new Rectangle(x, 0, Width - x, Height), Theme.Text,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         using var line = new Pen(Theme.Border);
         g.DrawLine(line, 0, Height - 1, Width, Height - 1);
     }
@@ -743,7 +743,7 @@ sealed class TabButton : Control
         g.Clear(Theme.Header);
         var col = _selected ? Theme.Text : _hover ? Theme.Text : Theme.Muted;
         TextRenderer.DrawText(g, Text, TabFont, new Rectangle(0, 0, Width, Height - (int)(3 * k)), col,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            TextFormatFlags.NoPrefix | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         if (_selected)
         {
             using var b = new SolidBrush(Theme.Accent);

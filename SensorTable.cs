@@ -231,10 +231,10 @@ sealed class CollapsibleHeader : Control
 
         int x = (int)(36 * k);
         TextRenderer.DrawText(g, Text, Big ? BigFont : HeadFont, new Rectangle(x, 0, Width - x - (int)(240 * k), Height), Theme.Text,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         TextRenderer.DrawText(g, Count, CountFont,
             new Rectangle(Width - (int)(250 * k), 0, (int)(236 * k), Height), Theme.Muted,
-            TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
+            TextFormatFlags.NoPrefix | TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
 
         if (!Big)
         {
@@ -429,8 +429,8 @@ sealed class SensorTable : Control
         int xVal = xMin - colW;
         int nameW = xVal - pad * 2;
 
-        const TextFormatFlags L = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding;
-        const TextFormatFlags R = TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
+        const TextFormatFlags L = TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding;
+        const TextFormatFlags R = TextFormatFlags.NoPrefix | TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
 
         // Spaltenkopf
         {

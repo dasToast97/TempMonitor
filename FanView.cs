@@ -426,16 +426,16 @@ sealed class ProfileButton : Control
             g.FillEllipse(b, (int)(14 * k), (int)(18 * k), d, d);
         TextRenderer.DrawText(g, Info.Title, TitleFont,
             new Rectangle((int)(32 * k), (int)(10 * k), Width - (int)(40 * k), (int)(26 * k)),
-            _selected ? Theme.Text : Theme.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            _selected ? Theme.Text : Theme.Text, TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         if (Info.Adaptive)
         {
             TextRenderer.DrawText(g, "SMART", TagFont,
                 new Rectangle(Width - (int)(56 * k), (int)(12 * k), (int)(46 * k), (int)(20 * k)), col,
-                TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
+                TextFormatFlags.NoPrefix | TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
         }
         TextRenderer.DrawText(g, Info.Description, DescFont,
             new Rectangle((int)(14 * k), (int)(38 * k), Width - (int)(24 * k), (int)(34 * k)), Theme.Muted,
-            TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
+            TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
     }
 }
 
@@ -528,7 +528,8 @@ sealed class FanCard : Control
             var cb = new CheckBox
             {
                 Checked = ch.Cfg.Uses(c),
-                Enabled = ctl.HasComponent(c),
+                // GPU-Lüfter: nur nach der GPU regeln
+                Enabled = ctl.HasComponent(c) && (!ch.IsGpu || c == Component.Gpu),
                 ForeColor = Theme.Text,
                 BackColor = Theme.Card,
                 AutoSize = false,
@@ -599,10 +600,11 @@ sealed class FanCard : Control
         {
             string txt = Components.Name(c);
             if (!_ctl.HasComponent(c)) txt += " (fehlt)";
+            else if (_ch.IsGpu && c != Component.Gpu) txt += " (nicht für GPU)";
             else if (_ctl.Temp(c) is float t)
             {
                 txt += $" {t:0}°";
-                if (_ctl.Load(c) is float l) txt += $" · {l:0}%";
+                if (c != Component.Board && _ctl.Load(c) is float l) txt += $" · {l:0}%";
             }
             if (_sources[c].Text != txt) _sources[c].Text = txt;
             var col = _ch.Driver == c ? Theme.Text : Theme.Muted;
@@ -646,8 +648,8 @@ sealed class FanCard : Control
         // Symbol: Lüfter oder Pumpe
         DrawIcon(g, new RectangleF(S(14), S(14), S(26), S(26)), pump, accent);
 
-        const TextFormatFlags L = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding;
-        const TextFormatFlags R = TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
+        const TextFormatFlags L = TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding;
+        const TextFormatFlags R = TextFormatFlags.NoPrefix | TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
 
         string sub = (pump ? "Pumpe" : "Lüfter") + " · " + _ch.HardwareName +
                      (_ch.DisplayName != _ch.DefaultName ? $" · {_ch.DefaultName}" : "");
@@ -683,7 +685,7 @@ sealed class FanCard : Control
         var statusCol = _ch.Faulted || _ch.Status.StartsWith("⚠") ? Theme.Hot
                       : _ch.Identifying ? Theme.Ok : Theme.Muted;
         TextRenderer.DrawText(g, _ch.Status, SmallFont, new Rectangle(S(16), S(198), Width - S(32), S(34)), statusCol,
-            TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
+            TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
     }
 
     static void DrawIcon(Graphics g, RectangleF r, bool pump, Color col)
@@ -829,14 +831,14 @@ sealed class CurveEditor : Control
                 var a = ToScreen(t, 0);
                 g.DrawLine(grid, a.X, r.Top, a.X, r.Bottom);
                 TextRenderer.DrawText(g, $"{t}°", SmallFont, new Rectangle((int)a.X - 15, r.Bottom + 3, 30, 14), Theme.Muted,
-                    TextFormatFlags.HorizontalCenter);
+                    TextFormatFlags.NoPrefix | TextFormatFlags.HorizontalCenter);
             }
             for (int p = 0; p <= 100; p += 25)
             {
                 var a = ToScreen(TMin, p);
                 g.DrawLine(grid, r.Left, a.Y, r.Right, a.Y);
                 TextRenderer.DrawText(g, $"{p}%", SmallFont, new Rectangle(0, (int)a.Y - 7, r.Left - 4, 14), Theme.Muted,
-                    TextFormatFlags.Right);
+                    TextFormatFlags.NoPrefix | TextFormatFlags.Right);
             }
         }
 
