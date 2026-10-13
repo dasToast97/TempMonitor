@@ -216,7 +216,6 @@ sealed class AmdOd8Fan : IDisposable
             // Nicht jede Sekunde neu schreiben: nur bei spürbarer Änderung oder alle 10 s
             bool big = _lastPct < 0 || Math.Abs(pct - _lastPct) >= 2 || (pct >= 99 && _lastPct < 99);
             if (!big && (DateTime.Now - _lastWrite).TotalSeconds < 10) return true;
-            if (!big && (DateTime.Now - _lastWrite).TotalSeconds < 2) return true;
 
             // 1) Wie bei AMD: Tuning-Modus auf "Manuell", sonst werden Lüfterwerte ignoriert
             if (!_changed && (_caps & ADL_OD8_OPTIMIZED_GPU_POWER_MODE) != 0
@@ -225,12 +224,23 @@ sealed class AmdOd8Fan : IDisposable
                 if (!Apply(new[] { (OD8_OPTIMZED_POWER_MODE, POWER_MODE_MANUAL) })) return false;
             }
 
-            // 2) Kurve: Temperaturen wie bisher, alle Drehzahlpunkte = gewünschte Leistung
+            // 2) Kurve: Punkte 1–4 = gewünschte Leistung, Punkt 5 = 100 % bei ca. 90 °C.
+            //    Der letzte Punkt ist eine Rückfallebene im Treiber: Wird Toast Temperatur hart beendet,
+            //    dreht die Karte bei Hitze trotzdem von selbst hoch.
+            int t5 = Clamp(OD8_FAN_CURVE_TEMPERATURE_1 + 8, 95);
+            int t4 = Clamp(OD8_FAN_CURVE_TEMPERATURE_1 + 6, Math.Min(t5 - 5, 90));
+            int t3 = Clamp(OD8_FAN_CURVE_TEMPERATURE_1 + 4, Math.Min(_original[OD8_FAN_CURVE_TEMPERATURE_1 + 4], t4 - 5));
+            int t2 = Clamp(OD8_FAN_CURVE_TEMPERATURE_1 + 2, Math.Min(_original[OD8_FAN_CURVE_TEMPERATURE_1 + 2], t3 - 5));
+            int t1 = Clamp(OD8_FAN_CURVE_TEMPERATURE_1, Math.Min(_original[OD8_FAN_CURVE_TEMPERATURE_1], t2 - 5));
+            int[] temps = { t1, t2, t3, t4, t5 };
+            int speed = (int)Math.Round(pct);
             var items = new List<(int, int)>();
-            for (int id = OD8_FAN_CURVE_TEMPERATURE_1; id <= OD8_FAN_CURVE_SPEED_5; id += 2)
+            for (int i = 0; i < 5; i++)
             {
-                items.Add((id, Clamp(id, _original[id])));                 // Temperatur-Punkt
-                items.Add((id + 1, Clamp(id + 1, (int)Math.Round(pct))));  // Drehzahl-Punkt
+                int tid = OD8_FAN_CURVE_TEMPERATURE_1 + i * 2;
+                items.Add((tid, temps[i]));
+                int sp = i == 4 ? Math.Max(speed, 100) : speed;
+                items.Add((tid + 1, Clamp(tid + 1, sp)));
             }
             // Zero-RPM aus, damit auch kleine Werte wirklich drehen
             if ((_caps & ADL_OD8_FAN_ZERO_RPM_CONTROL) != 0)
