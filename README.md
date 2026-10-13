@@ -1,4 +1,4 @@
-# Temperatur-Monitor
+# Toast Temperatur
 
 Kleines Windows-11-Programm, das alle verfügbaren Temperatursensoren
 (CPU, Grafikkarte, Mainboard, RAM, SSDs/Festplatten) live ausliest und

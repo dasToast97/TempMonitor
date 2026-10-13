@@ -15,7 +15,7 @@
 
     <!-- Version: wird beim Release automatisch aus dem Git-Tag (z. B. v1.2.0) gesetzt -->
     <Version>1.0.0</Version>
-    <Product>Temperatur-Monitor</Product>
+    <Product>Toast Temperatur</Product>
 
     <!-- GitHub-Repo für den Updater (owner/name). Wird vom GitHub-Workflow automatisch gesetzt.
          Bei lokalen Builds leer -> Updater ist dann einfach aus. -->

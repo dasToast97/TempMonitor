@@ -1,4 +1,4 @@
-; Installer für den Temperatur-Monitor (Inno Setup 6)
+; Installer für Toast Temperatur (Inno Setup 6)
 ; Wird automatisch vom GitHub-Workflow gebaut. Version kommt per /DMyAppVersion=x.y.z
 
 #ifndef MyAppVersion
@@ -8,7 +8,7 @@
   #define MyRepo ""
 #endif
 
-#define MyAppName "Temperatur-Monitor"
+#define MyAppName "Toast Temperatur"
 #define MyAppExe  "TempMonitor.exe"
 
 [Setup]
@@ -23,6 +23,7 @@ AppUpdatesURL=https://github.com/{#MyRepo}/releases
 #endif
 DefaultDirName={autopf}\TempMonitor
 DefaultGroupName={#MyAppName}
+UsePreviousGroup=no
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
@@ -51,6 +52,13 @@ Name: "autostart"; Description: "Beim Windows-Start im Infobereich starten (nöt
 [Files]
 Source: "..\publish\{#MyAppExe}"; DestDir: "{app}"; Flags: ignoreversion
 
+[InstallDelete]
+; Verknüpfungen mit dem alten Namen entfernen
+Type: files; Name: "{autoprograms}\Temperatur-Monitor\Temperatur-Monitor.lnk"
+Type: files; Name: "{autoprograms}\Temperatur-Monitor\Temperatur-Monitor deinstallieren.lnk"
+Type: files; Name: "{autodesktop}\Temperatur-Monitor.lnk"
+Type: dirifempty; Name: "{autoprograms}\Temperatur-Monitor"
+
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"
 Name: "{group}\{#MyAppName} deinstallieren"; Filename: "{uninstallexe}"
@@ -63,7 +71,7 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /TN ""TempMonitor"" /TR 
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; Set-ScheduledTask -TaskName 'TempMonitor' -Settings $s"""; Flags: runhidden; Tasks: autostart
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""TempMonitor"""; Flags: runhidden; Tasks: not autostart
 ; Nach normaler Installation: Häkchen "Programm starten"
-Filename: "{app}\{#MyAppExe}"; Description: "Temperatur-Monitor jetzt starten"; Flags: nowait postinstall skipifsilent shellexec
+Filename: "{app}\{#MyAppExe}"; Description: "{#MyAppName} jetzt starten"; Flags: nowait postinstall skipifsilent shellexec
 ; Nach automatischem Update (stille Installation): direkt wieder starten
 Filename: "{app}\{#MyAppExe}"; Flags: nowait shellexec; Check: WizardSilent
 

@@ -114,7 +114,7 @@ sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = $"Temperatur-Monitor {Updater.CurrentVersion.ToString(3)}";
+        Text = $"Toast Temperatur {Updater.CurrentVersion.ToString(3)}";
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Theme.Background;
         ForeColor = Theme.Text;
@@ -133,7 +133,7 @@ sealed class MainForm : Form
         };
         var title = new Label
         {
-            Text = "🌡  Temperatur-Monitor",
+            Text = "🌡  Toast Temperatur",
             Font = new Font("Segoe UI Semibold", 14f),
             ForeColor = Theme.Text,
             Dock = DockStyle.Fill,
@@ -228,7 +228,7 @@ sealed class MainForm : Form
         _tray = new NotifyIcon
         {
             Icon = Icon ?? SystemIcons.Application,
-            Text = "Temperatur-Monitor",
+            Text = "Toast Temperatur",
             Visible = true,
         };
         _tray.DoubleClick += (_, _) => RestoreFromTray();
@@ -572,7 +572,7 @@ sealed class MainForm : Form
 
             // Tooltip im Infobereich: wichtigste Temperaturen
             string tip = string.Join("  ", _heroes.Select(h => $"{h.Short} {h.Sensor.Value:0}°"));
-            tip = string.IsNullOrEmpty(tip) ? "Temperatur-Monitor" : tip;
+            tip = string.IsNullOrEmpty(tip) ? "Toast Temperatur" : tip;
             _tray.Text = tip.Length > 63 ? tip[..63] : tip;
         }
         catch (Exception ex)
