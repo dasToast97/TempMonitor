@@ -406,10 +406,18 @@ static class Driver
     {
         get
         {
+            // Gleiche Prüfung wie LibreHardwareMonitor: Eintrag unter "Programme und Features"
+            const string sub = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO";
             try
             {
-                using var key = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\PawnIO");
-                return key != null;
+                foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
+                {
+                    using var hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view);
+                    using var key = hklm.OpenSubKey(sub);
+                    if (key?.GetValue("DisplayVersion") is string v && Version.TryParse(v, out _)) return true;
+                }
+                using var svc = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\PawnIO");
+                return svc != null;
             }
             catch { return true; } // im Zweifel keinen Hinweis zeigen
         }
@@ -442,7 +450,7 @@ static class Driver
 
         try
         {
-            using var p = Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+            using var p = Process.Start(new ProcessStartInfo(path, "-install") { UseShellExecute = true });
             if (p != null) await p.WaitForExitAsync();
         }
         catch (Exception ex)
