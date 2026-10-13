@@ -512,7 +512,7 @@ sealed class FanCard : Control
             Cursor = Cursors.Hand,
         };
         _identify.FlatAppearance.BorderColor = Theme.Border;
-        new ToolTip().SetToolTip(_identify, "Lässt nur diesen Lüfter 5 Sekunden auf 100 % laufen, damit du ihn findest");
+        new ToolTip().SetToolTip(_identify, "Lässt nur diesen Lüfter kurz auf 100 % laufen, damit du ihn findest – und prüft dabei, ob er sich steuern lässt");
         _identify.Click += (_, _) => ctl.Identify(ch);
 
         _sourceLabel = new Label
@@ -602,6 +602,7 @@ sealed class FanCard : Control
             if (_ctl.Temp(Component.Gpu) is float gt)
             {
                 txt += $":  {gt:0} °C";
+                if (_ctl.GpuHotspot is float hs) txt += $"  ·  Hot Spot {hs:0} °C";
                 if (_ctl.Load(Component.Gpu) is float gl) txt += $"  ·  Last {gl:0} %";
             }
             if (_sourceLabel.Text != txt) _sourceLabel.Text = txt;
@@ -672,7 +673,7 @@ sealed class FanCard : Control
 
         // Leistungsbalken
         float pct = _ch.Output >= 0 ? _ch.Output : (_ch.ControlSensor.Value ?? 0);
-        bool bios = _ctl.Profile == FanProfile.Bios || _ch.Faulted || _ch.Output < 0;
+        bool bios = _ctl.Profile == FanProfile.Bios || _ch.Faulted || _ch.NotControllable || _ch.Output < 0;
         var barCol = bios ? Theme.Muted : ProfileButton.ColorFor(_ctl.Profile);
         var bar = new Rectangle(S(16), S(102), Width - S(32), S(12));
         using (var p = Gfx.RoundRect(bar, bar.Height / 2))
@@ -693,6 +694,7 @@ sealed class FanCard : Control
 
         // Status
         var statusCol = _ch.Faulted || _ch.Status.StartsWith("⚠") ? Theme.Hot
+                      : _ch.NotControllable ? Theme.Warm
                       : _ch.Identifying ? Theme.Ok : Theme.Muted;
         TextRenderer.DrawText(g, _ch.Status, SmallFont, new Rectangle(S(16), S(198), Width - S(32), S(34)), statusCol,
             TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);

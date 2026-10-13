@@ -232,6 +232,14 @@ sealed class FanChannel
     public DateTime IdentifyUntil = DateTime.MinValue;
     public bool Identifying;
     public Component? Driver;          // Bauteil, das gerade die Drehzahl bestimmt
+
+    // Erfolgskontrolle: reagiert der Lüfter überhaupt auf unsere Befehle?
+    public bool NotControllable;
+    public int TestFailures;
+    public DateTime? TestStart;
+    public float TestFromPct, TestToPct, TestStartRpm;
+    public float LastTestedPct = -1;
+    public float IdentifyStartRpm = -1;
     public float? DriverTemp;
     public readonly Dictionary<Component, SourceState> States = new()
     {
@@ -260,6 +268,10 @@ sealed class FanController
     public FanProfile Profile => _s.Profile;
 
     readonly Dictionary<Component, ISensor?> _temp = new();
+    ISensor? _gpuHotspot;
+
+    /// Abstand Hot Spot zu normaler GPU-Temperatur, der als normal gilt
+    public const float HotspotOffset = 20f;
     ISensor? _cpuLoad, _gpuLoad;
 
     /// Die laufende Steuerung (für die Lüfter-Kachel in der Übersicht)
@@ -284,6 +296,20 @@ sealed class FanController
     };
 
     public bool HasComponent(Component c) => TempSensor(c) != null;
+
+    /// Temperatur, nach der geregelt wird. GPU: auch der Hot Spot zählt (abzüglich normalem Abstand).
+    public float? ControlTemp(Component c)
+    {
+        var t = Temp(c);
+        if (c == Component.Gpu && _gpuHotspot?.Value is float hs && hs > 1 && hs < 130)
+        {
+            float eff = hs - HotspotOffset;
+            if (t is not float tv || eff > tv) return eff;
+        }
+        return t;
+    }
+
+    public float? GpuHotspot => _gpuHotspot?.Value;
 
     // ---------------------------------------------------------------------
     // Lüfter suchen
@@ -312,6 +338,9 @@ sealed class FanController
             {
                 if (temps.Count > 0) _temp[Component.Gpu] = MainForm.PickMain(hw, temps);
                 _gpuLoad = MainForm.MainLoad(hw);
+                _gpuHotspot = temps.FirstOrDefault(t => t.Name.Contains("Hot Spot", StringComparison.OrdinalIgnoreCase)
+                                                     || t.Name.Contains("Hotspot", StringComparison.OrdinalIgnoreCase)
+                                                     || t.Name.Contains("Junction", StringComparison.OrdinalIgnoreCase));
             }
             else if (hw.HardwareType == HardwareType.Motherboard && !_temp.ContainsKey(Component.Board) && temps.Count > 0)
             {
@@ -405,6 +434,8 @@ sealed class FanController
             {
                 ch.Faulted = false;
                 ch.NoSpinTicks = 0;
+                ch.TestStart = null;
+                ch.LastTestedPct = -1;
                 ch.ResetStates();
                 if (p == FanProfile.Bios) SafeDefault(ch);
             }
@@ -415,7 +446,15 @@ sealed class FanController
     /// Lässt einen Lüfter 5 Sekunden auf 100 % laufen, damit man ihn zuordnen kann
     public void Identify(FanChannel ch)
     {
-        lock (_lock) ch.IdentifyUntil = DateTime.Now.AddSeconds(5);
+        lock (_lock)
+        {
+            ch.IdentifyUntil = DateTime.Now.AddSeconds(8);
+            ch.IdentifyStartRpm = ch.Rpm?.Value ?? -1;
+            ch.NotControllable = false;
+            ch.TestFailures = 0;
+            ch.TestStart = null;
+            ch.Faulted = false;
+        }
     }
 
     public void ResetLearning(FanChannel ch)
@@ -489,7 +528,26 @@ sealed class FanController
         if (ch.Identifying)
         {
             ch.Identifying = false;
+            // Hat der Lüfter auf 100 % reagiert?
+            if (ch.IdentifyStartRpm >= 0 && ch.Rpm?.Value is float after)
+            {
+                float before = ch.IdentifyStartRpm;
+                bool reacted = after - before >= Math.Max(80f, before * 0.10f) || after > 2500;
+                if (!reacted && before < 2000)
+                {
+                    ch.NotControllable = true;
+                    SafeDefault(ch);
+                }
+            }
             if (prof.Profile == FanProfile.Bios) SafeDefault(ch);
+        }
+
+        if (ch.NotControllable)
+        {
+            ch.Status = ch.IsGpu
+                ? "Lässt sich nicht steuern – der Grafiktreiber regelt diesen Lüfter selbst. „Erkennen“ testet erneut."
+                : "Lässt sich nicht steuern – der Lüfter reagiert nicht auf Befehle. „Erkennen“ testet erneut.";
+            return;
         }
 
         if (prof.Profile == FanProfile.Bios)
@@ -512,7 +570,7 @@ sealed class FanController
 
         foreach (var c in Components.All)
         {
-            if (!ch.Cfg.Uses(c) || Temp(c) is not float raw) continue;
+            if (!ch.Cfg.Uses(c) || ControlTemp(c) is not float raw) continue;
             var st = ch.States[c];
             st.Smooth = st.Smooth is float sm ? sm + 0.35f * (raw - sm) : raw;
             float T = st.Smooth.Value;
@@ -558,6 +616,8 @@ sealed class FanController
             : Math.Max(desired, ch.Output - prof.DownRate);
 
         string who = Components.Name(driver.Value);
+        if (driver == Component.Gpu && GpuHotspot is float hsv && Temp(Component.Gpu) is float gt && hsv - HotspotOffset > gt)
+            who = "GPU-Hot-Spot";
         ch.Status = prof.Profile switch
         {
             FanProfile.Max => "Volle Leistung",
@@ -576,6 +636,8 @@ sealed class FanController
         next = Math.Clamp(next, min, max);
         ch.Output = next;
         ch.Control.SetSoftware(next);
+        CheckResponse(ch, next);
+        if (ch.NotControllable) return;
 
         // Sicherheit (optional): Lüfter dreht trotz Befehl nicht -> zurück ans BIOS
         if (_s.StallDetection && ch.Rpm?.Value is float rpm && rpm < 50 && next >= 40)
@@ -588,6 +650,44 @@ sealed class FanController
             }
         }
         else ch.NoSpinTicks = 0;
+    }
+
+    // ---------------------------------------------------------------------
+    // Erfolgskontrolle: Bei einer deutlichen Änderung (≥ 25 %-Punkte) wird nach
+    // 12 Sekunden geprüft, ob sich die Drehzahl passend bewegt hat. Zweimal keine
+    // Reaktion -> Lüfter gilt als nicht steuerbar (z. B. AMD RX 6000/7000).
+    // ---------------------------------------------------------------------
+    static void CheckResponse(FanChannel ch, float now)
+    {
+        if (ch.Rpm?.Value is not float rpm) return;
+
+        if (ch.TestStart is DateTime start)
+        {
+            if ((DateTime.Now - start).TotalSeconds < 12) return;
+            float dir = Math.Sign(ch.TestToPct - ch.TestFromPct);
+            float change = (rpm - ch.TestStartRpm) * dir;
+            bool reacted = change >= Math.Max(60f, ch.TestStartRpm * 0.08f);
+            // Lüfter im Stillstand-Modus (0 U/min) und Befehl nach unten: nichts zu prüfen
+            if (dir < 0 && ch.TestStartRpm < 100) reacted = true;
+            if (reacted) ch.TestFailures = 0;
+            else if (++ch.TestFailures >= 2)
+            {
+                ch.NotControllable = true;
+                SafeDefault(ch);
+            }
+            ch.TestStart = null;
+            ch.LastTestedPct = now;
+            return;
+        }
+
+        if (ch.LastTestedPct < 0) { ch.LastTestedPct = now; return; }
+        if (Math.Abs(now - ch.LastTestedPct) >= 25)
+        {
+            ch.TestStart = DateTime.Now;
+            ch.TestFromPct = ch.LastTestedPct;
+            ch.TestToPct = now;
+            ch.TestStartRpm = rpm;
+        }
     }
 
     // ---------------------------------------------------------------------
