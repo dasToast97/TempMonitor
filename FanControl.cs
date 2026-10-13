@@ -62,6 +62,12 @@ sealed class FanSettings
     public FanProfile Profile { get; set; } = FanProfile.Bios;
     public bool WarningAccepted { get; set; }
     public bool TrayHintShown { get; set; }
+
+    // Sicherheitsfunktionen – standardmäßig aus, in den Einstellungen einschaltbar
+    public bool EmergencyEnabled { get; set; }
+    public float CpuCritical { get; set; } = 90f;
+    public float GpuCritical { get; set; } = 85f;
+    public bool StallDetection { get; set; }
     public Dictionary<string, FanChannelSettings> Fans { get; set; } = new();
 
     static readonly string Dir = Path.Combine(
@@ -318,7 +324,7 @@ sealed class FanController
         ch.SmoothTemp = ch.SmoothTemp is float st ? st + 0.35f * (temp - st) : temp;
         float T = ch.SmoothTemp.Value;
 
-        float critical = ch.IsGpu ? 85f : 90f;
+        float critical = ch.IsGpu ? _s.GpuCritical : _s.CpuCritical;
         float desired;
 
         switch (prof.Profile)
@@ -345,8 +351,8 @@ sealed class FanController
             ? Math.Min(desired, ch.Output + prof.UpRate)
             : Math.Max(desired, ch.Output - prof.DownRate);
 
-        // Sicherheit: zu heiß -> sofort volle Kühlung
-        if (temp >= critical)
+        // Sicherheit (optional): zu heiß -> sofort volle Kühlung
+        if (_s.EmergencyEnabled && temp >= critical)
         {
             next = max;
             ch.Status = $"⚠ Notkühlung – {temp:0} °C";
@@ -356,8 +362,8 @@ sealed class FanController
         ch.Output = next;
         ch.Control.SetSoftware(next);
 
-        // Sicherheit: Lüfter dreht trotz Befehl nicht -> zurück ans BIOS
-        if (ch.Rpm?.Value is float rpm && rpm < 50 && next >= 40)
+        // Sicherheit (optional): Lüfter dreht trotz Befehl nicht -> zurück ans BIOS
+        if (_s.StallDetection && ch.Rpm?.Value is float rpm && rpm < 50 && next >= 40)
         {
             if (++ch.NoSpinTicks >= 15)
             {

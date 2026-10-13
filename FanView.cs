@@ -62,6 +62,13 @@ sealed class FanView : FlowLayoutPanel
         SetFlowBreak(_profileInfo, true);
         UpdateProfileInfo();
 
+        // ----- Sicherheit (optional) -----
+        AddSection("Sicherheit (optional)", Theme.Hot);
+        var safety = BuildSafetyPanel();
+        _fullWidth.Add(safety);
+        Controls.Add(safety);
+        SetFlowBreak(safety, true);
+
         // ----- Lüfter -----
         AddSection("Lüfter", Color.FromArgb(56, 189, 248));
         if (_ctl.Channels.Count == 0)
@@ -96,6 +103,74 @@ sealed class FanView : FlowLayoutPanel
         ResumeLayout();
     }
 
+    Control BuildSafetyPanel()
+    {
+        var s = _ctl.Settings;
+        int S(float px) => (int)(px * K);
+
+        var panel = new Panel
+        {
+            Height = S(118),
+            BackColor = Theme.Card,
+            Margin = new Padding(S(6), S(4), S(6), S(4)),
+        };
+
+        var emergency = new CheckBox
+        {
+            Text = "Notkühlung: alle Lüfter auf 100 %, sobald eine Temperatur den Grenzwert erreicht",
+            Checked = s.EmergencyEnabled,
+            ForeColor = Theme.Text,
+            AutoSize = true,
+            Location = new Point(S(14), S(12)),
+        };
+
+        NumericUpDown Num(float value, int min, int max, int x) => new()
+        {
+            Minimum = min,
+            Maximum = max,
+            Value = (decimal)Math.Clamp(value, min, max),
+            Width = S(58),
+            Location = new Point(x, S(40)),
+            BackColor = Theme.CardHero,
+            ForeColor = Theme.Text,
+            BorderStyle = BorderStyle.FixedSingle,
+        };
+        Label Lbl(string text, int x) => new()
+        {
+            Text = text,
+            ForeColor = Theme.Muted,
+            AutoSize = true,
+            Location = new Point(x, S(43)),
+        };
+
+        var cpuLbl = Lbl("CPU ab", S(36));
+        var cpu = Num(s.CpuCritical, 50, 110, S(90));
+        var cpuUnit = Lbl("°C", S(152));
+        var gpuLbl = Lbl("GPU ab", S(192));
+        var gpu = Num(s.GpuCritical, 50, 110, S(248));
+        var gpuUnit = Lbl("°C", S(310));
+
+        void SyncEnabled() => cpu.Enabled = gpu.Enabled = emergency.Checked;
+        SyncEnabled();
+
+        emergency.CheckedChanged += (_, _) => { s.EmergencyEnabled = emergency.Checked; SyncEnabled(); _ctl.Save(); };
+        cpu.ValueChanged += (_, _) => { s.CpuCritical = (float)cpu.Value; _ctl.Save(); };
+        gpu.ValueChanged += (_, _) => { s.GpuCritical = (float)gpu.Value; _ctl.Save(); };
+
+        var stall = new CheckBox
+        {
+            Text = "Stillstand-Erkennung: Lüfter zurück ans BIOS geben, wenn er trotz Befehl nicht dreht",
+            Checked = s.StallDetection,
+            ForeColor = Theme.Text,
+            AutoSize = true,
+            Location = new Point(S(14), S(80)),
+        };
+        stall.CheckedChanged += (_, _) => { s.StallDetection = stall.Checked; _ctl.Save(); };
+
+        panel.Controls.AddRange(new Control[] { emergency, cpuLbl, cpu, cpuUnit, gpuLbl, gpu, gpuUnit, stall });
+        return panel;
+    }
+
     void AddSection(string text, Color accent)
     {
         var h = new SectionHeader(text, accent)
@@ -122,11 +197,9 @@ sealed class FanView : FlowLayoutPanel
         {
             var r = MessageBox.Show(FindForm(),
                 "Mit der Lüftersteuerung übernimmt dieses Programm die Drehzahl deiner Lüfter.\n\n" +
-                "Eingebaute Sicherheit:\n" +
-                "•  Ab 90 °C (CPU) bzw. 85 °C (GPU) laufen die Lüfter sofort auf 100 %\n" +
-                "•  Lüfter gehen nie unter die Mindestdrehzahl des Profils\n" +
-                "•  Bleibt ein Lüfter stehen, übernimmt wieder das BIOS\n" +
-                "•  Beim Beenden übernimmt automatisch wieder das BIOS\n\n" +
+                "•  Beim Beenden übernimmt automatisch wieder das BIOS\n" +
+                "•  Notkühlung und Stillstand-Erkennung sind aus – du kannst sie\n" +
+                "   im Abschnitt „Sicherheit“ einschalten und die Grenzwerte festlegen\n\n" +
                 "Bitte behalte die Temperaturen in den ersten Minuten im Blick.\n" +
                 "Die Nutzung erfolgt auf eigene Verantwortung.\n\nFortfahren?",
                 "Lüftersteuerung aktivieren", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);

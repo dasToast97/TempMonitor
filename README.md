@@ -26,8 +26,9 @@ Die **Smart-Automatik** lernt, welche Drehzahl bei welcher Auslastung die Zielte
 reagiert dadurch schon beim Lastanstieg und passt ihre Reaktionsstärke selbst an (kein Auf- und Abheulen).
 Das Gelernte wird in `%AppData%\TempMonitor\fans.json` gespeichert.
 
-**Sicherheit:** ab 90 °C CPU / 85 °C GPU sofort 100 % · nie unter die Mindestdrehzahl · Lüfter, die trotz
-Befehl stehen bleiben, gehen zurück ans BIOS · beim Beenden oder Absturz übernimmt wieder das BIOS.
+**Sicherheit (optional, standardmäßig aus):** Notkühlung mit einstellbaren Grenzwerten für CPU und GPU
+(Voreinstellung 90 °C / 85 °C) und Stillstand-Erkennung – beides im Abschnitt „Sicherheit“ im Lüfter-Reiter.
+Beim Beenden oder Absturz übernimmt immer wieder das BIOS.
 Bei aktiver Steuerung läuft das Programm beim Schließen im Infobereich weiter.
 
 Mainboard-Lüfter brauchen den Treiber **PawnIO**. Hersteller-Tools (Armoury Crate, MSI Center, iCUE …)
