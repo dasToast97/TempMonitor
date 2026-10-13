@@ -14,6 +14,17 @@ namespace TempMonitor;
 sealed class UiState
 {
     public Dictionary<string, bool> Expanded { get; set; } = new();
+    public List<TileConfig> Tiles { get; set; } = new();
+    public bool TilesInitialized { get; set; }
+    public List<string> HiddenSensors { get; set; } = new();
+
+    public bool IsHidden(string id) => HiddenSensors.Contains(id);
+
+    public void ToggleHidden(string id)
+    {
+        if (!HiddenSensors.Remove(id)) HiddenSensors.Add(id);
+        Save();
+    }
 
     static readonly string FilePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "ui.json");
@@ -252,6 +263,10 @@ sealed class SensorTable : Control
     }
 
     readonly List<Group> _groups = new();
+
+    public Func<ISensor, bool>? IsHidden { get; set; }
+    public event Action<ISensor>? HideToggled;
+    public event Action<ISensor>? Pinned;
     readonly Color _accent;
     readonly string _hwName;
     int _hoverRow = -1;
@@ -335,6 +350,20 @@ sealed class SensorTable : Control
         }
     }
 
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (e.Button != MouseButtons.Right || RowAt(e.Y) is not { S: not null } row) return;
+        var sensor = row.S!;
+        bool hidden = IsHidden?.Invoke(sensor) ?? false;
+        var m = new ContextMenuStrip();
+        m.Items.Add(hidden ? "Einblenden" : "Ausblenden", null, (_, _) => BeginInvoke(() => HideToggled?.Invoke(sensor)));
+        m.Items.Add("In der Übersicht anheften", null, (_, _) => BeginInvoke(() => Pinned?.Invoke(sensor)));
+        m.Items.Add("Min/Max zurücksetzen", null, (_, _) => { sensor.ResetMin(); sensor.ResetMax(); Invalidate(); });
+        m.Closed += (_, _) => BeginInvoke(m.Dispose);
+        m.Show(this, e.Location);
+    }
+
     protected override void OnMouseDoubleClick(MouseEventArgs e)
     {
         base.OnMouseDoubleClick(e);
@@ -414,8 +443,10 @@ sealed class SensorTable : Control
             {
                 string name = s.SensorType is SensorType.Fan or SensorType.Control ? FanNaming.Label(s) : s.Name;
                 if (s.Hardware.Name != _hwName) name += $"   · {s.Hardware.Name}";
+                bool hid = IsHidden?.Invoke(s) ?? false;
+                if (hid) name += "   (ausgeblendet)";
                 var valCol = s.SensorType == SensorType.Temperature && s.Value is float tv ? Theme.ForTemp(tv) : Theme.Text;
-                TextRenderer.DrawText(g, name, RowFont, new Rectangle(pad + (int)(16 * k), y, nameW - (int)(16 * k), rh), Theme.Text, L);
+                TextRenderer.DrawText(g, name, RowFont, new Rectangle(pad + (int)(16 * k), y, nameW - (int)(16 * k), rh), hid ? Theme.Muted : Theme.Text, L);
                 TextRenderer.DrawText(g, SensorFormat.Value(s.SensorType, s.Value), RowFont, new Rectangle(xVal, y, colW, rh), valCol, R);
                 TextRenderer.DrawText(g, SensorFormat.Value(s.SensorType, s.Min), RowFont, new Rectangle(xMin, y, colW, rh), Theme.Muted, R);
                 TextRenderer.DrawText(g, SensorFormat.Value(s.SensorType, s.Max), RowFont, new Rectangle(xMax, y, colW, rh), Theme.Muted, R);

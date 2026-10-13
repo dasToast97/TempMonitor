@@ -100,11 +100,12 @@ sealed class MainForm : Form
     };
 
     readonly UpdateVisitor _visitor = new();
-    readonly FlowLayoutPanel _flow;
+    readonly Panel _tempArea;
+    readonly HistoryStore _history = new();
+    DashboardView? _dash;
+    ComponentPage? _page;
     readonly Label _status;
     readonly System.Windows.Forms.Timer _timer = new() { Interval = 1000 };
-    readonly List<(ISensor Sensor, SensorCard Card)> _cards = new();
-    readonly List<Control> _fullWidth = new();
     bool _busy;
 
     FanController? _fans;
@@ -112,7 +113,6 @@ sealed class MainForm : Form
     readonly NotifyIcon _tray;
     readonly TabButton _tempTab, _fanTab;
     readonly List<(string Short, ISensor Sensor)> _heroes = new();
-    readonly List<SensorTable> _tables = new();
     readonly DataLogger _logger = new();
     bool _exiting, _shownOnce, _loaded;
 
@@ -196,14 +196,11 @@ sealed class MainForm : Form
         _status = bottom.StatusLabel;
 
         // ---------- Inhalt ----------
-        _flow = new FlowLayoutPanel
+        _tempArea = new Panel
         {
             Dock = DockStyle.Fill,
-            AutoScroll = true,
             BackColor = Theme.Background,
-            Padding = new Padding((int)(12 * K), (int)(6 * K), (int)(12 * K), (int)(12 * K)),
         };
-        _flow.Resize += (_, _) => ResizeFullWidth();
 
         var loading = new Label
         {
@@ -213,7 +210,7 @@ sealed class MainForm : Form
             Font = new Font("Segoe UI", 11f),
             Margin = new Padding((int)(10 * K), (int)(20 * K), 0, 0),
         };
-        _flow.Controls.Add(loading);
+        _tempArea.Controls.Add(loading);
 
         // ---------- Reiter ----------
         var nav = new Panel
@@ -224,8 +221,8 @@ sealed class MainForm : Form
             Padding = new Padding((int)(14 * K), 0, 0, 0),
         };
         _fanTab = new TabButton("Lüfter") { Dock = DockStyle.Left, Width = (int)(130 * K) };
-        _tempTab = new TabButton("Temperaturen") { Dock = DockStyle.Left, Width = (int)(150 * K), Selected = true };
-        _tempTab.Click += (_, _) => ShowTab(false);
+        _tempTab = new TabButton("Übersicht") { Dock = DockStyle.Left, Width = (int)(140 * K), Selected = true };
+        _tempTab.Click += (_, _) => { ShowTab(false); ShowDashboard(); };
         _fanTab.Click += (_, _) => ShowTab(true);
         nav.Controls.Add(_fanTab);   // Dock Left: zuletzt hinzugefügt steht ganz links
         nav.Controls.Add(_tempTab);
@@ -239,7 +236,7 @@ sealed class MainForm : Form
         };
         _tray.DoubleClick += (_, _) => RestoreFromTray();
 
-        Controls.Add(_flow);
+        Controls.Add(_tempArea);
         Controls.Add(bottom);
         Controls.Add(nav);
         Controls.Add(top);
@@ -314,12 +311,12 @@ sealed class MainForm : Form
         if (fans && _fanView != null)
         {
             _fanView.Visible = true;
-            _flow.Visible = false;
+            _tempArea.Visible = false;
             _fanView.RefreshValues();
         }
         else
         {
-            _flow.Visible = true;
+            _tempArea.Visible = true;
             if (_fanView != null) _fanView.Visible = false;
         }
     }
@@ -438,7 +435,7 @@ sealed class MainForm : Form
         && !s.Name.Contains("Warning", StringComparison.OrdinalIgnoreCase)
         && !s.Name.Contains("Critical", StringComparison.OrdinalIgnoreCase);
 
-    static string Category(HardwareType t) => t switch
+    internal static string Category(HardwareType t) => t switch
     {
         HardwareType.Cpu => "Prozessor",
         HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel => "Grafikkarte",
@@ -456,7 +453,7 @@ sealed class MainForm : Form
         },
     };
 
-    static int Order(HardwareType t) => t switch
+    internal static int Order(HardwareType t) => t switch
     {
         HardwareType.Cpu => 0,
         HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel => 1,
@@ -506,152 +503,86 @@ sealed class MainForm : Form
         return loads[0];
     }
 
-    /// Last zu einem Temperatursensor: gleicher Name (z. B. "CPU Core #3") oder die Gesamtlast
-    ISensor? LoadFor(IHardware hw, ISensor temp)
-    {
-        var same = AllSensors(hw).FirstOrDefault(s => s.SensorType == SensorType.Load && s.Name == temp.Name);
-        if (same != null) return same;
-        if (hw.HardwareType == HardwareType.Motherboard)
-            return _computer.Hardware.Where(h => h.HardwareType == HardwareType.Cpu).Select(MainLoad).FirstOrDefault();
-        return MainLoad(hw);
-    }
-
-    /// Lüfteranschlüsse ohne Lüfter in den Tabellen weglassen
-    static bool IsHiddenSensor(ISensor s) => FanNaming.Hidden.Contains(s.Identifier.ToString());
-
     // ---------------------------------------------------------------------
     // Oberfläche aufbauen
     // ---------------------------------------------------------------------
     void BuildUi()
     {
-        _flow.SuspendLayout();
-        _flow.Controls.Clear();
+        _history.Record(_computer);
 
-        var groups = _computer.Hardware
-            .OrderBy(h => Order(h.HardwareType))
-            .Select(h => (Hw: h, Sensors: AllSensors(h).Where(IsUsefulTemp).ToList()))
-            .Where(g => g.Sensors.Count > 0)
-            .ToList();
-
-        // ===== Hinweis, wenn der Treiber für CPU/Mainboard fehlt =====
-        if (!Driver.PawnIoInstalled)
-        {
-            var banner = new DriverBanner();
-            banner.InstallClicked += async () =>
-            {
-                if (await Driver.InstallAsync(this))
-                {
-                    var r = MessageBox.Show(this,
-                        "PawnIO ist installiert. Toast Temperatur muss neu gestartet werden, damit CPU- und Mainboard-Werte erscheinen.\n\nJetzt neu starten?",
-                        "Neustart", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-                    if (r == DialogResult.Yes) RestartApp();
-                }
-            };
-            _fullWidth.Add(banner);
-            _flow.Controls.Add(banner);
-            _flow.SetFlowBreak(banner, true);
-        }
-
-        // ===== Übersicht: eine große Kachel pro Bauteil-Art =====
-        AddSection("Übersicht", null);
-        if (groups.Count == 0)
-        {
-            var none = new Label
-            {
-                Text = "Keine Temperatursensoren gefunden – Programm als Administrator starten.",
-                ForeColor = Theme.Muted,
-                AutoSize = true,
-                Font = new Font("Segoe UI", 10.5f),
-                Margin = new Padding((int)(10 * K), (int)(6 * K), 0, 0),
-            };
-            _flow.Controls.Add(none);
-            _flow.SetFlowBreak(none, true);
-        }
-        SensorCard? lastHero = null;
-        foreach (var cat in groups.GroupBy(g => Category(g.Hw.HardwareType)))
-        {
-            // Bei mehreren Laufwerken: das wärmste zeigen
-            var g = cat.Count() == 1 ? cat.First()
-                : cat.MaxBy(x => PickMain(x.Hw, x.Sensors).Value ?? 0);
-            var main = PickMain(g.Hw, g.Sensors);
-            var hero = new SensorCard(cat.Key, g.Hw.Name, Theme.ForCategory(cat.Key), big: true)
-            {
-                LoadSensor = LoadFor(g.Hw, main),
-            };
-            hero.Push(main.Value);
-            _cards.Add((main, hero));
-            _heroes.Add((cat.Key switch
-            {
-                "Prozessor" => "CPU", "Grafikkarte" => "GPU", "Mainboard" => "Board",
-                "Laufwerk" => "SSD", "Arbeitsspeicher" => "RAM", _ => cat.Key,
-            }, main));
-            _flow.Controls.Add(hero);
-            lastHero = hero;
-        }
-        if (lastHero != null) _flow.SetFlowBreak(lastHero, true);
-
-        // ===== Details: als Ganzes ein-/ausklappbar, darin jedes Bauteil einzeln =====
-        int total = 0;
-        var details = new CollapsibleHeader("Alle Werte im Detail", "", Theme.Accent, "details", defaultExpanded: false)
-        {
-            Height = (int)(46 * K),
-            Margin = new Padding((int)(6 * K), (int)(18 * K), (int)(6 * K), (int)(4 * K)),
-            Big = true,
-        };
-        _fullWidth.Add(details);
-        _flow.Controls.Add(details);
-        _flow.SetFlowBreak(details, true);
-
+        // Tray-Tooltip: CPU / GPU / Mainboard
+        _heroes.Clear();
         foreach (var hw in _computer.Hardware.OrderBy(h => Order(h.HardwareType)))
         {
-            var all = AllSensors(hw).Where(s => s.Value.HasValue && !IsHiddenSensor(s)).ToList();
-            if (all.Count == 0) continue;
-            total += all.Count;
-
-            string cat = Category(hw.HardwareType);
-            var accent = Theme.ForCategory(cat);
-            bool openByDefault = hw.HardwareType is HardwareType.Cpu or HardwareType.Motherboard
-                or HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel;
-
-            var header = new CollapsibleHeader($"{cat}  ·  {hw.Name}", $"{all.Count} Werte", accent,
-                "hw|" + hw.Identifier, openByDefault)
+            string? shortName = hw.HardwareType switch
             {
-                Height = (int)(42 * K),
-                Margin = new Padding((int)(6 * K), (int)(12 * K), (int)(6 * K), (int)(4 * K)),
+                HardwareType.Cpu => "CPU",
+                HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel => "GPU",
+                HardwareType.Motherboard => "Board",
+                _ => null,
             };
-            _fullWidth.Add(header);
-            _flow.Controls.Add(header);
-            _flow.SetFlowBreak(header, true);
-            details.AddContent(header);
-
-            // Temperatur-Graphen
-            SensorCard? last = null;
-            foreach (var s in all.Where(IsUsefulTemp))
-            {
-                string sub = s.Hardware.Name != hw.Name ? s.Hardware.Name : cat;
-                var card = new SensorCard(s.Name, sub, accent, big: false) { LoadSensor = LoadFor(hw, s) };
-                card.Push(s.Value);
-                _cards.Add((s, card));
-                _flow.Controls.Add(card);
-                header.AddContent(card);
-                last = card;
-            }
-            if (last != null) _flow.SetFlowBreak(last, true);
-
-            // Tabelle mit allen Werten
-            var table = new SensorTable(hw, all, accent);
-            _tables.Add(table);
-            _fullWidth.Add(table);
-            _flow.Controls.Add(table);
-            _flow.SetFlowBreak(table, true);
-            header.AddContent(table);
+            var temps = AllSensors(hw).Where(IsUsefulTemp).ToList();
+            if (shortName != null && temps.Count > 0 && !_heroes.Any(h => h.Short == shortName))
+                _heroes.Add((shortName, PickMain(hw, temps)));
         }
 
-        details.Count = $"{total} Werte · zum Aufklappen klicken";
-        details.ApplyVisibility(true);
-        ResizeFullWidth();
-        _flow.ResumeLayout();
+        _tempArea.SuspendLayout();
+        foreach (var c in _tempArea.Controls.Cast<Control>().ToList()) c.Dispose();
+        _tempArea.Controls.Clear();
+        _dash = new DashboardView(_computer, _history, OpenPage, CreateBanner) { Dock = DockStyle.Fill };
+        _tempArea.Controls.Add(_dash);
+        _tempArea.ResumeLayout();
+
+        int total = _computer.Hardware.Sum(h => AllSensors(h).Count(s => s.Value.HasValue));
         _status.Text = $"{total} Werte gefunden";
+    }
+
+    /// Gelber Hinweis, wenn der Treiber für CPU/Mainboard fehlt (sonst null)
+    Control? CreateBanner()
+    {
+        if (Driver.PawnIoInstalled) return null;
+        var banner = new DriverBanner();
+        banner.InstallClicked += async () =>
+        {
+            if (await Driver.InstallAsync(this))
+            {
+                var r = MessageBox.Show(this,
+                    "PawnIO ist installiert. Toast Temperatur muss neu gestartet werden, damit CPU- und Mainboard-Werte erscheinen.\n\nJetzt neu starten?",
+                    "Neustart", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+                if (r == DialogResult.Yes) RestartApp();
+            }
+        };
+        return banner;
+    }
+
+    /// Detailseite eines Bauteils öffnen
+    void OpenPage(IHardware hw)
+    {
+        BeginInvoke(() =>
+        {
+            ShowTab(false);
+            _tempArea.SuspendLayout();
+            _page?.Dispose();
+            _page = new ComponentPage(_computer, hw, _history, ShowDashboard, PinSensor) { Dock = DockStyle.Fill };
+            _tempArea.Controls.Add(_page);
+            _page.BringToFront();
+            if (_dash != null) _dash.Visible = false;
+            _tempArea.ResumeLayout();
+        });
+    }
+
+    void ShowDashboard()
+    {
+        if (_page == null) return;
+        _page.Dispose();
+        _page = null;
+        if (_dash != null) { _dash.Visible = true; _dash.RefreshValues(); }
+    }
+
+    void PinSensor(ISensor s)
+    {
+        _dash?.AddSensorTile(s);
+        _tray.ShowBalloonTip(2500, "Angeheftet", $"„{Hw.SensorLabel(s)}“ ist jetzt in der Übersicht.", ToolTipIcon.Info);
     }
 
     /// Spalten der Aufzeichnung: alle Temperaturen, die Hauptauslastungen und die Lüfter
@@ -701,24 +632,6 @@ sealed class MainForm : Form
         Close();
     }
 
-    void AddSection(string text, Color? accent)
-    {
-        var h = new SectionHeader(text, accent)
-        {
-            Height = (int)(40 * K),
-            Margin = new Padding((int)(6 * K), (int)(14 * K), (int)(6 * K), (int)(4 * K)),
-        };
-        _fullWidth.Add(h);
-        _flow.Controls.Add(h);
-        _flow.SetFlowBreak(h, true);
-    }
-
-    void ResizeFullWidth()
-    {
-        int w = Math.Max(100, _flow.ClientSize.Width - _flow.Padding.Horizontal - (int)(16 * K));
-        foreach (var c in _fullWidth) c.Width = w;
-    }
-
     async Task RefreshAsync()
     {
         if (_busy) return;
@@ -730,23 +643,19 @@ sealed class MainForm : Form
             {
                 _computer.Accept(_visitor);
                 fans?.Tick();
+                _history.Record(_computer);
                 _logger.Tick();
             });
 
-            if (Visible)
+            // Nur zeichnen, wenn man es sieht – der Verlauf läuft immer weiter
+            if (Visible && WindowState != FormWindowState.Minimized)
             {
-                foreach (var (sensor, card) in _cards)
+                if (_tempArea.Visible)
                 {
-                    if (card.Visible) card.Push(sensor.Value); else card.PushSilent(sensor.Value);
+                    if (_page != null) _page.RefreshValues();
+                    else _dash?.RefreshValues();
                 }
-                if (_flow.Visible)
-                    foreach (var t in _tables) if (t.Visible) t.Invalidate();
                 if (_fanView is { Visible: true }) _fanView.RefreshValues();
-            }
-            else
-            {
-                // Verlauf trotzdem weiterführen, nur nicht neu zeichnen
-                foreach (var (sensor, card) in _cards) card.PushSilent(sensor.Value);
             }
 
             string prof = fans != null && fans.Channels.Count > 0 ? $" · Lüfter: {Profiles.Get(fans.Profile).Title}" : "";
@@ -891,255 +800,5 @@ sealed class LegendBar : Panel
             TextRenderer.DrawText(g, t, Font, new Point(x, (Height - sz.Height) / 2), Theme.Muted);
             x += sz.Width + (int)(18 * k);
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Kachel pro Sensor. "big" = große Übersichtskachel.
-// Zeigt Name, aktuellen Wert, Status, Min/Max und Verlaufsgraph (5 Min.)
-// Doppelklick setzt Min/Max zurück.
-// ---------------------------------------------------------------------------
-sealed class SensorCard : Control
-{
-    const int MaxPoints = 300; // 300 Sekunden = 5 Minuten
-
-    static readonly Font TitleFont   = new("Segoe UI Semibold", 10f);
-    static readonly Font HeroTitle   = new("Segoe UI Semibold", 12f);
-    static readonly Font SmallFont   = new("Segoe UI", 8f);
-    static readonly Font ValueFont   = new("Segoe UI Semibold", 17f);
-    static readonly Font HeroValue   = new("Segoe UI Semibold", 30f);
-    static readonly Font BadgeFont   = new("Segoe UI Semibold", 8.5f);
-
-    readonly List<float> _hist = new();
-    readonly List<float> _loadHist = new();
-    readonly string _title, _subtitle;
-    float? _load;
-
-    /// Optional: passende Auslastung – wird als gestrichelte Linie mitgezeichnet
-    public ISensor? LoadSensor { get; set; }
-    readonly Color _accent;
-    readonly bool _big;
-    float? _cur;
-    float _min = float.MaxValue, _max = float.MinValue;
-
-    public SensorCard(string title, string subtitle, Color accent, bool big)
-    {
-        _title = title;
-        _subtitle = subtitle;
-        _accent = accent;
-        _big = big;
-        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
-                 ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
-        BackColor = Theme.Background;
-        Cursor = Cursors.Default;
-        new ToolTip().SetToolTip(this, "Doppelklick: Min/Max zurücksetzen");
-    }
-
-    protected override void OnCreateControl() { base.OnCreateControl(); ApplySize(); }
-    protected override void OnParentChanged(EventArgs e) { base.OnParentChanged(e); ApplySize(); }
-
-    void ApplySize()
-    {
-        float k = DeviceDpi / 96f;
-        Size = _big ? new Size((int)(292 * k), (int)(214 * k)) : new Size((int)(292 * k), (int)(168 * k));
-        Margin = new Padding((int)(6 * k));
-    }
-
-    /// Wert in den Verlauf aufnehmen, ohne neu zu zeichnen (Fenster versteckt)
-    public void PushSilent(float? value)
-    {
-        _cur = value;
-        if (value is float v)
-        {
-            _hist.Add(v);
-            if (_hist.Count > MaxPoints) _hist.RemoveAt(0);
-            _min = Math.Min(_min, v);
-            _max = Math.Max(_max, v);
-
-            if (LoadSensor != null)
-            {
-                _load = LoadSensor.Value;
-                _loadHist.Add(Math.Clamp(_load ?? 0, 0, 100));
-                if (_loadHist.Count > MaxPoints) _loadHist.RemoveAt(0);
-            }
-        }
-    }
-
-    public void Push(float? value)
-    {
-        PushSilent(value);
-        Invalidate();
-    }
-
-    protected override void OnDoubleClick(EventArgs e)
-    {
-        base.OnDoubleClick(e);
-        _min = _hist.Count > 0 ? _hist[^1] : float.MaxValue;
-        _max = _hist.Count > 0 ? _hist[^1] : float.MinValue;
-        Invalidate();
-    }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        var g = e.Graphics;
-        float k = DeviceDpi / 96f;
-        int S(float px) => (int)(px * k);
-
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
-        g.Clear(Theme.Background);
-
-        // Kachel-Hintergrund + farbige Kante oben (Bauteil-Farbe)
-        var rect = new Rectangle(0, 0, Width - 1, Height - 1);
-        using (var path = RoundRect(rect, S(12)))
-        using (var bg = new SolidBrush(_big ? Theme.CardHero : Theme.Card))
-        using (var border = new Pen(Theme.Border))
-        {
-            g.FillPath(bg, path);
-            var oldClip = g.Clip;
-            g.SetClip(path);
-            using (var acc = new SolidBrush(_accent))
-                g.FillRectangle(acc, 0, 0, Width, S(_big ? 4 : 3));
-            g.Clip = oldClip;
-            g.DrawPath(border, path);
-        }
-
-        var col = _cur is float c ? Theme.ForTemp(c) : Theme.Muted;
-        const TextFormatFlags L = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding;
-        const TextFormatFlags R = TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
-
-        Rectangle graph;
-        if (_big)
-        {
-            // Übersichtskachel: Kategorie groß, darunter Bauteilname, dann riesiger Wert + Status
-            TextRenderer.DrawText(g, _title, HeroTitle, new Rectangle(S(16), S(12), Width - S(32), S(24)), _accent, L);
-            TextRenderer.DrawText(g, _subtitle, SmallFont, new Rectangle(S(16), S(36), Width - S(32), S(16)), Theme.Muted, L);
-
-            string val = _cur is float v ? $"{v:0}°" : "–";
-            TextRenderer.DrawText(g, val, HeroValue, new Rectangle(S(12), S(54), S(150), S(52)), col, L);
-
-            if (_cur is float vv) DrawBadge(g, Theme.Status(vv), col, new Point(Width - S(16), S(66)), k);
-            if (_max > float.MinValue)
-                TextRenderer.DrawText(g, $"min {_min:0}°  ·  max {_max:0}°", SmallFont,
-                    new Rectangle(S(100), S(92), Width - S(116), S(16)), Theme.Muted, R);
-            if (_load is float ld)
-                TextRenderer.DrawText(g, $"Last {ld:0} %", BadgeFont,
-                    new Rectangle(S(150), S(44), Width - S(166), S(18)), Theme.Accent, R);
-
-            graph = new Rectangle(S(16), S(116), Width - S(32), Height - S(130));
-            DrawGraph(g, graph, col, k, axis: false);
-        }
-        else
-        {
-            TextRenderer.DrawText(g, _title, TitleFont, new Rectangle(S(12), S(10), Width - S(130), S(22)), Theme.Text, L);
-            TextRenderer.DrawText(g, _subtitle, SmallFont, new Rectangle(S(12), S(31), Width - S(130), S(16)), Theme.Muted, L);
-            if (_load is float ld)
-                TextRenderer.DrawText(g, $"Last {ld:0} %", SmallFont, new Rectangle(S(12), S(44), S(120), S(14)), Theme.Accent, L);
-            TextRenderer.DrawText(g, _cur is float v ? $"{v:0.0} °C" : "–", ValueFont,
-                new Rectangle(Width - S(130), S(8), S(118), S(30)), col, R);
-            if (_max > float.MinValue)
-                TextRenderer.DrawText(g, $"min {_min:0} · max {_max:0}", SmallFont,
-                    new Rectangle(Width - S(160), S(36), S(148), S(14)), Theme.Muted, R);
-
-            graph = new Rectangle(S(34), S(58), Width - S(46), Height - S(78));
-            DrawGraph(g, graph, col, k, axis: true);
-        }
-    }
-
-    void DrawBadge(Graphics g, string text, Color col, Point rightTop, float k)
-    {
-        var sz = TextRenderer.MeasureText(text, BadgeFont);
-        var r = new Rectangle(rightTop.X - sz.Width - (int)(16 * k), rightTop.Y, sz.Width + (int)(16 * k), (int)(22 * k));
-        using (var p = RoundRect(r, r.Height / 2))
-        using (var b = new SolidBrush(Color.FromArgb(40, col)))
-            g.FillPath(b, p);
-        TextRenderer.DrawText(g, text, BadgeFont, r, col,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-    }
-
-    void DrawGraph(Graphics g, Rectangle gr, Color col, float k, bool axis)
-    {
-        int S(float px) => (int)(px * k);
-        if (_hist.Count == 0 || gr.Width < 10 || gr.Height < 10) return;
-
-        float dMin = _hist.Min(), dMax = _hist.Max();
-        float lo = (float)Math.Floor((dMin - 3) / 10f) * 10f;
-        float hi = (float)Math.Ceiling((dMax + 3) / 10f) * 10f;
-        if (lo < 0 && dMin >= 0) lo = 0;
-        if (hi - lo < 20) hi = lo + 20;
-
-        const TextFormatFlags L = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
-        const TextFormatFlags R = TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
-
-        using (var gridPen = new Pen(Theme.Grid) { DashStyle = DashStyle.Dot })
-        {
-            const int steps = 4;
-            for (int i = 0; i <= steps; i++)
-            {
-                float val = lo + (hi - lo) * i / steps;
-                float y = gr.Bottom - gr.Height * i / (float)steps;
-                if (axis || i == 0 || i == steps) g.DrawLine(gridPen, gr.Left, y, gr.Right, y);
-                if (axis)
-                    TextRenderer.DrawText(g, $"{val:0}", SmallFont,
-                        new Rectangle(0, (int)y - S(7), gr.Left - S(5), S(14)), Theme.Muted, R);
-            }
-        }
-        if (axis)
-        {
-            TextRenderer.DrawText(g, "−5 min", SmallFont, new Rectangle(gr.Left, gr.Bottom + S(3), S(60), S(14)), Theme.Muted, L);
-            TextRenderer.DrawText(g, "jetzt", SmallFont, new Rectangle(gr.Right - S(60), gr.Bottom + S(3), S(60), S(14)), Theme.Muted, R);
-        }
-
-        float dx = gr.Width / (float)(MaxPoints - 1);
-        var pts = new PointF[_hist.Count];
-        for (int i = 0; i < _hist.Count; i++)
-        {
-            float x = gr.Right - (_hist.Count - 1 - i) * dx;
-            float y = gr.Bottom - (_hist[i] - lo) / (hi - lo) * gr.Height;
-            pts[i] = new PointF(x, y);
-        }
-
-        if (pts.Length >= 2)
-        {
-            var poly = new PointF[pts.Length + 2];
-            pts.CopyTo(poly, 0);
-            poly[^2] = new PointF(pts[^1].X, gr.Bottom);
-            poly[^1] = new PointF(pts[0].X, gr.Bottom);
-
-            using var fill = new LinearGradientBrush(new Rectangle(gr.X, gr.Y - 1, gr.Width, gr.Height + 2),
-                Color.FromArgb(90, col), Color.FromArgb(6, col), LinearGradientMode.Vertical);
-            g.FillPolygon(fill, poly);
-            using var line = new Pen(col, (_big ? 2.5f : 2f) * k) { LineJoin = LineJoin.Round };
-            g.DrawLines(line, pts);
-        }
-
-        // Auslastung (0–100 %) als gestrichelte Linie auf eigener Skala
-        if (_loadHist.Count >= 2)
-        {
-            var lp = new PointF[_loadHist.Count];
-            for (int i = 0; i < _loadHist.Count; i++)
-                lp[i] = new PointF(gr.Right - (_loadHist.Count - 1 - i) * dx,
-                                   gr.Bottom - _loadHist[i] / 100f * gr.Height);
-            using var lpen = new Pen(Color.FromArgb(200, Theme.Accent), 1.5f * k) { DashStyle = DashStyle.Dash };
-            g.DrawLines(lpen, lp);
-            TextRenderer.DrawText(g, "- - Last", SmallFont, new Rectangle(gr.Right - S(60), gr.Top - S(1), S(60), S(14)),
-                Theme.Accent, R);
-        }
-
-        var p = pts[^1];
-        using (var dot = new SolidBrush(col))
-            g.FillEllipse(dot, p.X - 3.5f * k, p.Y - 3.5f * k, 7f * k, 7f * k);
-    }
-
-    static GraphicsPath RoundRect(Rectangle r, int radius)
-    {
-        int d = Math.Max(1, Math.Min(radius * 2, Math.Min(r.Width, r.Height)));
-        var path = new GraphicsPath();
-        path.AddArc(r.X, r.Y, d, d, 180, 90);
-        path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
-        path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
-        path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
-        path.CloseFigure();
-        return path;
     }
 }
