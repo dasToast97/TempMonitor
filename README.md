@@ -33,10 +33,18 @@ für jeden Sensor einen Verlaufsgraphen der letzten 5 Minuten zeigt.
 
 **Sicherheit (optional, standardmäßig aus):** Notkühlung mit einstellbaren Grenzwerten für CPU, GPU und Mainboard
 und Stillstand-Erkennung. Beim Beenden oder Absturz übernimmt immer wieder das BIOS.
-Bei aktiver Steuerung läuft das Programm beim Schließen im Infobereich weiter.
 
 Mainboard-Lüfter brauchen den Treiber **PawnIO** (der Installer bietet ihn an). Hersteller-Tools
 (Armoury Crate, MSI Center, iCUE …) sollten nicht gleichzeitig die Lüfter steuern.
+
+### Hintergrund & Aufzeichnung
+
+- Das **X schließt nicht**, sondern versteckt das Fenster – das Programm läuft im Infobereich weiter.
+  Öffnen per Doppelklick auf das Symbol, **Beenden nur per Rechtsklick → Beenden**.
+- **Aufzeichnung:** alle Temperaturen, Auslastungen, CPU-Leistung und Lüfter werden alle 5 Sekunden in
+  `Dokumente\Toast Temperatur\Toast-Temperatur_JJJJ-MM-TT.csv` geschrieben (öffnet sich direkt in Excel).
+  Ein-/ausschalten und Ordner öffnen über das Rechtsklick-Menü.
+- **Mit Windows starten:** im Installer oder im Rechtsklick-Menü. Startet unsichtbar im Hintergrund.
 
 Sensoren kommen aus [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor).
 

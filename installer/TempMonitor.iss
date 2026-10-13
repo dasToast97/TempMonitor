@@ -48,7 +48,7 @@ Name: "german"; MessagesFile: "compiler:Languages\German.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Verknüpfung auf dem Desktop erstellen"; GroupDescription: "Zusätzliche Verknüpfungen:"
 Name: "pawnio"; Description: "Treiber PawnIO mitinstallieren (nötig für CPU- und Mainboard-Werte und Mainboard-Lüfter, wird von pawnio.eu geladen)"; GroupDescription: "Treiber:"; Check: ShowPawnIoTask
-Name: "autostart"; Description: "Beim Windows-Start im Infobereich starten (nötig, damit die Lüftersteuerung immer aktiv ist)"; GroupDescription: "Zusätzliche Optionen:"; Flags: unchecked
+Name: "autostart"; Description: "Mit Windows starten – läuft unsichtbar im Hintergrund, zeichnet auf und steuert die Lüfter"; GroupDescription: "Zusätzliche Optionen:"
 
 [Files]
 Source: "..\publish\{#MyAppExe}"; DestDir: "{app}"; Flags: ignoreversion
@@ -72,7 +72,7 @@ Filename: "{tmp}\PawnIO_setup.exe"; Parameters: "-install"; StatusMsg: "Installi
 Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /TN ""TempMonitor"" /TR ""\""{app}\{#MyAppExe}\"" /tray"" /SC ONLOGON /RL HIGHEST"; Flags: runhidden; Tasks: autostart
 ; Kein 72-Stunden-Zeitlimit, auch im Akkubetrieb laufen lassen
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; Set-ScheduledTask -TaskName 'TempMonitor' -Settings $s"""; Flags: runhidden; Tasks: autostart
-Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""TempMonitor"""; Flags: runhidden; Tasks: not autostart
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""TempMonitor"""; Flags: runhidden; Tasks: not autostart; Check: not WizardSilent
 ; Nach normaler Installation: Häkchen "Programm starten"
 Filename: "{app}\{#MyAppExe}"; Description: "{#MyAppName} jetzt starten"; Flags: nowait postinstall skipifsilent shellexec
 ; Nach automatischem Update (stille Installation): direkt wieder starten

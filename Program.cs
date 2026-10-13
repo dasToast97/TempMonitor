@@ -15,7 +15,7 @@ static class Program
     {
         // Nur eine Instanz gleichzeitig (wichtig auch für den Updater)
         using var mutex = new Mutex(true, "TempMonitor_SingleInstance", out bool first);
-        if (!first) return;
+        if (!first) { SingleInstance.SignalFirst(); return; }   // läuft schon -> Fenster dort öffnen
 
         StartInTray = args.Any(a => a.Equals("/tray", StringComparison.OrdinalIgnoreCase));
 
@@ -113,6 +113,7 @@ sealed class MainForm : Form
     readonly TabButton _tempTab, _fanTab;
     readonly List<(string Short, ISensor Sensor)> _heroes = new();
     readonly List<SensorTable> _tables = new();
+    readonly DataLogger _logger = new();
     bool _exiting, _shownOnce, _loaded;
 
     float K => DeviceDpi / 96f;
@@ -293,6 +294,8 @@ sealed class MainForm : Form
             _status.Text = "Lüftersteuerung nicht verfügbar: " + ex.Message;
         }
         UpdateTrayMenu();
+        SetupLogger();
+        SingleInstance.Listen(() => { try { BeginInvoke(RestoreFromTray); } catch { } });
 
         _timer.Tick += async (_, _) => await RefreshAsync();
         _timer.Start();
@@ -337,6 +340,24 @@ sealed class MainForm : Form
             }
         }
         menu.Items.Add(new ToolStripSeparator());
+
+        var log = new ToolStripMenuItem("Aufzeichnung aktiv") { Checked = AppSettings.Instance.LogEnabled, CheckOnClick = true };
+        log.CheckedChanged += (_, _) => { AppSettings.Instance.LogEnabled = log.Checked; AppSettings.Instance.Save(); };
+        menu.Items.Add(log);
+        menu.Items.Add("Aufzeichnungen öffnen", null, (_, _) => DataLogger.OpenFolder());
+
+        var auto = new ToolStripMenuItem("Mit Windows starten (im Hintergrund)");
+        auto.Click += (_, _) =>
+        {
+            bool ok = auto.Checked ? Autostart.Disable() : Autostart.Enable();
+            if (!ok)
+                _tray.ShowBalloonTip(4000, "Autostart", "Autostart konnte nicht geändert werden.", ToolTipIcon.Warning);
+        };
+        menu.Items.Add(auto);
+        // Autostart-Zustand erst beim Öffnen des Menüs prüfen (fragt die Aufgabenplanung)
+        menu.Opening += (_, _) => auto.Checked = Autostart.IsEnabled;
+
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Beenden", null, (_, _) => { _exiting = true; Close(); });
         var old = _tray.ContextMenuStrip;
         _tray.ContextMenuStrip = menu;
@@ -365,31 +386,23 @@ sealed class MainForm : Form
         base.SetVisibleCore(value);
     }
 
-    protected override void OnResize(EventArgs e)
-    {
-        base.OnResize(e);
-        // Minimieren -> in den Infobereich, damit die Lüftersteuerung weiterläuft
-        if (WindowState == FormWindowState.Minimized && _fans != null && _fans.Profile != FanProfile.Bios)
-        {
-            Hide();
-            if (!_fans.Settings.TrayHintShown)
-            {
-                _tray.ShowBalloonTip(4000, "Läuft weiter",
-                    "Die Lüftersteuerung läuft im Infobereich weiter. Doppelklick auf das Symbol öffnet das Fenster.",
-                    ToolTipIcon.Info);
-                _fans.Settings.TrayHintShown = true;
-                _fans.Save();
-            }
-        }
-    }
-
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        // Schließen-Knopf bei aktiver Lüftersteuerung = in den Infobereich
-        if (!_exiting && e.CloseReason == CloseReason.UserClosing && _fans != null && _fans.Profile != FanProfile.Bios)
+        // Das X schließt nicht, sondern versteckt das Fenster: Aufzeichnung und Lüftersteuerung laufen weiter.
+        // Beenden nur über Rechtsklick auf das Symbol im Infobereich (oder beim Herunterfahren).
+        if (!_exiting && e.CloseReason == CloseReason.UserClosing)
         {
             e.Cancel = true;
-            WindowState = FormWindowState.Minimized;
+            Hide();
+            if (!AppSettings.Instance.CloseHintShown)
+            {
+                _tray.ShowBalloonTip(5000, "Toast Temperatur läuft weiter",
+                    "Das Programm zeichnet im Hintergrund weiter auf. Öffnen: Doppelklick auf das Symbol. " +
+                    "Beenden: Rechtsklick auf das Symbol → Beenden.",
+                    ToolTipIcon.Info);
+                AppSettings.Instance.CloseHintShown = true;
+                AppSettings.Instance.Save();
+            }
             return;
         }
         base.OnFormClosing(e);
@@ -641,6 +654,37 @@ sealed class MainForm : Form
         _status.Text = $"{total} Werte gefunden";
     }
 
+    /// Spalten der Aufzeichnung: alle Temperaturen, die Hauptauslastungen und die Lüfter
+    void SetupLogger()
+    {
+        _logger.Clear();
+        foreach (var hw in _computer.Hardware.OrderBy(h => Order(h.HardwareType)))
+        {
+            string cat = Category(hw.HardwareType);
+            foreach (var s in AllSensors(hw).Where(IsUsefulTemp))
+            {
+                var sensor = s;
+                _logger.Add($"{cat} {sensor.Name} [°C]", () => sensor.Value);
+            }
+            if (MainLoad(hw) is ISensor load)
+                _logger.Add($"{cat} Auslastung [%]", () => load.Value);
+            foreach (var s in AllSensors(hw).Where(x => x.SensorType == SensorType.Power && x.Name.Contains("Package", StringComparison.OrdinalIgnoreCase)))
+            {
+                var sensor = s;
+                _logger.Add($"{cat} {sensor.Name} [W]", () => sensor.Value);
+            }
+        }
+        if (_fans != null)
+        {
+            foreach (var ch in _fans.Channels)
+            {
+                var c = ch;
+                if (c.Rpm != null) _logger.Add($"{c.DisplayName} [U/min]", () => c.Rpm?.Value);
+                _logger.Add($"{c.DisplayName} [%]", () => c.Output >= 0 ? c.Output : c.ControlSensor.Value);
+            }
+        }
+    }
+
     /// Programm neu starten (z. B. nach Treiber-Installation)
     void RestartApp()
     {
@@ -686,6 +730,7 @@ sealed class MainForm : Form
             {
                 _computer.Accept(_visitor);
                 fans?.Tick();
+                _logger.Tick();
             });
 
             if (Visible)
@@ -705,7 +750,8 @@ sealed class MainForm : Form
             }
 
             string prof = fans != null && fans.Channels.Count > 0 ? $" · Lüfter: {Profiles.Get(fans.Profile).Title}" : "";
-            _status.Text = $"Live · {DateTime.Now:HH:mm:ss}{prof}";
+            string rec = _logger.Enabled ? (_logger.LastError != null ? " · ⚠ Aufzeichnung: " + _logger.LastError : " · ● Aufzeichnung") : "";
+            _status.Text = $"Live · {DateTime.Now:HH:mm:ss}{prof}{rec}";
 
             // Tooltip im Infobereich: wichtigste Temperaturen
             string tip = string.Join("  ", _heroes.Select(h => $"{h.Short} {h.Sensor.Value:0}°"));
