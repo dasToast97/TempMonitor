@@ -203,6 +203,9 @@ sealed class FanSettings
     public FanProfile IdleProfile { get; set; } = FanProfile.Eco;
 
     // ----- Lüfter-Stopp im Leerlauf -----
+    // ----- Laptop (Tongfang): Leistungsmodus folgt dem Lüfterprofil -----
+    public bool LaptopControl { get; set; } = true;
+
     // ----- XMG Oasis (Bluetooth) -----
     public bool OasisEnabled { get; set; } = true;
     public ulong? OasisAddress { get; set; }
@@ -639,6 +642,75 @@ sealed class FanController
     // ---------------------------------------------------------------------
     public bool Calibrating => Channels.Any(c => c.CalPhase > 0);
 
+    /// Laptop-Lüfter über die Tongfang-Firmware (nur Modus, keine eigene Kurve)
+    public TongfangLaptop? Laptop { get; set; }
+    public string LaptopStatus { get; private set; } = "";
+    int? _laptopWant;
+    DateTime _laptopRead = DateTime.MinValue, _laptopSet = DateTime.MinValue;
+    int _laptopStep;          // 0 = Grundmodus, 1 = eine Stufe kräftiger (zu warm)
+    DateTime _laptopStepAt = DateTime.MinValue;
+
+    void TickLaptop(ProfileInfo prof)
+    {
+        var l = Laptop;
+        if (l == null) return;
+        var now = DateTime.Now;
+        if ((now - _laptopRead).TotalSeconds >= 3) { _laptopRead = now; l.Refresh(); }
+
+        if (!_s.LaptopControl || prof.Profile == FanProfile.Bios)
+        {
+            if (l.Changed) l.Restore();
+            _laptopWant = null;
+            LaptopStatus = !_s.LaptopControl ? "Steuert das Control Center" : "Profil „Standard (BIOS)“ – Laptop regelt selbst";
+            return;
+        }
+
+        // Grundmodus je Profil
+        int baseMode = prof.Profile switch
+        {
+            FanProfile.Eco => TongfangLaptop.ModeQuiet,
+            FanProfile.Performance or FanProfile.Max => TongfangLaptop.ModePerformance,
+            _ => TongfangLaptop.ModeBalanced,
+        };
+
+        // Smart: wird CPU oder GPU deutlich wärmer als das Ziel, eine Stufe kräftiger – mit Hysterese
+        string why = "";
+        if (prof.Adaptive)
+        {
+            var targets = _s.TargetsFor(prof.Profile);
+            float over = new[] { Component.Cpu, Component.Gpu }
+                .Select(c => Temp(c) is float t ? t - targets[(int)c] : float.MinValue).Max();
+            if (_laptopStep == 0 && over >= 8 && (now - _laptopStepAt).TotalSeconds >= 20) { _laptopStep = 1; _laptopStepAt = now; }
+            else if (_laptopStep == 1 && over <= -2 && (now - _laptopStepAt).TotalSeconds >= 60) { _laptopStep = 0; _laptopStepAt = now; }
+            if (_laptopStep == 1) why = " · wärmer als das Ziel → eine Stufe kräftiger";
+        }
+        else _laptopStep = 0;
+
+        int mode = baseMode;
+        if (_laptopStep == 1) mode = baseMode == TongfangLaptop.ModeQuiet ? TongfangLaptop.ModeBalanced : TongfangLaptop.ModePerformance;
+
+        bool hot = _s.EmergencyEnabled && Components.All.Any(c => Temp(c) is float t && t >= _s.Critical(c));
+        bool boost = prof.Profile == FanProfile.Max || hot;
+
+        if (mode != _laptopWant)
+        {
+            if (mode == TongfangLaptop.ModePerformance && l.OnUsbC()) { mode = TongfangLaptop.ModeBalanced; why += " · am USB-C-Netzteil kein Leistungsmodus"; }
+            _laptopWant = mode;
+            _laptopSet = now;
+            l.SetMode(mode);
+        }
+        else if (l.Mode != mode && (now - _laptopSet).TotalSeconds >= 15)
+        {
+            // Jemand (z. B. das Control Center) hat umgestellt -> zurückholen
+            _laptopSet = now;
+            l.SetMode(mode);
+        }
+        if (boost != l.Boost) l.SetBoost(boost);
+
+        LaptopStatus = $"Modus {TongfangLaptop.ModeName(l.Mode)}" + (l.Boost ? " · Lüfter-Boost an" : "") + why +
+                       (l.LastError != null ? $" · Fehler: {l.LastError}" : "");
+    }
+
     /// Wird ausgelöst, wenn später Lüfter dazukommen (z. B. XMG Oasis gefunden)
     public event Action? ChannelsChanged;
 
@@ -951,6 +1023,7 @@ sealed class FanController
         lock (_lock)
         {
             foreach (var ch in Channels) SafeDefault(ch);
+            try { Laptop?.Restore(); } catch { }
             _s.Save();
         }
     }
@@ -979,6 +1052,7 @@ sealed class FanController
         lock (_lock)
         {
             var prof = Profiles.Get(Profile);
+            try { TickLaptop(prof); } catch (Exception ex) { LaptopStatus = "Fehler: " + ex.Message; }
             // Erst die regelnden Lüfter, dann die Gruppen-Mitglieder, die ihnen folgen
             foreach (bool followers in new[] { false, true })
             {

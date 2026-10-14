@@ -16,6 +16,7 @@ sealed class FanView : FlowLayoutPanel
     TargetsPanel? _targets;
     CalibrationPanel? _calib;
     Label? _oasisState;
+    Label? _laptopState;
 
     float K => DeviceDpi / 96f;
     int S(float px) => (int)(px * K);
@@ -118,6 +119,22 @@ sealed class FanView : FlowLayoutPanel
             if (lastCard != null) SetFlowBreak(lastCard, true);
         }
 
+        // ----- Laptop (Tongfang) -----
+        _laptopState = null;
+        if (_ctl.Laptop is TongfangLaptop lap)
+        {
+            AddSection("Laptop-Lüfter", Color.FromArgb(148, 163, 184));
+            var c = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+            _laptopState = c.Note(LaptopText(lap), muted: false);
+            c.Note("Die Laptop-Lüfter lassen sich nur über den Leistungsmodus der Firmware steuern (wie im Control Center), nicht mit einer eigenen Kurve. " +
+                   "Toast Temperatur stellt ihn passend zum Lüfterprofil ein: Energiesparend → Leise, Ausgewogen → Ausgewogen, Leistung → Leistung, " +
+                   "Maximale Kühlung → Lüfter-Boost. In den Smart-Profilen geht es eine Stufe hoch, wenn CPU oder GPU deutlich über dem Ziel liegen. " +
+                   "Beim Beenden wird der ursprüngliche Modus wiederhergestellt.");
+            c.Check("Leistungsmodus des Laptops mit dem Lüfterprofil steuern", _ctl.Settings.LaptopControl,
+                v => { _ctl.Settings.LaptopControl = v; _ctl.Save(); });
+            AddFull(c);
+        }
+
         // ----- XMG Oasis -----
         _oasisState = null;
         if (OasisLink.Instance is OasisLink link)
@@ -187,6 +204,12 @@ sealed class FanView : FlowLayoutPanel
         c.Check("Nach der XMG Oasis suchen (nach dem Ausschalten: Neustart)", st.OasisEnabled, v => { st.OasisEnabled = v; _ctl.Save(); });
         return c;
     }
+
+    string LaptopText(TongfangLaptop l) =>
+        $"CPU-Lüfter {Rpm(l.CpuRpm)}  ·  GPU-Lüfter {Rpm(l.GpuRpm)}" + (l.SysRpm is > 0 ? $"  ·  System-Lüfter {Rpm(l.SysRpm)}" : "") +
+        $"\n{_ctl.LaptopStatus}";
+
+    static string Rpm(int? r) => r is int v ? $"{v:N0} U/min" : "–";
 
     static string OasisText(OasisLink l)
     {
@@ -385,6 +408,11 @@ sealed class FanView : FlowLayoutPanel
     {
         foreach (var c in _cards) c.RefreshValues();
         _calib?.RefreshValues();
+        if (_laptopState != null && _ctl.Laptop is TongfangLaptop lp)
+        {
+            string t = LaptopText(lp);
+            if (_laptopState.Text != t) _laptopState.Text = t;
+        }
         if (_oasisState != null && OasisLink.Instance is OasisLink ol)
         {
             string t = OasisText(ol);

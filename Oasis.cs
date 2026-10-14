@@ -291,7 +291,8 @@ sealed class OasisLink
         lock (_gate) { fan = _fan; pump = _pump; }
         int volt = Math.Clamp(_s.OasisPumpVoltage, 0, 3);
         // Alle 30 s erneut senden, falls das Control Center dazwischengefunkt hat
-        bool keepAlive = (DateTime.Now - _lastSend).TotalSeconds >= 30;
+        // Läuft das Control Center, alle 5 s – so setzt sich Toast Temperatur durch
+        bool keepAlive = (DateTime.Now - _lastSend).TotalSeconds >= (ControlCenterRunning ? 5 : 30);
 
         if (fan >= 0 && (Math.Abs(fan - _sentFan) >= 1 || keepAlive))
         {

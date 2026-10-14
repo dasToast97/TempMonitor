@@ -369,6 +369,11 @@ sealed class MainForm : Form
             FanController.Current = _fans;
             Program.Step($"{_fans.Channels.Count} Lüfter gefunden");
             StartOasis(_fans);
+            if (System.Windows.Forms.SystemInformation.PowerStatus.BatteryChargeStatus != BatteryChargeStatus.NoSystemBattery)
+            {
+                Program.Step("Laptop-Schnittstelle prüfen");
+                _fans.Laptop = TongfangLaptop.Probe();
+            }
         }
         catch (Exception ex)
         {
@@ -829,6 +834,12 @@ sealed class MainForm : Form
         {
             AppSettings.Instance.LogKeys = keys;
             AppSettings.Instance.Save();
+        }
+        if (_fans?.Laptop is TongfangLaptop lap)
+        {
+            _logger.Add("Laptop CPU-Lüfter [U/min]", () => lap.CpuRpm);
+            _logger.Add("Laptop GPU-Lüfter [U/min]", () => lap.GpuRpm);
+            _logger.Add("Laptop System-Lüfter [U/min]", () => lap.SysRpm);
         }
         if (_fans != null)
         {
