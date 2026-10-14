@@ -177,7 +177,8 @@ sealed class FanSettings
 
     /// Version des Lernverfahrens – bei Änderungen wird altes Gelerntes verworfen
     public int LearnVersion { get; set; }
-    public const int CurrentLearnVersion = 2;
+    public const int CurrentLearnVersion = 3;
+    const float WeakEffectLimit = 0.3f;
 
     /// Mindestleistung für Pumpen (Wasserkühlung), damit sie nie zu langsam laufen
     public float PumpMinPercent { get; set; } = 60f;
@@ -231,6 +232,15 @@ sealed class FanSettings
             if (File.Exists(FilePath))
             {
                 var s = JsonSerializer.Deserialize<FanSettings>(File.ReadAllText(FilePath)) ?? new();
+                if (s.LearnVersion == 2)
+                {
+                    // Version 3: früher konnte die Wirkung negativ gemessen werden (Bauteil heizt gerade auf)
+                    // -> Lüfter wurde fälschlich gedämpft. Nur diese Messwerte verwerfen, Gelerntes bleibt.
+                    foreach (var f in s.Fans.Values)
+                        foreach (var k in f.Effect.Where(kv => kv.Value < WeakEffectLimit).Select(kv => kv.Key).ToList())
+                            f.Effect.Remove(k);
+                    s.LearnVersion = 3;
+                }
                 if (s.LearnVersion < CurrentLearnVersion)
                 {
                     // Neues Lernverfahren: alte (teils zu hoch gelernte) Werte verwerfen
@@ -1507,7 +1517,11 @@ sealed class FanController
         var table = cfg.LearnedFor(p.Profile, c);
 
         // Wie stark kühlt dieser Lüfter dieses Bauteil überhaupt?
-        bool weak = cfg.EffectFor(c) is float eff && eff < WeakEffect;
+        // Nie dämpfen: Grafikkarten-Lüfter bei der eigenen GPU (der kühlt sie sicher), und wenn es
+        // deutlich (≥ 5 °C) über dem Ziel ist – dann hat Kühlen Vorrang vor Lautstärke.
+        bool weak = cfg.EffectFor(c) is float eff && eff < WeakEffect
+                    && !(ch.IsGpu && c is Component.Gpu or Component.Hotspot)
+                    && e < 5f;
 
         if (st.LastBucket != bucket && st.LastBucket >= 0)
             st.Integral *= 0.5f;   // neue Last -> Grundwert übernimmt, Rest neu einregeln
@@ -1541,9 +1555,15 @@ sealed class FanController
             float dOut = ch.Output - st.SnapOut;
             if (Math.Abs(dOut) >= 8)
             {
-                float measured = Math.Clamp((st.SnapT - T) / dOut * 10f, -2f, 10f);
-                float? old = cfg.EffectFor(c);
-                cfg.Effect[c.ToString()] = old is float o ? o * 0.7f + measured * 0.3f : measured;
+                float measured = (st.SnapT - T) / dOut * 10f;
+                // Wird es trotz mehr Lüfter wärmer, steigt gerade die Last/Hitze (z. B. Spiel heizt auf) –
+                // das sagt nichts über den Lüfter aus und wird nicht gewertet.
+                if (measured > 0)
+                {
+                    measured = Math.Min(measured, 10f);
+                    float? old = cfg.EffectFor(c);
+                    cfg.Effect[c.ToString()] = old is float o ? o * 0.7f + measured * 0.3f : measured;
+                }
             }
             st.SnapTime = now; st.SnapT = T; st.SnapOut = ch.Output; st.SnapBucket = bucket;
         }
