@@ -392,11 +392,14 @@ sealed class AmdOd8Fan : IDisposable
                 if (!Apply(new[] { (OD8_OPTIMZED_POWER_MODE, POWER_MODE_MANUAL) })) return false;
             }
 
-            // 2) Kurve: Punkte 1–4 = gewünschte Leistung, Punkt 5 = 100 % bei ca. 90 °C.
+            // 2) Kurve: Punkte 1–4 = gewünschte Leistung, Punkt 5 = 100 % am oberen Ende (ab ca. 95 °C).
             //    Der letzte Punkt ist eine Rückfallebene im Treiber: Wird Toast Temperatur hart beendet,
             //    dreht die Karte bei Hitze trotzdem von selbst hoch.
-            int t5 = Clamp(OD8_FAN_CURVE_TEMPERATURE_1 + 8, 95);
-            int t4 = Clamp(OD8_FAN_CURVE_TEMPERATURE_1 + 6, Math.Min(t5 - 5, 90));
+            // Rückfallebene erst ab ca. 95 °C Hot Spot, damit sie den normalen Betrieb nicht mitregelt
+            int tMax = OD8_FAN_CURVE_TEMPERATURE_1 + 8 < _max.Length && _max[OD8_FAN_CURVE_TEMPERATURE_1 + 8] > 0
+                ? _max[OD8_FAN_CURVE_TEMPERATURE_1 + 8] : 100;
+            int t5 = Clamp(OD8_FAN_CURVE_TEMPERATURE_1 + 8, Math.Min(tMax, 100));
+            int t4 = Clamp(OD8_FAN_CURVE_TEMPERATURE_1 + 6, Math.Max(t5 - 5, Math.Min(95, t5 - 1)));
             int t3 = Clamp(OD8_FAN_CURVE_TEMPERATURE_1 + 4, Math.Min(_original[OD8_FAN_CURVE_TEMPERATURE_1 + 4], t4 - 5));
             int t2 = Clamp(OD8_FAN_CURVE_TEMPERATURE_1 + 2, Math.Min(_original[OD8_FAN_CURVE_TEMPERATURE_1 + 2], t3 - 5));
             int t1 = Clamp(OD8_FAN_CURVE_TEMPERATURE_1, Math.Min(_original[OD8_FAN_CURVE_TEMPERATURE_1], t2 - 5));

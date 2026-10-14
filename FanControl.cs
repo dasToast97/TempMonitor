@@ -700,6 +700,11 @@ sealed class FanController
     // ---------------------------------------------------------------------
     static void CheckResponse(FanChannel ch, float now)
     {
+        // AMD Overdrive 8: Der Treiber bestätigt jede Änderung. Hat er angenommen, gibt es keine
+        // Drehzahl-Prüfung (die Karte regelt im Grenzbereich selbst mit -> sonst Fehlalarme).
+        // Die bewusste Prüfung bleibt über "Erkennen".
+        if (ch.Od8 != null && ch.Od8.LastError == null) return;
+
         // a) Rückmeldung des Treibers: meldet er dauerhaft eine ganz andere Leistung als befohlen?
         //    (bei AMD Overdrive 8 nicht, dort ist die Rückmeldung der Bibliothek nicht aussagekräftig)
         if (ch.Od8 == null && ch.ControlSensor.Value is float rb && rb >= 0 && rb <= 100)
