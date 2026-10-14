@@ -14,6 +14,24 @@ sealed class AppSettings
     public int LogIntervalSeconds { get; set; } = 5;
     public bool CloseHintShown { get; set; }
 
+    // ----- Warnungen (Windows-Benachrichtigung) -----
+    public bool WarnEnabled { get; set; } = true;
+    public float WarnCpu { get; set; } = 90f;
+    public float WarnGpu { get; set; } = 85f;
+    public float WarnHotspot { get; set; } = 100f;
+    public float WarnBoard { get; set; } = 70f;
+    public bool WarnFanStop { get; set; } = true;
+    public bool WarnSsd { get; set; } = true;
+    public int WarnCooldownMinutes { get; set; } = 10;
+
+    // ----- Infobereich & Overlay -----
+    public bool TrayShowTemp { get; set; } = true;
+    public string TrayTempSource { get; set; } = "CPU";   // CPU, GPU, Hotspot, Max
+    public bool OverlayEnabled { get; set; }
+    public int OverlayX { get; set; } = -1;
+    public int OverlayY { get; set; } = -1;
+    public int OverlayOpacity { get; set; } = 85;
+
     static readonly string FilePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "app.json");
 

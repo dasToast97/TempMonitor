@@ -23,8 +23,17 @@ static class Program
         var form = new MainForm();
 
         // Egal wie das Programm endet: Lüfter zurück an das BIOS geben
-        Application.ThreadException += (_, e) => { form.EmergencyRestore(); MessageBox.Show(e.Exception.Message, "Fehler"); };
-        AppDomain.CurrentDomain.UnhandledException += (_, _) => form.EmergencyRestore();
+        Application.ThreadException += (_, e) =>
+        {
+            ErrorLog.Write("Unbehandelter Fehler", e.Exception);
+            form.EmergencyRestore();
+            MessageBox.Show(e.Exception.Message + "\n\nDetails stehen im Fehler-Logbuch (Einstellungen).", "Fehler");
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            ErrorLog.Write("Absturz", e.ExceptionObject as Exception);
+            form.EmergencyRestore();
+        };
         AppDomain.CurrentDomain.ProcessExit += (_, _) => form.EmergencyRestore();
 
         Application.Run(form);
@@ -111,7 +120,12 @@ sealed class MainForm : Form
     FanController? _fans;
     FanView? _fanView;
     readonly NotifyIcon _tray;
-    readonly TabButton _tempTab, _fanTab;
+    readonly TabButton _tempTab, _fanTab, _setTab;
+    SettingsView? _settingsView;
+    KeySensors? _keys;
+    readonly WarningMonitor _warn = new();
+    OverlayForm? _overlay;
+    string? _lastError;
     readonly List<(string Short, ISensor Sensor)> _heroes = new();
     readonly DataLogger _logger = new();
     bool _exiting, _shownOnce, _loaded;
@@ -221,11 +235,14 @@ sealed class MainForm : Form
             BackColor = Theme.Header,
             Padding = new Padding((int)(14 * K), 0, 0, 0),
         };
+        _setTab = new TabButton("Einstellungen") { Dock = DockStyle.Left, Width = (int)(150 * K) };
         _fanTab = new TabButton("Lüfter") { Dock = DockStyle.Left, Width = (int)(130 * K) };
         _tempTab = new TabButton("Übersicht") { Dock = DockStyle.Left, Width = (int)(140 * K), Selected = true };
-        _tempTab.Click += (_, _) => { ShowTab(false); ShowDashboard(); };
-        _fanTab.Click += (_, _) => ShowTab(true);
-        nav.Controls.Add(_fanTab);   // Dock Left: zuletzt hinzugefügt steht ganz links
+        _tempTab.Click += (_, _) => { ShowTab(0); ShowDashboard(); };
+        _fanTab.Click += (_, _) => ShowTab(1);
+        _setTab.Click += (_, _) => ShowTab(2);
+        nav.Controls.Add(_setTab);   // Dock Left: zuletzt hinzugefügt steht ganz links
+        nav.Controls.Add(_fanTab);
         nav.Controls.Add(_tempTab);
 
         // ---------- Symbol im Infobereich ----------
@@ -292,6 +309,11 @@ sealed class MainForm : Form
             _fans = null;
             _status.Text = "Lüftersteuerung nicht verfügbar: " + ex.Message;
         }
+        _settingsView = new SettingsView(ApplyOverlay, RestartApp) { Dock = DockStyle.Fill, Visible = false };
+        Controls.Add(_settingsView);
+        _settingsView.BringToFront();
+        ApplyOverlay();
+
         UpdateTrayMenu();
         SetupLogger();
         SingleInstance.Listen(() => { try { BeginInvoke(RestoreFromTray); } catch { } });
@@ -306,20 +328,37 @@ sealed class MainForm : Form
     // ---------------------------------------------------------------------
     // Reiter, Infobereich (Tray), Beenden
     // ---------------------------------------------------------------------
-    void ShowTab(bool fans)
+    /// 0 = Übersicht, 1 = Lüfter, 2 = Einstellungen
+    void ShowTab(int tab)
     {
-        _tempTab.Selected = !fans;
-        _fanTab.Selected = fans;
-        if (fans && _fanView != null)
+        if (tab == 1 && _fanView == null) tab = 0;
+        if (tab == 2 && _settingsView == null) tab = 0;
+        _tempTab.Selected = tab == 0;
+        _fanTab.Selected = tab == 1;
+        _setTab.Selected = tab == 2;
+        _tempArea.Visible = tab == 0;
+        if (_fanView != null) _fanView.Visible = tab == 1;
+        if (_settingsView != null) _settingsView.Visible = tab == 2;
+        if (tab == 1) _fanView?.RefreshValues();
+    }
+
+    /// Overlay passend zur Einstellung ein-/ausblenden
+    void ApplyOverlay()
+    {
+        var s = AppSettings.Instance;
+        if (s.OverlayEnabled)
         {
-            _fanView.Visible = true;
-            _tempArea.Visible = false;
-            _fanView.RefreshValues();
+            if (_overlay == null || _overlay.IsDisposed)
+            {
+                _overlay = new OverlayForm(() => _keys, () => _fans);
+                _overlay.Show();
+            }
+            _overlay.Opacity = Math.Clamp(s.OverlayOpacity, 30, 100) / 100.0;
         }
-        else
+        else if (_overlay != null && !_overlay.IsDisposed)
         {
-            _tempArea.Visible = true;
-            if (_fanView != null) _fanView.Visible = false;
+            _overlay.Close();
+            _overlay = null;
         }
     }
 
@@ -344,6 +383,16 @@ sealed class MainForm : Form
         log.CheckedChanged += (_, _) => { AppSettings.Instance.LogEnabled = log.Checked; AppSettings.Instance.Save(); };
         menu.Items.Add(log);
         menu.Items.Add("Aufzeichnungen öffnen", null, (_, _) => DataLogger.OpenFolder());
+
+        var ov = new ToolStripMenuItem("Overlay anzeigen") { Checked = AppSettings.Instance.OverlayEnabled };
+        ov.Click += (_, _) =>
+        {
+            AppSettings.Instance.OverlayEnabled = !AppSettings.Instance.OverlayEnabled;
+            AppSettings.Instance.Save();
+            ApplyOverlay();
+        };
+        menu.Items.Add(ov);
+        menu.Opening += (_, _) => ov.Checked = AppSettings.Instance.OverlayEnabled;
 
         var auto = new ToolStripMenuItem("Mit Windows starten (im Hintergrund)");
         auto.Click += (_, _) =>
@@ -411,6 +460,7 @@ sealed class MainForm : Form
     {
         _timer.Stop();
         EmergencyRestore();
+        try { _overlay?.Close(); } catch { }
         _tray.Visible = false;
         _tray.Dispose();
         try { _computer.Close(); } catch { }
@@ -511,6 +561,7 @@ sealed class MainForm : Form
     void BuildUi()
     {
         _history.Record(_computer);
+        _keys = KeySensors.From(_computer);
 
         // Tray-Tooltip: CPU / GPU / Mainboard
         _heroes.Clear();
@@ -532,7 +583,7 @@ sealed class MainForm : Form
         foreach (var c in _tempArea.Controls.Cast<Control>().ToList()) c.Dispose();
         _tempArea.Controls.Clear();
         _dash = new DashboardView(_computer, _history, OpenPage, CreateBanner) { Dock = DockStyle.Fill };
-        _dash.OpenFans = () => BeginInvoke(() => ShowTab(true));
+        _dash.OpenFans = () => BeginInvoke(() => ShowTab(1));
         _tempArea.Controls.Add(_dash);
         _tempArea.ResumeLayout();
 
@@ -563,7 +614,7 @@ sealed class MainForm : Form
     {
         BeginInvoke(() =>
         {
-            ShowTab(false);
+            ShowTab(0);
             _tempArea.SuspendLayout();
             _page?.Dispose();
             _page = new ComponentPage(_computer, hw, _history, ShowDashboard, PinSensor) { Dock = DockStyle.Fill };
@@ -665,6 +716,19 @@ sealed class MainForm : Form
             string rec = _logger.Enabled ? (_logger.LastError != null ? " · ⚠ Aufzeichnung: " + _logger.LastError : " · ● Aufzeichnung") : "";
             _status.Text = $"Live · {DateTime.Now:HH:mm:ss}{prof}{rec}";
 
+            // Warnungen, Temperatur im Symbol, Overlay
+            if (_keys != null)
+            {
+                try { _warn.Check(_keys, fans, _tray); } catch (Exception wex) { ErrorLog.Write("Warnungen", wex); }
+                if (AppSettings.Instance.TrayShowTemp)
+                {
+                    var ic = TrayIconPainter.Render(_keys.Value(AppSettings.Instance.TrayTempSource), Icon ?? SystemIcons.Application);
+                    if (ic != null) _tray.Icon = ic;
+                }
+                else if (_tray.Icon != Icon) _tray.Icon = Icon ?? SystemIcons.Application;
+            }
+            if (_overlay is { IsDisposed: false }) _overlay.Invalidate();
+
             // Tooltip im Infobereich: wichtigste Temperaturen
             string tip = string.Join("  ", _heroes.Select(h => $"{h.Short} {h.Sensor.Value:0}°"));
             tip = string.IsNullOrEmpty(tip) ? "Toast Temperatur" : tip;
@@ -673,6 +737,8 @@ sealed class MainForm : Form
         catch (Exception ex)
         {
             _status.Text = "Fehler: " + ex.Message;
+            if (ex.Message != _lastError) ErrorLog.Write("Aktualisierung", ex);   // gleiche Meldung nur einmal
+            _lastError = ex.Message;
         }
         finally
         {
