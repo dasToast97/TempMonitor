@@ -186,6 +186,8 @@ sealed class OasisLink
         var w = new BluetoothLEAdvertisementWatcher { ScanningMode = BluetoothLEScanningMode.Active };
         w.Received += (_, a) =>
         {
+          try
+          {
             string name = a.Advertisement.LocalName ?? "";
             bool nus = a.Advertisement.ServiceUuids.Contains(Nus);
             if (name.StartsWith("CoolingSystem", StringComparison.OrdinalIgnoreCase) || (nus && name.Contains("LCT", StringComparison.OrdinalIgnoreCase)))
@@ -194,6 +196,8 @@ sealed class OasisLink
                 Log($"Gefunden: {name} {a.BluetoothAddress:X12} ({a.RawSignalStrengthInDBm} dBm)");
                 tcs.TrySetResult(a.BluetoothAddress);
             }
+          }
+          catch { }
         };
         w.Stopped += (_, a) => { if (a.Error != BluetoothError.Success) { Log("Suche gestoppt: " + a.Error); tcs.TrySetResult(null); } };
         w.Start();
@@ -229,6 +233,7 @@ sealed class OasisLink
 
         dev.ConnectionStatusChanged += (d, _) =>
         {
+            try { _ = d.ConnectionStatus; } catch { return; }
             if (d.ConnectionStatus == BluetoothConnectionStatus.Disconnected && Connected)
             {
                 Log("Verbindung getrennt");

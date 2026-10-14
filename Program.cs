@@ -10,39 +10,72 @@ static class Program
     /// Mit "/tray" gestartet (z. B. per Autostart): direkt unsichtbar im Infobereich
     public static bool StartInTray { get; private set; }
 
-    [System.Runtime.InteropServices.DllImport("ole32.dll")]
-    static extern int CoInitializeSecurity(IntPtr pSecDesc, int cAuthSvc, IntPtr asAuthSvc, IntPtr pReserved1,
-        uint dwAuthnLevel, uint dwImpLevel, IntPtr pAuthList, uint dwCapabilities, IntPtr pReserved3);
+    static MainForm? _form;
+
+    /// Startschritte mitschreiben (%AppData%\TempMonitor\start.log) – zeigt, wo ein Start hängen bleibt
+    public static void Step(string what)
+    {
+        try
+        {
+            var p = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "start.log");
+            Directory.CreateDirectory(Path.GetDirectoryName(p)!);
+            File.AppendAllText(p, $"{DateTime.Now:HH:mm:ss.fff}  {what}{Environment.NewLine}");
+        }
+        catch { }
+    }
 
     [STAThread]
     static void Main(string[] args)
     {
-        // Bluetooth (XMG Oasis): Ohne diese Einstellung kommen in Programmen mit Adminrechten
-        // keine Benachrichtigungen vom Gerät an. Muss vor jeder anderen COM-Nutzung passieren.
-        try { CoInitializeSecurity(IntPtr.Zero, -1, IntPtr.Zero, IntPtr.Zero, 0 /* DEFAULT */, 2 /* IDENTIFY */, IntPtr.Zero, 0, IntPtr.Zero); }
-        catch { }
-
-        // Nur eine Instanz gleichzeitig (wichtig auch für den Updater)
-        using var mutex = new Mutex(true, "TempMonitor_SingleInstance", out bool first);
-        if (!first) { SingleInstance.SignalFirst(); return; }   // läuft schon -> Fenster dort öffnen
-
-        StartInTray = args.Any(a => a.Equals("/tray", StringComparison.OrdinalIgnoreCase));
-
-        ApplicationConfiguration.Initialize();
-        var form = new MainForm();
-
-        // Egal wie das Programm endet: Lüfter zurück an das BIOS geben
+        // Fehler-Handler ganz zuerst – auch ein Absturz beim Start landet so im Fehler-Logbuch
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (_, e) =>
         {
             ErrorLog.Write("Unbehandelter Fehler", e.Exception);
-            form.EmergencyRestore();
-            MessageBox.Show(e.Exception.Message + "\n\nDetails stehen im Fehler-Logbuch (Einstellungen).", "Fehler");
+            _form?.EmergencyRestore();
+            MessageBox.Show(e.Exception.Message + "\n\nDetails stehen im Fehler-Logbuch (Einstellungen).", "Toast Temperatur – Fehler");
         };
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
             ErrorLog.Write("Absturz", e.ExceptionObject as Exception);
-            form.EmergencyRestore();
+            Step("Absturz: " + (e.ExceptionObject as Exception)?.Message);
+            _form?.EmergencyRestore();
         };
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            ErrorLog.Write("Hintergrund-Aufgabe", e.Exception);
+            e.SetObserved();
+        };
+
+        try
+        {
+            var log = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "start.log");
+            if (File.Exists(log)) File.Delete(log);
+        }
+        catch { }
+        Step($"Start v{Updater.CurrentVersion.ToString(3)}");
+
+        // Nur eine Instanz gleichzeitig (wichtig auch für den Updater)
+        using var mutex = new Mutex(true, "TempMonitor_SingleInstance", out bool first);
+        if (!first) { Step("läuft schon – vorhandenes Fenster öffnen"); SingleInstance.SignalFirst(); return; }
+
+        StartInTray = args.Any(a => a.Equals("/tray", StringComparison.OrdinalIgnoreCase));
+
+        ApplicationConfiguration.Initialize();
+        try
+        {
+            _form = new MainForm();
+            Step("Fenster aufgebaut");
+        }
+        catch (Exception ex)
+        {
+            ErrorLog.Write("Start fehlgeschlagen", ex);
+            Step("Start fehlgeschlagen: " + ex);
+            MessageBox.Show("Toast Temperatur konnte nicht starten:\n\n" + ex.Message +
+                            "\n\nDetails: %AppData%\\TempMonitor\\fehler.log", "Toast Temperatur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        var form = _form;
         AppDomain.CurrentDomain.ProcessExit += (_, _) => form.EmergencyRestore();
 
         Application.Run(form);
@@ -312,14 +345,17 @@ sealed class MainForm : Form
         _loaded = true;
         try
         {
+            Program.Step("Sensoren öffnen");
             await Task.Run(() =>
             {
                 _computer.Open();
                 _computer.Accept(_visitor);
             });
+            Program.Step("Sensoren gelesen");
         }
         catch (Exception ex)
         {
+            ErrorLog.Write("Sensoren öffnen", ex);
             _status.Text = "Fehler: " + ex.Message;
             return;
         }
@@ -327,20 +363,25 @@ sealed class MainForm : Form
         // Lüfter zuerst suchen: liefert Namen und leere Anschlüsse für die Wertetabellen
         try
         {
+            Program.Step("Lüfter suchen");
             _fans = new FanController(FanSettings.Load());
             _fans.Discover(_computer);
             FanController.Current = _fans;
+            Program.Step($"{_fans.Channels.Count} Lüfter gefunden");
             StartOasis(_fans);
         }
         catch (Exception ex)
         {
+            ErrorLog.Write("Lüfter suchen", ex);
             _fans = null;
             _status.Text = "Lüftersteuerung nicht verfügbar: " + ex.Message;
         }
 
+        Program.Step("Übersicht aufbauen");
         BuildUi();
 
         // Lüftersteuerung
+        Program.Step("Lüfter-Reiter aufbauen");
         try
         {
             if (_fans == null) throw new InvalidOperationException("keine Lüfter");
@@ -352,14 +393,25 @@ sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            _fans = null;
-            _status.Text = "Lüftersteuerung nicht verfügbar: " + ex.Message;
+            ErrorLog.Write("Lüfter-Reiter", ex);
+            _fanView = null;
+            _status.Text = "Lüfter-Reiter nicht verfügbar: " + ex.Message;
         }
+        Program.Step("Einstellungen aufbauen");
         if (_fans is { } fc)
             SettingsView.Extend += v => AutomationSettings.Build(v, fc, _auto);
-        _settingsView = new SettingsView(ApplyOverlay, RestartApp) { Dock = DockStyle.Fill, Visible = false };
-        Controls.Add(_settingsView);
-        _settingsView.BringToFront();
+        try
+        {
+            _settingsView = new SettingsView(ApplyOverlay, RestartApp) { Dock = DockStyle.Fill, Visible = false };
+            Controls.Add(_settingsView);
+            _settingsView.BringToFront();
+        }
+        catch (Exception ex)
+        {
+            ErrorLog.Write("Einstellungen", ex);
+            _settingsView = null;
+        }
+        Program.Step("Analyse aufbauen");
         try
         {
             _analysis = new AnalysisView(_computer, () => _keys, _fans) { Dock = DockStyle.Fill, Visible = false };
@@ -375,6 +427,7 @@ sealed class MainForm : Form
 
         UpdateTrayMenu();
         SetupLogger();
+        Program.Step("Bereit");
         SingleInstance.Listen(() => { try { BeginInvoke(RestoreFromTray); } catch { } });
 
         _timer.Tick += async (_, _) => await RefreshAsync();

@@ -618,7 +618,12 @@ sealed class SettingsView : FlowLayoutPanel
             }));
 
         // ----- Weitere Abschnitte (Automatik, Gesundheit, Kühlungs-Test …) -----
-        Extend?.Invoke(this);
+        if (Extend != null)
+            foreach (Action<SettingsView> h in Extend.GetInvocationList())
+            {
+                try { h(this); }
+                catch (Exception ex) { ErrorLog.Write("Einstellungen erweitern", ex); }
+            }
 
         // ----- Fehler-Logbuch -----
         AddSection("Fehler-Logbuch", Theme.Muted);
