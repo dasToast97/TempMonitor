@@ -41,6 +41,18 @@ Temperaturquellen; oder per „Gruppe“ auf jeder Lüfter-Karte selbst zusammen
 Battle.net werden automatisch erkannt, eigene Programme lassen sich hinzufügen) und/oder nach Zeitplan mit Wochentagen.
 Wer selbst ein Profil wählt, behält es, bis das Spiel bzw. der Zeitraum endet.
 
+**Kalibrierung:** misst je Lüfter die Höchstdrehzahl und ab wie viel Prozent er sicher anläuft – diese Grenze wird
+danach als Untergrenze genutzt, damit kein Lüfter bei niedriger Leistung stehen bleibt.
+
+### Analyse
+
+- **Verlauf** aus den Aufzeichnungen: Tag oder letzte 7 Tage wählen, Werte an-/abhaken, mit dem Mausrad zoomen,
+  Bereich ziehen, Doppelklick zeigt wieder alles.
+- **Gesundheits-Check:** Temperaturen unter Last und ihr Trend über 14 Tage, Abstand GPU ↔ Hot Spot
+  (Hinweis auf alternde Wärmeleitpaste), SSD-Restlebensdauer und -Temperatur, Lüfter ohne Steuerung.
+- **Kühlungs-Test:** lastet den Prozessor 3/5/10 Minuten voll aus, misst Höchst- und Dauertemperatur, Leistung,
+  Heruntertakten und vergleicht mit früheren Tests (z. B. vor/nach dem Entstauben).
+
 **Sicherheit (optional, standardmäßig aus):** Notkühlung mit einstellbaren Grenzwerten für CPU, GPU und Mainboard
 und Stillstand-Erkennung. Beim Beenden oder Absturz übernimmt immer wieder das BIOS.
 

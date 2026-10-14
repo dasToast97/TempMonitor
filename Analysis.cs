@@ -230,6 +230,11 @@ sealed class HistoryChart : Control
         var r = Plot;
         var left = Range(true);
         var right = Range(false);
+        if (left == null && right == null)
+        {
+            TextRenderer.DrawText(g, "Keine Werte in diesem Zeitraum", Font, ClientRectangle, Theme.Muted, C);
+            return;
+        }
 
         // Raster + Achsen
         using var grid = new Pen(Theme.Grid) { DashStyle = DashStyle.Dot };
