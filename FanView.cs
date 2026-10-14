@@ -457,6 +457,7 @@ sealed class FanCard : Control
     readonly TextBox _name;
     readonly ComboBox _kind;
     readonly Button _identify;
+    readonly LinkLabel _reset;
     readonly Dictionary<Component, CheckBox> _sources = new();
     readonly Label _sourceLabel;
     readonly CurveEditor _curve;
@@ -518,6 +519,18 @@ sealed class FanCard : Control
         new ToolTip().SetToolTip(_identify, "Lässt nur diesen Lüfter kurz auf 100 % laufen, damit du ihn findest – und prüft dabei, ob er sich steuern lässt");
         _identify.Click += (_, _) => ctl.Identify(ch);
 
+        _reset = new LinkLabel
+        {
+            Text = "Gelerntes zurücksetzen",
+            LinkColor = Theme.Muted,
+            ActiveLinkColor = Theme.Text,
+            LinkBehavior = LinkBehavior.HoverUnderline,
+            BackColor = Theme.Card,
+            AutoSize = true,
+        };
+        new ToolTip().SetToolTip(_reset, "Vergisst, was die Smart-Automatik für diesen Lüfter gelernt hat, und lernt neu");
+        _reset.Click += (_, _) => ctl.ResetLearning(ch);
+
         _sourceLabel = new Label
         {
             Text = "Regelt nach:",
@@ -552,6 +565,7 @@ sealed class FanCard : Control
         Controls.Add(_name);
         Controls.Add(_kind);
         Controls.Add(_identify);
+        Controls.Add(_reset);
         Controls.Add(_sourceLabel);
         foreach (var cb in _sources.Values) Controls.Add(cb);
         Controls.Add(_curve);
@@ -585,6 +599,7 @@ sealed class FanCard : Control
         _name.SetBounds(S(48), S(14), Width - S(210), S(24));
         _kind.SetBounds(S(16), S(62), S(96), S(26));
         _identify.SetBounds(S(120), S(61), S(100), S(28));
+        _reset.Location = new Point(S(232), S(67));
         _sourceLabel.Location = new Point(S(16), _ch.IsGpu ? S(160) : S(150));
         int x = S(16), w = (Width - S(32)) / 3;
         foreach (var c in Components.Selectable)

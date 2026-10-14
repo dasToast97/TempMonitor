@@ -67,6 +67,10 @@ sealed class FanChannelSettings
     public float Ki { get; set; } = 0.15f;
     /// Gelernte Lüfterleistung je Auslastungsstufe (0–10 %, 10–20 % …) pro Profil und Bauteil; -1 = unbekannt
     public Dictionary<string, float[]> Learned { get; set; } = new();
+    /// Gemessene Wirkung je Bauteil: um wie viel °C es kühler wird, wenn dieser Lüfter 10 % mehr läuft
+    public Dictionary<string, float> Effect { get; set; } = new();
+
+    public float? EffectFor(Component c) => Effect.TryGetValue(c.ToString(), out var v) ? v : null;
 
     public static List<float[]> DefaultCurve() => new()
     {
@@ -119,6 +123,10 @@ sealed class FanSettings
     public float HotspotCritical { get; set; } = 105f;
     public bool StallDetection { get; set; }
 
+    /// Version des Lernverfahrens – bei Änderungen wird altes Gelerntes verworfen
+    public int LearnVersion { get; set; }
+    public const int CurrentLearnVersion = 2;
+
     /// Mindestleistung für Pumpen (Wasserkühlung), damit sie nie zu langsam laufen
     public float PumpMinPercent { get; set; } = 60f;
 
@@ -134,10 +142,25 @@ sealed class FanSettings
         try
         {
             if (File.Exists(FilePath))
-                return JsonSerializer.Deserialize<FanSettings>(File.ReadAllText(FilePath)) ?? new();
+            {
+                var s = JsonSerializer.Deserialize<FanSettings>(File.ReadAllText(FilePath)) ?? new();
+                if (s.LearnVersion < CurrentLearnVersion)
+                {
+                    // Neues Lernverfahren: alte (teils zu hoch gelernte) Werte verwerfen
+                    foreach (var f in s.Fans.Values)
+                    {
+                        f.Learned.Clear();
+                        f.Effect.Clear();
+                        f.Kp = 3.0f;
+                        f.Ki = 0.15f;
+                    }
+                    s.LearnVersion = CurrentLearnVersion;
+                }
+                return s;
+            }
         }
         catch { /* kaputte Datei -> Standardwerte */ }
-        return new();
+        return new() { LearnVersion = CurrentLearnVersion };
     }
 
     public void Save()
@@ -217,7 +240,13 @@ sealed class SourceState
     public int LastBucket = -1;
     public int SteadyTicks;
     public int FarTicks;
+    public int BelowTicks;
     public readonly Queue<int> Signs = new();
+
+    // Wirkungsmessung: Momentaufnahme von Temperatur und Leistung
+    public DateTime? SnapTime;
+    public float SnapT, SnapOut;
+    public int SnapBucket = -1;
 }
 
 sealed class FanChannel
@@ -483,6 +512,7 @@ sealed class FanController
         lock (_lock)
         {
             ch.Cfg.Learned.Clear();
+            ch.Cfg.Effect.Clear();
             ch.Cfg.Kp = 3.0f;
             ch.Cfg.Ki = 0.15f;
             ch.ResetStates();
@@ -662,7 +692,10 @@ sealed class FanController
             FanProfile.Max => "Volle Leistung",
             FanProfile.Custom => $"Eigene Kurve · bestimmt von {who} ({driverTemp:0} °C)",
             _ => $"Smart · bestimmt von {who}: {driverTemp:0} °C, Ziel {driverTarget:0} °C · " +
-                 $"{ch.Cfg.LearnedFor(prof.Profile, driver.Value).Count(v => v >= 0)}/11 Laststufen gelernt",
+                 $"{ch.Cfg.LearnedFor(prof.Profile, driver.Value).Count(v => v >= 0)}/11 Laststufen gelernt · " +
+                 (ch.Cfg.EffectFor(driver.Value) is float ef
+                     ? (ef < WeakEffect ? $"Wirkung gering ({ef:0.0} °C je 10 %) – gedämpft" : $"Wirkung {ef:0.0} °C je 10 %")
+                     : "Wirkung wird gemessen"),
         };
 
         // Sicherheit (optional): zu heiß -> sofort volle Kühlung
@@ -767,6 +800,9 @@ sealed class FanController
     //  3) Passt die eigene Reaktionsstärke an: schwingt es, wird sie ruhiger;
     //     bleibt es zu lange daneben, wird sie kräftiger
     // ---------------------------------------------------------------------
+    // Ab dieser Wirkung (°C pro 10 % Lüfterleistung) gilt ein Bauteil als "reagiert kaum"
+    const float WeakEffect = 0.3f;
+
     float Adaptive(FanChannel ch, Component c, SourceState st, float T, float target, ProfileInfo p, bool isDriver)
     {
         var cfg = ch.Cfg;
@@ -776,16 +812,23 @@ sealed class FanController
         int bucket = Math.Clamp((int)(load / 10f), 0, 10);
         var table = cfg.LearnedFor(p.Profile, c);
 
+        // Wie stark kühlt dieser Lüfter dieses Bauteil überhaupt?
+        bool weak = cfg.EffectFor(c) is float eff && eff < WeakEffect;
+
         if (st.LastBucket != bucket && st.LastBucket >= 0)
             st.Integral *= 0.5f;   // neue Last -> Grundwert übernimmt, Rest neu einregeln
         st.LastBucket = bucket;
 
         float basePct = LearnedBase(table, bucket, p.MinPercent);
+        if (weak) basePct = Math.Min(basePct, p.MinPercent + 15);
 
-        if (Math.Abs(e) > 0.8f) st.Integral += cfg.Ki * e;
-        st.Integral = Math.Clamp(st.Integral, -60f, 60f);
+        // Ruhezone ±1,5 °C: dort wird nicht nachgeregelt
+        if (Math.Abs(e) > 1.5f) st.Integral += cfg.Ki * e;
+        // Bauteil reagiert kaum -> darf die Lüfter nicht hochtreiben
+        st.Integral = Math.Clamp(st.Integral, -60f, weak ? 8f : 60f);
 
-        float output = basePct + cfg.Kp * e + st.Integral;
+        float kp = weak ? cfg.Kp * 0.25f : cfg.Kp;
+        float output = basePct + kp * e + st.Integral;
 
         // Anti-Windup
         if ((output >= 100 && e > 0) || (output <= p.MinPercent && e < 0))
@@ -794,21 +837,49 @@ sealed class FanController
         // Gelernt wird nur vom Bauteil, das gerade wirklich die Drehzahl bestimmt
         if (!isDriver) return output;
 
+        // --- Lernen 0: Wirkung messen ---
+        // Nach 60 s bei gleicher Last: Wie viel kühler/wärmer ist das Bauteil, seit sich die Leistung geändert hat?
+        var now = DateTime.Now;
+        if (st.SnapTime is null || st.SnapBucket != bucket)
+        {
+            st.SnapTime = now; st.SnapT = T; st.SnapOut = ch.Output; st.SnapBucket = bucket;
+        }
+        else if ((now - st.SnapTime.Value).TotalSeconds >= 60)
+        {
+            float dOut = ch.Output - st.SnapOut;
+            if (Math.Abs(dOut) >= 8)
+            {
+                float measured = Math.Clamp((st.SnapT - T) / dOut * 10f, -2f, 10f);
+                float? old = cfg.EffectFor(c);
+                cfg.Effect[c.ToString()] = old is float o ? o * 0.7f + measured * 0.3f : measured;
+            }
+            st.SnapTime = now; st.SnapT = T; st.SnapOut = ch.Output; st.SnapBucket = bucket;
+        }
+
         // --- Lernen 1: stabiler Zustand -> Grundwert für diese Last merken ---
         if (Math.Abs(e) < 1.5f) st.SteadyTicks++; else st.SteadyTicks = 0;
-        if (st.SteadyTicks >= 20 && ch.Output >= 0)
+        if (!weak && st.SteadyTicks >= 20 && ch.Output >= 0)
         {
             table[bucket] = table[bucket] < 0 ? ch.Output : table[bucket] * 0.9f + ch.Output * 0.1f;
             st.Integral *= 0.9f;
         }
 
+        // --- Lernen 1b: lange deutlich unter Ziel -> gelernten Wert wieder senken ---
+        if (e < -3) st.BelowTicks++; else st.BelowTicks = 0;
+        if (st.BelowTicks >= 60)
+        {
+            if (table[bucket] >= 0) table[bucket] = Math.Max(p.MinPercent, table[bucket] * 0.93f);
+            st.BelowTicks = 0;
+        }
+        if (weak && table[bucket] > p.MinPercent + 15) table[bucket] = p.MinPercent + 15;
+
         // --- Lernen 2: Reaktionsstärke anpassen ---
-        int sign = e > 1 ? 1 : e < -1 ? -1 : 0;
+        int sign = e > 1.5f ? 1 : e < -1.5f ? -1 : 0;
         if (sign != 0) st.Signs.Enqueue(sign);
         while (st.Signs.Count > 60) st.Signs.Dequeue();
         int flips = 0;
         int? prev = null;
-        foreach (var s in st.Signs) { if (prev.HasValue && prev != s) flips++; prev = s; }
+        foreach (var sg in st.Signs) { if (prev.HasValue && prev != sg) flips++; prev = sg; }
         if (flips > 8)
         {
             cfg.Kp = Math.Max(0.8f, cfg.Kp * 0.85f);
@@ -817,7 +888,7 @@ sealed class FanController
         }
 
         bool saturated = output >= 99 || output <= p.MinPercent + 0.5f;
-        if (Math.Abs(e) > 4 && !saturated) st.FarTicks++; else st.FarTicks = 0;
+        if (!weak && Math.Abs(e) > 4 && !saturated) st.FarTicks++; else st.FarTicks = 0;
         if (st.FarTicks >= 45)
         {
             cfg.Kp = Math.Min(8f, cfg.Kp * 1.1f);
