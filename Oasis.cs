@@ -1,14 +1,9 @@
 using System.Diagnostics;
-using System.Text;
-using Windows.Devices.Bluetooth;
-using Windows.Devices.Bluetooth.Advertisement;
-using Windows.Devices.Bluetooth.GenericAttributeProfile;
-using Windows.Devices.Enumeration;
-using Windows.Storage.Streams;
+using System.Globalization;
 
 namespace TempMonitor;
 
-/// Lüfter/Pumpe, die nicht über LibreHardwareMonitor laufen (z. B. XMG Oasis über Bluetooth)
+/// Lüfter/Pumpe, die nicht über LibreHardwareMonitor laufen (z. B. XMG Oasis, Laptop-Lüfter)
 interface IExternalFan
 {
     void SetPercent(float pct);
@@ -25,47 +20,40 @@ interface IExternalFan
 }
 
 // ===========================================================================
-// XMG OASIS (Uniwill LCT21001 / LCT22002) über Bluetooth LE (Nordic UART)
-// Rahmen: FE <cmd> <an/aus> <p1> <p2> <p3> <p4> EF
-//   1B = Lüfter (p1 = 0–100 %), 1C = Pumpe (p1 = 0–100 %, p2 = Spannung), 32 = Durchfluss abfragen
+// XMG OASIS: Die Bluetooth-Verbindung läuft im eigenen Hilfsprogramm OasisBridge.exe
+// (liegt neben TempMonitor.exe). Toast Temperatur schickt ihm Befehle und liest den Zustand.
+// So kann ein Bluetooth-Problem Toast Temperatur nie zum Absturz bringen.
 // ===========================================================================
 sealed class OasisLink
 {
-    static readonly Guid Nus = Guid.Parse("6e400001-b5a3-f393-e0a9-e50e24dcca9e");
-    static readonly Guid TxId = Guid.Parse("6e400002-b5a3-f393-e0a9-e50e24dcca9e");
-    static readonly Guid RxId = Guid.Parse("6e400003-b5a3-f393-e0a9-e50e24dcca9e");
-
     public static OasisLink? Instance { get; private set; }
-
-    static readonly string LogPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "oasis.log");
 
     readonly FanSettings _s;
     readonly object _gate = new();
-    BluetoothLEDevice? _dev;
-    GattCharacteristic? _tx, _rx;
-    TaskCompletionSource<string>? _version;
-    CancellationTokenSource? _cts;
-
-    float _fan = -1, _pump = -1;          // gewünscht
-    float _sentFan = -1, _sentPump = -1;  // zuletzt gesendet
-    int _sentVolt = -1;
-    DateTime _lastSend = DateTime.MinValue, _lastQuery = DateTime.MinValue;
+    Process? _proc;
+    DateTime _lastStart = DateTime.MinValue;
+    int _restarts;
+    float _fan = -1, _pump = -1;
+    float _lastFanSent = -2, _lastPumpSent = -2;
+    int _lastVolt = -1;
+    float _lastRelFan = -1, _lastRelPump = -1;
+    System.Threading.Timer? _timer;
+    DateTime _lastCcCheck = DateTime.MinValue;
 
     public volatile bool Connected;
-    public string State { get; private set; } = "Suche XMG Oasis …";
+    public string State { get; private set; } = "Starte Bluetooth …";
     public string? Model { get; private set; }
     public string? Firmware { get; private set; }
-    /// Durchfluss-Status vom Gerät: 2 = in Ordnung, -1 = unbekannt
     public int Flow { get; private set; } = -1;
     public bool ControlCenterRunning { get; private set; }
-    public float? FanPercent => _sentFan >= 0 ? _sentFan : null;
-    public float? PumpPercent => _sentPump >= 0 ? _sentPump : null;
+    public float? FanPercent { get; private set; }
+    public float? PumpPercent { get; private set; }
 
-    /// Gerät zum ersten Mal gefunden (Adresse, Modell)
+    /// Gerät zum ersten Mal gefunden (Adresse)
     public event Action<ulong>? Found;
 
-    public static string VoltageText(int code) => code switch { 1 => "12 V", 2 => "7 V", 3 => "8 V", _ => "11 V" };
+    static string BridgePath => Path.Combine(Path.GetDirectoryName(Environment.ProcessPath ?? Application.ExecutablePath) ?? ".", "OasisBridge.exe");
+    public static bool Available => File.Exists(BridgePath);
 
     public OasisLink(FanSettings s)
     {
@@ -73,270 +61,169 @@ sealed class OasisLink
         Instance = this;
     }
 
-    static void Log(string msg)
-    {
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
-            var fi = new FileInfo(LogPath);
-            if (fi.Exists && fi.Length > 512 * 1024) fi.Delete();
-            File.AppendAllText(LogPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  {msg}{Environment.NewLine}");
-        }
-        catch { }
-    }
-
     public void Start()
     {
-        if (_cts != null) return;
-        _cts = new CancellationTokenSource();
-        var ct = _cts.Token;
-        Task.Run(() => Loop(ct));
+        _timer ??= new System.Threading.Timer(_ => Pump(), null, 0, 1000);
     }
 
     public void SetFan(float pct) { lock (_gate) _fan = Math.Clamp(pct, 0, 100); }
     public void SetPump(float pct) { lock (_gate) _pump = Math.Clamp(pct, 0, 100); }
 
-    /// Neu suchen (z. B. anderes Gerät)
     public void Forget()
     {
         _s.OasisAddress = null;
-        Disconnect();
+        Send("forget");
+        Connected = false;
     }
 
-    async Task Loop(CancellationToken ct)
+    void Send(string line)
     {
-        int misses = 0;
-        while (!ct.IsCancellationRequested)
+        try
         {
-            try
+            var p = _proc;
+            if (p == null || p.HasExited) return;
+            p.StandardInput.WriteLine(line);
+            p.StandardInput.Flush();
+        }
+        catch { }
+    }
+
+    /// Jede Sekunde: Hilfsprogramm am Leben halten, geänderte Werte schicken
+    void Pump()
+    {
+        try
+        {
+            if ((DateTime.Now - _lastCcCheck).TotalSeconds >= 10)
             {
+                _lastCcCheck = DateTime.Now;
                 ControlCenterRunning = Process.GetProcesses().Any(p =>
                 {
                     using (p)
                     {
                         string n = p.ProcessName;
                         return n.Equals("GCUService", StringComparison.OrdinalIgnoreCase)
-                               || n.Contains("ControlCenter", StringComparison.OrdinalIgnoreCase)
-                               || n.Contains("Control Center", StringComparison.OrdinalIgnoreCase);
+                               || n.Contains("ControlCenter", StringComparison.OrdinalIgnoreCase);
                     }
                 });
-                if (!Connected)
-                {
-                    ulong? addr = _s.OasisAddress;
-                    if (addr == null)
-                    {
-                        State = "Suche XMG Oasis …";
-                        addr = await Find(ct);
-                        if (addr == null)
-                        {
-                            misses++;
-                            State = "Nicht gefunden – Oasis eingeschaltet, Bluetooth am Laptop an?";
-                            await Task.Delay(misses < 3 ? 20_000 : 120_000, ct);
-                            continue;
-                        }
-                        _s.OasisAddress = addr;
-                        Found?.Invoke(addr.Value);
-                    }
-                    State = "Verbinde …";
-                    await Connect(addr.Value);
-                    misses = 0;
-                }
-
-                await SendPending();
-                if ((DateTime.Now - _lastQuery).TotalSeconds >= 10)
-                {
-                    _lastQuery = DateTime.Now;
-                    await Write(Frame(0x32, 0, 0, 0, 0, 0));
-                }
-                await Task.Delay(300, ct);
             }
-            catch (OperationCanceledException) { break; }
-            catch (Exception ex)
+
+            if (_proc == null || _proc.HasExited)
             {
-                Log("Fehler: " + ex.Message);
-                State = "Verbindung verloren – verbinde neu … (" + ex.Message + ")";
-                Disconnect();
-                try { await Task.Delay(8000, ct); } catch { break; }
-            }
-        }
-    }
-
-    /// Erst bei Windows bekannte Geräte, dann 15 s nach Werbe-Paketen suchen
-    async Task<ulong?> Find(CancellationToken ct)
-    {
-        try
-        {
-            foreach (bool paired in new[] { true, false })
-            {
-                var list = await DeviceInformation.FindAllAsync(BluetoothLEDevice.GetDeviceSelectorFromPairingState(paired));
-                foreach (var d in list)
-                {
-                    if (d.Name?.StartsWith("CoolingSystem", StringComparison.OrdinalIgnoreCase) != true) continue;
-                    using var dev = await BluetoothLEDevice.FromIdAsync(d.Id);
-                    if (dev == null) continue;
-                    Model = d.Name;
-                    Log($"Bekanntes Gerät: {d.Name} {dev.BluetoothAddress:X12}");
-                    return dev.BluetoothAddress;
-                }
-            }
-        }
-        catch (Exception ex) { Log("Geräteliste: " + ex.Message); }
-
-        var tcs = new TaskCompletionSource<ulong?>();
-        var w = new BluetoothLEAdvertisementWatcher { ScanningMode = BluetoothLEScanningMode.Active };
-        w.Received += (_, a) =>
-        {
-          try
-          {
-            string name = a.Advertisement.LocalName ?? "";
-            bool nus = a.Advertisement.ServiceUuids.Contains(Nus);
-            if (name.StartsWith("CoolingSystem", StringComparison.OrdinalIgnoreCase) || (nus && name.Contains("LCT", StringComparison.OrdinalIgnoreCase)))
-            {
-                Model = name;
-                Log($"Gefunden: {name} {a.BluetoothAddress:X12} ({a.RawSignalStrengthInDBm} dBm)");
-                tcs.TrySetResult(a.BluetoothAddress);
-            }
-          }
-          catch { }
-        };
-        w.Stopped += (_, a) => { if (a.Error != BluetoothError.Success) { Log("Suche gestoppt: " + a.Error); tcs.TrySetResult(null); } };
-        w.Start();
-        var done = await Task.WhenAny(tcs.Task, Task.Delay(15_000, ct));
-        try { w.Stop(); } catch { }
-        return done == tcs.Task ? tcs.Task.Result : null;
-    }
-
-    async Task Connect(ulong addr)
-    {
-        Disconnect();
-        var dev = await BluetoothLEDevice.FromBluetoothAddressAsync(addr)
-                  ?? throw new IOException("Gerät nicht erreichbar");
-        _dev = dev;
-        Model ??= dev.Name;
-        var sr = await dev.GetGattServicesForUuidAsync(Nus, BluetoothCacheMode.Uncached);
-        if (sr.Status != GattCommunicationStatus.Success || sr.Services.Count == 0)
-            throw new IOException("Steuerdienst nicht gefunden (" + sr.Status + ")");
-        var svc = sr.Services[0];
-        _tx = (await svc.GetCharacteristicsForUuidAsync(TxId)).Characteristics.FirstOrDefault()
-              ?? throw new IOException("Sende-Kanal fehlt");
-        _rx = (await svc.GetCharacteristicsForUuidAsync(RxId)).Characteristics.FirstOrDefault()
-              ?? throw new IOException("Empfangs-Kanal fehlt");
-        _rx.ValueChanged += OnNotify;
-        var st = await _rx.WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue.Notify);
-        if (st != GattCommunicationStatus.Success) throw new IOException("Benachrichtigungen nicht möglich (" + st + ")");
-
-        // Handschlag: "sw" -> Gerät antwortet mit Firmware-Text
-        _version = new TaskCompletionSource<string>();
-        await Write(new byte[] { 0x73, 0x77 });
-        var done = await Task.WhenAny(_version.Task, Task.Delay(4000));
-        if (done != _version.Task) Log("Keine Antwort auf den Handschlag – versuche trotzdem zu steuern");
-
-        dev.ConnectionStatusChanged += (d, _) =>
-        {
-            try { _ = d.ConnectionStatus; } catch { return; }
-            if (d.ConnectionStatus == BluetoothConnectionStatus.Disconnected && Connected)
-            {
-                Log("Verbindung getrennt");
                 Connected = false;
-                State = "Getrennt – verbinde neu …";
+                if (!Available) { State = "OasisBridge.exe fehlt – bitte Toast Temperatur neu installieren"; return; }
+                // Abgestürzt? Nicht endlos neu starten
+                double wait = _restarts < 3 ? 5 : 120;
+                if ((DateTime.Now - _lastStart).TotalSeconds < wait) return;
+                StartBridge();
+                return;
             }
-        };
-        _sentFan = _sentPump = -1;
-        _sentVolt = -1;
-        Connected = true;
-        State = "Verbunden";
-        Log($"Verbunden mit {Model} ({addr:X12}), Firmware {Firmware ?? "?"}");
+
+            float fan, pump;
+            lock (_gate) { fan = _fan; pump = _pump; }
+            int volt = Math.Clamp(_s.OasisPumpVoltage, 0, 3);
+            if (volt != _lastVolt) { Send($"volt {volt}"); _lastVolt = volt; }
+            if (_s.OasisReleaseFan != _lastRelFan || _s.OasisReleasePump != _lastRelPump)
+            {
+                Send(FormattableString.Invariant($"release {_s.OasisReleaseFan:0} {_s.OasisReleasePump:0}"));
+                _lastRelFan = _s.OasisReleaseFan;
+                _lastRelPump = _s.OasisReleasePump;
+            }
+            if (fan >= 0 && Math.Abs(fan - _lastFanSent) >= 0.5f) { Send(FormattableString.Invariant($"fan {fan:0.#}")); _lastFanSent = fan; }
+            if (pump >= 0 && Math.Abs(pump - _lastPumpSent) >= 0.5f) { Send(FormattableString.Invariant($"pump {pump:0.#}")); _lastPumpSent = pump; }
+        }
+        catch (Exception ex) { ErrorLog.Write("XMG Oasis", ex); }
     }
 
-    void OnNotify(GattCharacteristic sender, GattValueChangedEventArgs args)
+    void StartBridge()
+    {
+        _lastStart = DateTime.Now;
+        _restarts++;
+        try
+        {
+            var p = new Process
+            {
+                StartInfo = new ProcessStartInfo(BridgePath)
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                },
+                EnableRaisingEvents = true,
+            };
+            p.OutputDataReceived += (_, e) => { if (e.Data != null) OnLine(e.Data); };
+            p.Exited += (_, _) => { Connected = false; State = "Bluetooth-Hilfsprogramm beendet – starte neu …"; };
+            p.Start();
+            p.BeginOutputReadLine();
+            p.BeginErrorReadLine();
+            _proc = p;
+            _lastVolt = -1;
+            _lastRelFan = _lastRelPump = -1;
+            _lastFanSent = _lastPumpSent = -2;
+            Send(_s.OasisAddress is ulong a ? $"addr {a:X12}" : "addr -");
+            State = "Suche XMG Oasis …";
+        }
+        catch (Exception ex)
+        {
+            State = "Bluetooth-Hilfsprogramm startet nicht: " + ex.Message;
+            ErrorLog.Write("OasisBridge starten", ex);
+        }
+    }
+
+    void OnLine(string line)
     {
         try
         {
-            var r = DataReader.FromBuffer(args.CharacteristicValue);
-            var b = new byte[r.UnconsumedBufferLength];
-            r.ReadBytes(b);
-            if (b.Length >= 8 && b[0] == 0xFE && (b[1] == 0x31 || b[1] == 0x32))
+            int sp = line.IndexOf(' ');
+            string cmd = sp < 0 ? line : line[..sp];
+            string arg = sp < 0 ? "" : line[(sp + 1)..];
+            switch (cmd)
             {
-                if (Flow != b[3]) Log($"Durchfluss-Status {b[3]}");
-                Flow = b[3];
-            }
-            else if (b.Length > 0 && b[0] != 0xFE)
-            {
-                string s = Encoding.UTF8.GetString(b).Trim('\0', ' ', '\r', '\n');
-                Firmware = s.Length > 17 ? s[17..].Trim() : s;
-                _version?.TrySetResult(s);
+                case "state": State = arg; break;
+                case "connected":
+                    var parts = arg.Split('\t');
+                    Model = parts[0];
+                    Firmware = parts.Length > 1 && parts[1].Length > 0 ? parts[1] : null;
+                    Connected = true;
+                    _restarts = 0;
+                    _lastFanSent = _lastPumpSent = -2;   // nach (Neu-)Verbindung alles erneut schicken
+                    break;
+                case "disconnected": Connected = false; break;
+                case "flow": if (int.TryParse(arg, out var f)) Flow = f; break;
+                case "found":
+                    if (ulong.TryParse(arg, NumberStyles.HexNumber, null, out var addr))
+                    {
+                        _s.OasisAddress = addr;
+                        Found?.Invoke(addr);
+                    }
+                    break;
+                case "sent":
+                    var v = arg.Split(' ');
+                    if (v.Length >= 2)
+                    {
+                        if (float.TryParse(v[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var sf) && sf >= 0) FanPercent = sf;
+                        if (float.TryParse(v[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var spp) && spp >= 0) PumpPercent = spp;
+                    }
+                    break;
             }
         }
         catch { }
     }
 
-    static byte[] Frame(byte cmd, byte on, byte p1, byte p2, byte p3, byte p4) =>
-        new byte[] { 0xFE, cmd, on, p1, p2, p3, p4, 0xEF };
-
-    async Task Write(byte[] data)
-    {
-        var tx = _tx ?? throw new IOException("Nicht verbunden");
-        var w = new DataWriter();
-        w.WriteBytes(data);
-        var opt = tx.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Write)
-            ? GattWriteOption.WriteWithResponse : GattWriteOption.WriteWithoutResponse;
-        var res = await tx.WriteValueWithResultAsync(w.DetachBuffer(), opt);
-        if (res.Status != GattCommunicationStatus.Success)
-            throw new IOException("Senden fehlgeschlagen (" + res.Status + ")");
-    }
-
-    async Task SendPending()
-    {
-        float fan, pump;
-        lock (_gate) { fan = _fan; pump = _pump; }
-        int volt = Math.Clamp(_s.OasisPumpVoltage, 0, 3);
-        // Alle 30 s erneut senden, falls das Control Center dazwischengefunkt hat
-        // Läuft das Control Center, alle 5 s – so setzt sich Toast Temperatur durch
-        bool keepAlive = (DateTime.Now - _lastSend).TotalSeconds >= (ControlCenterRunning ? 5 : 30);
-
-        if (fan >= 0 && (Math.Abs(fan - _sentFan) >= 1 || keepAlive))
-        {
-            byte d = (byte)Math.Round(fan);
-            await Write(Frame(0x1B, (byte)(d > 0 ? 1 : 0), d, 0, 0, 0));
-            _sentFan = fan;
-            _lastSend = DateTime.Now;
-        }
-        if (pump >= 0 && (Math.Abs(pump - _sentPump) >= 1 || volt != _sentVolt || keepAlive))
-        {
-            byte d = (byte)Math.Round(Math.Max(pump, 1));   // Pumpe nie ausschalten
-            await Write(Frame(0x1C, 1, d, (byte)volt, 0, 0));
-            _sentPump = pump;
-            _sentVolt = volt;
-            _lastSend = DateTime.Now;
-        }
-    }
-
-    void Disconnect()
-    {
-        Connected = false;
-        try { if (_rx != null) _rx.ValueChanged -= OnNotify; } catch { }
-        _tx = _rx = null;
-        try { _dev?.Dispose(); } catch { }
-        _dev = null;
-    }
-
-    /// Beim Beenden: Standardwerte senden, Verbindung sauber abmelden
+    /// Beim Beenden: Standardwerte senden lassen, Verbindung sauber abmelden
     public void Shutdown()
     {
         try
         {
-            _cts?.Cancel();
-            if (!Connected) return;
-            Task.Run(async () =>
-            {
-                lock (_gate) { _fan = _s.OasisReleaseFan; _pump = _s.OasisReleasePump; }
-                _lastSend = DateTime.MinValue;
-                await SendPending();
-                await Write(Frame(0x38, 0, 0, 0, 0, 0));
-            }).Wait(2500);
+            _timer?.Dispose();
+            var p = _proc;
+            if (p == null || p.HasExited) return;
+            Send(FormattableString.Invariant($"release {_s.OasisReleaseFan:0} {_s.OasisReleasePump:0}"));
+            Send("exit");
+            if (!p.WaitForExit(3000)) { try { p.Kill(); } catch { } }
         }
         catch { }
-        Disconnect();
     }
 }
 
@@ -375,6 +262,6 @@ sealed class OasisFan : IExternalFan
         : null;
 
     public string? Note => _link.ControlCenterRunning
-        ? "XMG Control Center läuft auch – dort die Wasserkühlung nicht steuern, sonst überschreiben sich beide"
+        ? "Control Center läuft auch – Toast Temperatur setzt seine Werte alle 5 s durch"
         : null;
 }

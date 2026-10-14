@@ -135,6 +135,26 @@ sealed class FanView : FlowLayoutPanel
             AddFull(c);
         }
 
+        // ----- Laptop (Uniwill-EC) -----
+        if (_ctl.Uniwill is UniwillEc uw)
+        {
+            AddSection("Laptop-Lüfter", Color.FromArgb(148, 163, 184));
+            var c = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+            c.Note("Die beiden Laptop-Lüfter werden direkt über den Embedded Controller gesteuert – über dieselbe Schnittstelle wie das Control Center " +
+                   "(und wie der TUXEDO-Treiber unter Linux). Sie stehen oben als eigene Karten und regeln wie alle anderen Lüfter. " +
+                   "Unter 12 % stehen sie still, zwischen 12 und 25 % laufen sie mit 25 % (darunter laufen sie nicht sicher an). " +
+                   "Im Profil „Standard (BIOS)“ und beim Beenden übernimmt wieder der Laptop bzw. das Control Center." +
+                   (uw.Board.Length > 0 ? $"  ·  Mainboard: {uw.Board}" : ""));
+            c.Check("Laptop-Lüfter von Toast Temperatur steuern (nach dem Ausschalten: Neustart)", _ctl.Settings.LaptopControl,
+                v => { _ctl.Settings.LaptopControl = v; _ctl.Save(); });
+            c.Buttons(("Protokoll öffnen", () =>
+            {
+                var p = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "laptop.log");
+                try { if (File.Exists(p)) System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(p) { UseShellExecute = true }); } catch { }
+            }));
+            AddFull(c);
+        }
+
         // ----- XMG Oasis -----
         _oasisState = null;
         if (OasisLink.Instance is OasisLink link)

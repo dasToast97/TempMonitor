@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Eigenes kleines Programm für die XMG Oasis (Bluetooth über Windows-WinRT).
+       Läuft getrennt von Toast Temperatur: Probleme mit Bluetooth können das Hauptprogramm nicht mitreißen. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>OasisBridge</AssemblyName>
+    <RootNamespace>OasisBridge</RootNamespace>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+</Project>

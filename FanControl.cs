@@ -714,6 +714,36 @@ sealed class FanController
     /// Wird ausgelöst, wenn später Lüfter dazukommen (z. B. XMG Oasis gefunden)
     public event Action? ChannelsChanged;
 
+    /// Laptop-Lüfter (Uniwill-EC) als zwei steuerbare Kanäle
+    public UniwillEc? Uniwill { get; private set; }
+
+    public void AddUniwill(UniwillEc ec)
+    {
+        lock (_lock)
+        {
+            Uniwill = ec;
+            foreach (int fan in new[] { 0, 1 })
+            {
+                string id = fan == 0 ? "uniwill/fan1" : "uniwill/fan2";
+                var cfg = _s.For(id);
+                if (!cfg.SourcesInitialized)
+                {
+                    // Laptop: CPU und GPU teilen sich meist die Heatpipes -> beide Lüfter achten auf beide
+                    cfg.UseCpu = cfg.UseGpu = true;
+                    cfg.SourcesInitialized = true;
+                }
+                Channels.Add(new FanChannel
+                {
+                    Ext = new UniwillFan(ec, fan),
+                    Id = id,
+                    DefaultName = fan == 0 ? "Laptop · CPU-Lüfter" : "Laptop · GPU-Lüfter",
+                    HardwareName = "Laptop (Embedded Controller)" + (ec.Board.Length > 0 ? $" · {ec.Board}" : ""),
+                    Cfg = cfg,
+                });
+            }
+        }
+    }
+
     public void AddOasis(OasisLink link)
     {
         lock (_lock)
@@ -1024,6 +1054,7 @@ sealed class FanController
         {
             foreach (var ch in Channels) SafeDefault(ch);
             try { Laptop?.Restore(); } catch { }
+            try { Uniwill?.Release(); } catch { }
             _s.Save();
         }
     }
@@ -1053,6 +1084,7 @@ sealed class FanController
         {
             var prof = Profiles.Get(Profile);
             try { TickLaptop(prof); } catch (Exception ex) { LaptopStatus = "Fehler: " + ex.Message; }
+            try { Uniwill?.Tick(); } catch { }
             // Erst die regelnden Lüfter, dann die Gruppen-Mitglieder, die ihnen folgen
             foreach (bool followers in new[] { false, true })
             {

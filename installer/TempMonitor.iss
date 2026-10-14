@@ -52,6 +52,7 @@ Name: "autostart"; Description: "Mit Windows starten – läuft unsichtbar im Hi
 
 [Files]
 Source: "..\publish\{#MyAppExe}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\publish\OasisBridge.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [InstallDelete]
 ; Verknüpfungen mit dem alten Namen entfernen

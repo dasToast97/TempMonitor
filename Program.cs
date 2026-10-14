@@ -372,7 +372,16 @@ sealed class MainForm : Form
             if (System.Windows.Forms.SystemInformation.PowerStatus.BatteryChargeStatus != BatteryChargeStatus.NoSystemBattery)
             {
                 Program.Step("Laptop-Schnittstelle prüfen");
-                _fans.Laptop = TongfangLaptop.Probe();
+                try
+                {
+                    if (_fans.Settings.LaptopControl && UniwillEc.Probe() is UniwillEc ec)
+                    {
+                        _fans.AddUniwill(ec);
+                        Program.Step("Uniwill-Laptop-Lüfter eingebunden");
+                    }
+                    else _fans.Laptop = TongfangLaptop.Probe();
+                }
+                catch (Exception lex) { ErrorLog.Write("Laptop-Lüfter", lex); }
             }
         }
         catch (Exception ex)
