@@ -834,10 +834,8 @@ sealed class FanController
         if ((output >= 100 && e > 0) || (output <= p.MinPercent && e < 0))
             st.Integral -= cfg.Ki * e;
 
-        // Gelernt wird nur vom Bauteil, das gerade wirklich die Drehzahl bestimmt
-        if (!isDriver) return output;
-
         // --- Lernen 0: Wirkung messen ---
+        // (für alle angehakten Bauteile – egal, wer gerade die Drehzahl bestimmt)
         // Nach 60 s bei gleicher Last: Wie viel kühler/wärmer ist das Bauteil, seit sich die Leistung geändert hat?
         var now = DateTime.Now;
         if (st.SnapTime is null || st.SnapBucket != bucket)
@@ -855,6 +853,9 @@ sealed class FanController
             }
             st.SnapTime = now; st.SnapT = T; st.SnapOut = ch.Output; st.SnapBucket = bucket;
         }
+
+        // Gelernt wird nur vom Bauteil, das gerade wirklich die Drehzahl bestimmt
+        if (!isDriver) return output;
 
         // --- Lernen 1: stabiler Zustand -> Grundwert für diese Last merken ---
         if (Math.Abs(e) < 1.5f) st.SteadyTicks++; else st.SteadyTicks = 0;
