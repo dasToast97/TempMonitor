@@ -124,7 +124,7 @@ sealed class FanView : FlowLayoutPanel
         var s = _ctl.Settings;
         var panel = new Panel
         {
-            Height = S(118),
+            Height = S(156),
             BackColor = Theme.Card,
             Margin = new Padding(S(6), S(4), S(6), S(4)),
         };
@@ -176,6 +176,23 @@ sealed class FanView : FlowLayoutPanel
             Location = new Point(S(14), S(80)),
         };
         stall.CheckedChanged += (_, _) => { s.StallDetection = stall.Checked; _ctl.Save(); };
+
+        // Mainboard-Grenze (standardmäßig an)
+        var guard = new CheckBox
+        {
+            Text = "Mainboard-Grenze: Mainboard-Lüfter hochregeln, wenn das Mainboard wärmer wird als",
+            Checked = s.BoardGuardEnabled,
+            ForeColor = Theme.Text,
+            AutoSize = true,
+            Location = new Point(S(14), S(116)),
+        };
+        int gx = S(14) + TextRenderer.MeasureText(guard.Text, guard.Font).Width + S(30);
+        var guardNum = Ui.Number(s.BoardLimit, 40, 100, new Point(gx, S(113)), K);
+        var guardUnit = new Label { Text = "°C", ForeColor = Theme.Muted, AutoSize = true, Location = new Point(gx + guardNum.Width + S(4), S(116)) };
+        guardNum.Enabled = guard.Checked;
+        guard.CheckedChanged += (_, _) => { s.BoardGuardEnabled = guard.Checked; guardNum.Enabled = guard.Checked; _ctl.Save(); };
+        guardNum.ValueChanged += (_, _) => { s.BoardLimit = (float)guardNum.Value; _ctl.Save(); };
+        controls.AddRange(new Control[] { guard, guardNum, guardUnit });
         controls.Add(stall);
 
         panel.Controls.AddRange(controls.ToArray());

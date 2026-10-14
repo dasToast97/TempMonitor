@@ -23,7 +23,9 @@ für jeden Sensor einen Verlaufsgraphen der letzten 5 Minuten zeigt.
 | Eigene Kurve | Kurve pro Lüfter mit der Maus ziehen |
 
 - Jeder Lüfter regelt nach **CPU, GPU und/oder Mainboard** (Häkchen auf der Karte) – das Bauteil,
-  das gerade mehr Kühlung braucht, bestimmt die Drehzahl.
+  das gerade mehr Kühlung braucht, bestimmt die Drehzahl. Gehäuselüfter regeln standardmäßig nach CPU + GPU.
+- **Mainboard-Grenze** (Standard 65 °C): Das Mainboard regelt nicht mit, dreht die Mainboard-Lüfter aber hoch,
+  sobald es wärmer wird – so bleiben die Lüfter im Alltag leise.
 - **Zieltemperaturen** für CPU, GPU und Mainboard sind je Profil einstellbar.
 - Lüfter lassen sich **umbenennen**, als **Lüfter oder Pumpe** kennzeichnen und per **„Erkennen“**
   (5 Sekunden 100 %) zuordnen. Pumpen haben eine einstellbare Mindestleistung.

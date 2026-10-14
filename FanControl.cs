@@ -121,6 +121,11 @@ sealed class FanSettings
     public float GpuCritical { get; set; } = 85f;
     public float BoardCritical { get; set; } = 80f;
     public float HotspotCritical { get; set; } = 105f;
+
+    /// Mainboard-Grenze: Mainboard regelt nicht mit, dreht die Mainboard-Lüfter aber hoch, wenn es zu warm wird
+    public bool BoardGuardEnabled { get; set; } = true;
+    public float BoardLimit { get; set; } = 65f;
+    public bool BoardDefaultMigrated { get; set; }
     public bool StallDetection { get; set; }
 
     /// Version des Lernverfahrens – bei Änderungen wird altes Gelerntes verworfen
@@ -156,11 +161,17 @@ sealed class FanSettings
                     }
                     s.LearnVersion = CurrentLearnVersion;
                 }
+                if (!s.BoardDefaultMigrated)
+                {
+                    // Mainboard regelt standardmäßig nicht mehr mit (nur noch als Grenze)
+                    foreach (var f in s.Fans.Values) f.UseBoard = false;
+                    s.BoardDefaultMigrated = true;
+                }
                 return s;
             }
         }
         catch { /* kaputte Datei -> Standardwerte */ }
-        return new() { LearnVersion = CurrentLearnVersion };
+        return new() { LearnVersion = CurrentLearnVersion, BoardDefaultMigrated = true };
     }
 
     public void Save()
@@ -453,7 +464,7 @@ sealed class FanController
             {
                 if (gpu) cfg.UseGpu = true;
                 else if (ch.Kind == FanKind.Pump || defName.Contains("CPU", StringComparison.OrdinalIgnoreCase)) cfg.UseCpu = true;
-                else cfg.UseCpu = cfg.UseGpu = cfg.UseBoard = true;   // Gehäuselüfter: kühlen alles
+                else cfg.UseCpu = cfg.UseGpu = true;   // Gehäuselüfter: CPU + GPU (Mainboard nur als Grenze)
                 cfg.SourcesInitialized = true;
             }
 
@@ -665,6 +676,22 @@ sealed class FanController
             }
         }
 
+        // Mainboard-Grenze: Mainboard-Lüfter hochregeln, sobald das Mainboard zu warm wird (+8 % je °C darüber)
+        bool boardGuard = false;
+        if (!ch.IsGpu && _s.BoardGuardEnabled && prof.Profile != FanProfile.Max
+            && Temp(Component.Board) is float bt && bt > _s.BoardLimit)
+        {
+            float g = Math.Max(prof.MinPercent, 20f) + (bt - _s.BoardLimit) * 8f;
+            if (g > desired)
+            {
+                desired = g;
+                driver = Component.Board;
+                driverTemp = bt;
+                driverTarget = _s.BoardLimit;
+                boardGuard = true;
+            }
+        }
+
         if (driver is null)
         {
             SafeDefault(ch);
@@ -697,6 +724,8 @@ sealed class FanController
                      ? (ef < WeakEffect ? $"Wirkung gering ({ef:0.0} °C je 10 %) – gedämpft" : $"Wirkung {ef:0.0} °C je 10 %")
                      : "Wirkung wird gemessen"),
         };
+        if (boardGuard)
+            ch.Status = $"Mainboard-Grenze: {driverTemp:0} °C liegt über {_s.BoardLimit:0} °C – Lüfter erhöht";
 
         // Sicherheit (optional): zu heiß -> sofort volle Kühlung
         if (emergency)
