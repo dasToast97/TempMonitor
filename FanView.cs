@@ -934,9 +934,12 @@ sealed class FanCard : Control
         TextRenderer.DrawText(g, sub, SmallFont, new Rectangle(S(48), S(40), Width - S(210), S(16)), Theme.Muted, L);
 
         // Drehzahl groß
-        string rpm = _ch.Rpm?.Value is float r ? $"{r:N0}" : "–";
-        TextRenderer.DrawText(g, rpm, BigFont, new Rectangle(Width - S(160), S(10), S(110), S(36)), Theme.Text, R);
-        TextRenderer.DrawText(g, "U/min", SmallFont, new Rectangle(Width - S(48), S(22), S(36), S(16)), Theme.Muted, L);
+        // Ohne Drehzahl-Sensor (Oasis, Laptop-Lüfter): Leistung groß anzeigen
+        float shown = _ch.Output >= 0 ? _ch.Output : (_ch.Readback ?? -1);
+        string big = _ch.Rpm != null ? (_ch.Rpm.Value is float r ? $"{r:N0}" : "–") : (shown >= 0 ? $"{shown:0}" : "–");
+        string unit = _ch.Rpm != null ? "U/min" : "%";
+        TextRenderer.DrawText(g, big, BigFont, new Rectangle(Width - S(160), S(10), S(110), S(36)), Theme.Text, R);
+        TextRenderer.DrawText(g, unit, SmallFont, new Rectangle(Width - S(48), S(22), S(36), S(16)), Theme.Muted, L);
 
         // Leistungsbalken
         float pct = _ch.Output >= 0 ? _ch.Output : (_ch.Readback ?? 0);

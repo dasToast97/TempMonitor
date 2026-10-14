@@ -17,6 +17,9 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      # Signiert wird nur bei Releases (Versions-Tag) und nur, wenn SignPath eingerichtet ist
+      SIGNPATH_ENABLED: ${{ github.ref_type == 'tag' && secrets.SIGNPATH_API_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -58,6 +61,30 @@ jobs:
           -p:DebugType=none
           -o publish
 
+      # ----- Signieren über SignPath (nur wenn eingerichtet: Secret SIGNPATH_API_TOKEN + Variablen) -----
+      - name: Programme zum Signieren hochladen
+        if: env.SIGNPATH_ENABLED == 'true'
+        id: unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-programs
+          path: |
+            publish/TempMonitor.exe
+            publish/OasisBridge.exe
+
+      - name: Programme signieren (SignPath)
+        if: env.SIGNPATH_ENABLED == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: programs
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: publish
+
       - name: Inno Setup installieren
         shell: pwsh
         run: |
@@ -72,6 +99,27 @@ jobs:
           "/DMyAppVersion=${{ steps.ver.outputs.version }}"
           "/DMyRepo=${{ github.repository }}"
           installer\TempMonitor.iss
+
+      - name: Installer zum Signieren hochladen
+        if: env.SIGNPATH_ENABLED == 'true'
+        id: unsignedsetup
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-setup
+          path: publish/TempMonitor-Setup.exe
+
+      - name: Installer signieren (SignPath)
+        if: env.SIGNPATH_ENABLED == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.unsignedsetup.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: publish
 
       - uses: actions/upload-artifact@v4
         with:

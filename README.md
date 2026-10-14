@@ -134,3 +134,26 @@ dotnet run
 ```
 
 Lokal gebaute Versionen haben keine Update-Quelle; der Updater ist dort deaktiviert.
+
+## Lizenz
+
+MIT – siehe [LICENSE](LICENSE). Verwendet [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) (MPL-2.0).
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+- **Committers and reviewers:** [dasToast97](https://github.com/dasToast97)
+- **Approvers:** [dasToast97](https://github.com/dasToast97)
+
+Jedes Release wird automatisch aus diesem Repository von GitHub Actions gebaut und erst nach manueller Freigabe signiert.
+
+## Datenschutz
+
+Dieses Programm überträgt keine Informationen an andere Systeme, außer wenn der Nutzer oder die Person, die es installiert,
+dies ausdrücklich anfordert. Einzige Netzwerkverbindung: die Suche nach Updates auf GitHub (Releases dieses Repositorys)
+und – nur auf Wunsch im Installer – der Download des Treibers PawnIO. Messwerte, Einstellungen und Protokolle bleiben auf dem
+eigenen PC (`%AppData%\TempMonitor`, `Dokumente\Toast Temperatur`).
+
+*This program will not transfer any information to other networked systems unless specifically requested by the user or the
+person installing or operating it.*

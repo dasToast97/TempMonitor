@@ -44,6 +44,7 @@ static class Program
     static volatile bool _connected;
     static string? _model;
     static int _flow = -1;
+    static readonly HashSet<string> _unknown = new();
 
     static void Log(string msg)
     {
@@ -69,6 +70,7 @@ static class Program
 
     static int Main()
     {
+
         AppDomain.CurrentDomain.UnhandledException += (_, e) => Log("Absturz: " + e.ExceptionObject);
         TaskScheduler.UnobservedTaskException += (_, e) => { Log("Hintergrund: " + e.Exception.Message); e.SetObserved(); };
         Log("OasisBridge gestartet");
@@ -286,9 +288,22 @@ static class Program
                 _flow = b[3];
                 Out($"flow {b[3]}");
             }
-            else if (b.Length > 0 && b[0] != 0xFE)
+            else if (b.Length > 0 && b[0] != 0xFE && b[0] != 0xFA && b[0] >= 0x20)
             {
                 _version?.TrySetResult(Encoding.UTF8.GetString(b).Trim('\0', ' ', '\r', '\n'));
+            }
+            else
+            {
+                // Unbekannter Rahmen (z. B. erweiterter 30-Byte-Rahmen der Mk2) – zur Auswertung protokollieren
+                string hex = Convert.ToHexString(b);
+                if (_unknown.Add(hex.Length > 16 ? hex[..16] : hex) && _unknown.Count <= 40)
+                    Log($"Rahmen: {hex}");
+                // Erweiterter Rahmen FA <cmd> … AF: Durchfluss wie im kurzen Rahmen an Stelle 3
+                if (b.Length >= 8 && b[0] == 0xFA && (b[1] == 0x31 || b[1] == 0x32))
+                {
+                    _flow = b[3];
+                    Out($"flow {b[3]}");
+                }
             }
         }
         catch { }
