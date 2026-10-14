@@ -10,9 +10,18 @@ static class Program
     /// Mit "/tray" gestartet (z. B. per Autostart): direkt unsichtbar im Infobereich
     public static bool StartInTray { get; private set; }
 
+    [System.Runtime.InteropServices.DllImport("ole32.dll")]
+    static extern int CoInitializeSecurity(IntPtr pSecDesc, int cAuthSvc, IntPtr asAuthSvc, IntPtr pReserved1,
+        uint dwAuthnLevel, uint dwImpLevel, IntPtr pAuthList, uint dwCapabilities, IntPtr pReserved3);
+
     [STAThread]
     static void Main(string[] args)
     {
+        // Bluetooth (XMG Oasis): Ohne diese Einstellung kommen in Programmen mit Adminrechten
+        // keine Benachrichtigungen vom Gerät an. Muss vor jeder anderen COM-Nutzung passieren.
+        try { CoInitializeSecurity(IntPtr.Zero, -1, IntPtr.Zero, IntPtr.Zero, 0 /* DEFAULT */, 2 /* IDENTIFY */, IntPtr.Zero, 0, IntPtr.Zero); }
+        catch { }
+
         // Nur eine Instanz gleichzeitig (wichtig auch für den Updater)
         using var mutex = new Mutex(true, "TempMonitor_SingleInstance", out bool first);
         if (!first) { SingleInstance.SignalFirst(); return; }   // läuft schon -> Fenster dort öffnen

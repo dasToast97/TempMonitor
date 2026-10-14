@@ -41,6 +41,11 @@ Temperaturquellen; oder per „Gruppe“ auf jeder Lüfter-Karte selbst zusammen
 Battle.net werden automatisch erkannt, eigene Programme lassen sich hinzufügen) und/oder nach Zeitplan mit Wochentagen.
 Wer selbst ein Profil wählt, behält es, bis das Spiel bzw. der Zeitraum endet.
 
+**XMG Oasis (externe Wasserkühlung für XMG-/Tongfang-/Uniwill-Laptops):** wird per Bluetooth gefunden
+(Mk1 LCT21001 und Mk2 LCT22002). Lüfter und Pumpe erscheinen als eigene Karten im Reiter Lüfter und regeln nach CPU + GPU
+wie alle anderen. Der Durchfluss wird überwacht (Warnung bei Störung). Pumpenspannung und die Werte beim Beenden sind einstellbar.
+Das XMG Control Center sollte die Wasserkühlung nicht gleichzeitig steuern. Protokoll: `%AppData%\TempMonitor\oasis.log`.
+
 **Kalibrierung:** misst je Lüfter die Höchstdrehzahl und ab wie viel Prozent er sicher anläuft – diese Grenze wird
 danach als Untergrenze genutzt, damit kein Lüfter bei niedriger Leistung stehen bleibt.
 
