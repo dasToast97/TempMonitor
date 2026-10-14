@@ -141,7 +141,7 @@ sealed class FanView : FlowLayoutPanel
         var controls = new List<Control> { emergency };
         var nums = new List<NumericUpDown>();
         int x = S(36);
-        foreach (var c in Components.All)
+        foreach (var c in Components.All.Where(x => x != Component.Hotspot || _ctl.HasComponent(Component.Hotspot)))
         {
             var lbl = new Label { Text = $"{Components.Name(c)} ab", ForeColor = Theme.Muted, AutoSize = true, Location = new Point(x, S(43)) };
             x += TextRenderer.MeasureText(lbl.Text, lbl.Font).Width + S(6);
@@ -152,6 +152,7 @@ sealed class FanView : FlowLayoutPanel
                 float v = (float)num.Value;
                 if (comp == Component.Cpu) s.CpuCritical = v;
                 else if (comp == Component.Gpu) s.GpuCritical = v;
+                else if (comp == Component.Hotspot) s.HotspotCritical = v;
                 else s.BoardCritical = v;
                 _ctl.Save();
             };
@@ -300,11 +301,11 @@ sealed class TargetsPanel : Panel
         Controls.Add(_title);
 
         int x = S(14);
-        foreach (var c in Components.All)
+        foreach (var c in Components.All.Where(x => x != Component.Hotspot || ctl.HasComponent(Component.Hotspot)))
         {
             var lbl = new Label { Text = $"Ziel {Components.Name(c)}", ForeColor = Theme.Muted, AutoSize = true, Location = new Point(x, S(45)) };
             x += TextRenderer.MeasureText(lbl.Text, lbl.Font).Width + S(6);
-            var num = Ui.Number(60, 30, 100, new Point(x, S(42)), k);
+            var num = Ui.Number(60, 30, 110, new Point(x, S(42)), k);
             x += num.Width + S(4);
             var unit = new Label { Text = "°C", ForeColor = Theme.Muted, AutoSize = true, Location = new Point(x, S(45)) };
             x += S(34);
@@ -352,9 +353,9 @@ sealed class TargetsPanel : Panel
         _loading = true;
         _title.Text = $"Zieltemperaturen für „{p.Title}“ – die Lüfter regeln so, dass diese Werte gehalten werden:";
         var t = _ctl.Settings.TargetsFor(p.Profile);
-        foreach (var c in Components.All)
+        foreach (var c in _nums.Keys)
         {
-            _nums[c].Value = (decimal)Math.Clamp(t[(int)c], 30, 100);
+            _nums[c].Value = (decimal)Math.Clamp(t[(int)c], 30, 110);
             _nums[c].Enabled = _ctl.HasComponent(c);
         }
         _loading = false;
@@ -525,7 +526,7 @@ sealed class FanCard : Control
             AutoSize = true,
         };
 
-        foreach (var c in Components.All)
+        foreach (var c in Components.Selectable)
         {
             var cb = new CheckBox
             {
@@ -586,7 +587,7 @@ sealed class FanCard : Control
         _identify.SetBounds(S(120), S(61), S(100), S(28));
         _sourceLabel.Location = new Point(S(16), _ch.IsGpu ? S(160) : S(150));
         int x = S(16), w = (Width - S(32)) / 3;
-        foreach (var c in Components.All)
+        foreach (var c in Components.Selectable)
         {
             _sources[c].SetBounds(x, S(168), w, S(24));
             x += w;
@@ -610,7 +611,7 @@ sealed class FanCard : Control
             if (_sourceLabel.Text != txt) _sourceLabel.Text = txt;
             return;
         }
-        foreach (var c in Components.All)
+        foreach (var c in Components.Selectable)
         {
             string txt = Components.Name(c);
             if (!_ctl.HasComponent(c)) txt += " (fehlt)";

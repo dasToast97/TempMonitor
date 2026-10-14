@@ -9,18 +9,23 @@ namespace TempMonitor;
 enum FanProfile { Bios, Eco, Balanced, Performance, Max, Custom }
 
 /// Nach welchem Bauteil ein Lüfter regelt
-enum Component { Cpu = 0, Gpu = 1, Board = 2 }
+enum Component { Cpu = 0, Gpu = 1, Board = 2, Hotspot = 3 }
 
 enum FanKind { Fan, Pump }
 
 static class Components
 {
-    public static readonly Component[] All = { Component.Cpu, Component.Gpu, Component.Board };
+    /// Alle Regelziele (inkl. GPU-Hot-Spot mit eigenem Ziel)
+    public static readonly Component[] All = { Component.Cpu, Component.Gpu, Component.Board, Component.Hotspot };
+
+    /// Was man pro Lüfter anhaken kann (Hot Spot gehört automatisch zur GPU)
+    public static readonly Component[] Selectable = { Component.Cpu, Component.Gpu, Component.Board };
 
     public static string Name(Component c) => c switch
     {
         Component.Cpu => "CPU",
         Component.Gpu => "GPU",
+        Component.Hotspot => "GPU-Hot-Spot",
         _ => "Mainboard",
     };
 }
@@ -32,15 +37,15 @@ sealed record ProfileInfo(
 static class Profiles
 {
     // UpRate / DownRate = maximale Änderung in % pro Sekunde (verhindert nerviges Auf- und Abheulen)
-    // DefaultTargets = Zieltemperaturen CPU, GPU, Mainboard (einstellbar)
+    // DefaultTargets = Zieltemperaturen CPU, GPU, Mainboard, GPU-Hot-Spot (einstellbar)
     public static readonly ProfileInfo[] All =
     {
-        new(FanProfile.Bios,        "Standard (BIOS)",  "Mainboard und Grafikkarte regeln selbst",      false,   0,   0,   0, new float[] { 0, 0, 0 }),
-        new(FanProfile.Eco,         "Energiesparend",   "So leise wie möglich",                         true,   20,   4,   1, new float[] { 78, 75, 55 }),
-        new(FanProfile.Balanced,    "Ausgewogen",       "Ruhig und kühl",                               true,   25,   6,   2, new float[] { 68, 70, 48 }),
-        new(FanProfile.Performance, "Leistung",         "Kühl für Spiele & Rendern",                    true,   35,  10,   2, new float[] { 58, 62, 42 }),
-        new(FanProfile.Max,         "Maximale Kühlung", "Alle Lüfter dauerhaft auf 100 %",              false, 100, 100, 100, new float[] { 0, 0, 0 }),
-        new(FanProfile.Custom,      "Eigene Kurve",     "Für jeden Lüfter eine eigene Kurve festlegen", false,   0,   8,   3, new float[] { 0, 0, 0 }),
+        new(FanProfile.Bios,        "Standard (BIOS)",  "Mainboard und Grafikkarte regeln selbst",      false,   0,   0,   0, new float[] { 0, 0, 0, 0 }),
+        new(FanProfile.Eco,         "Energiesparend",   "So leise wie möglich",                         true,   20,   4,   1, new float[] { 78, 75, 55, 90 }),
+        new(FanProfile.Balanced,    "Ausgewogen",       "Ruhig und kühl",                               true,   25,   6,   2, new float[] { 68, 70, 48, 85 }),
+        new(FanProfile.Performance, "Leistung",         "Kühl für Spiele & Rendern",                    true,   35,  10,   2, new float[] { 58, 62, 42, 78 }),
+        new(FanProfile.Max,         "Maximale Kühlung", "Alle Lüfter dauerhaft auf 100 %",              false, 100, 100, 100, new float[] { 0, 0, 0, 0 }),
+        new(FanProfile.Custom,      "Eigene Kurve",     "Für jeden Lüfter eine eigene Kurve festlegen", false,   0,   8,   3, new float[] { 0, 0, 0, 0 }),
     };
 
     public static ProfileInfo Get(FanProfile p) => All.First(i => i.Profile == p);
@@ -71,7 +76,7 @@ sealed class FanChannelSettings
     public bool Uses(Component c) => c switch
     {
         Component.Cpu => UseCpu,
-        Component.Gpu => UseGpu,
+        Component.Gpu or Component.Hotspot => UseGpu,
         _ => UseBoard,
     };
 
@@ -111,6 +116,7 @@ sealed class FanSettings
     public float CpuCritical { get; set; } = 90f;
     public float GpuCritical { get; set; } = 85f;
     public float BoardCritical { get; set; } = 80f;
+    public float HotspotCritical { get; set; } = 105f;
     public bool StallDetection { get; set; }
 
     /// Mindestleistung für Pumpen (Wasserkühlung), damit sie nie zu langsam laufen
@@ -153,9 +159,18 @@ sealed class FanSettings
     public float[] TargetsFor(FanProfile p)
     {
         string key = p.ToString();
-        if (!Targets.TryGetValue(key, out var t) || t.Length != 3)
+        var def = Profiles.Get(p).DefaultTargets;
+        if (!Targets.TryGetValue(key, out var t) || t.Length < 3)
         {
-            t = (float[])Profiles.Get(p).DefaultTargets.Clone();
+            t = (float[])def.Clone();
+            Targets[key] = t;
+        }
+        else if (t.Length < def.Length)
+        {
+            // ältere Einstellungen: Hot-Spot-Ziel ergänzen
+            var n = (float[])def.Clone();
+            Array.Copy(t, n, t.Length);
+            t = n;
             Targets[key] = t;
         }
         return t;
@@ -165,6 +180,7 @@ sealed class FanSettings
     {
         Component.Cpu => CpuCritical,
         Component.Gpu => GpuCritical,
+        Component.Hotspot => HotspotCritical,
         _ => BoardCritical,
     };
 }
@@ -248,7 +264,7 @@ sealed class FanChannel
     public float? DriverTemp;
     public readonly Dictionary<Component, SourceState> States = new()
     {
-        [Component.Cpu] = new(), [Component.Gpu] = new(), [Component.Board] = new(),
+        [Component.Cpu] = new(), [Component.Gpu] = new(), [Component.Board] = new(), [Component.Hotspot] = new(),
     };
 
     public void ResetStates()
@@ -275,8 +291,7 @@ sealed class FanController
     readonly Dictionary<Component, ISensor?> _temp = new();
     ISensor? _gpuHotspot;
 
-    /// Abstand Hot Spot zu normaler GPU-Temperatur, der als normal gilt
-    public const float HotspotOffset = 20f;
+
     ISensor? _cpuLoad, _gpuLoad;
 
     /// Die laufende Steuerung (für die Lüfter-Kachel in der Übersicht)
@@ -295,24 +310,12 @@ sealed class FanController
     public float? Load(Component c) => c switch
     {
         Component.Cpu => _cpuLoad?.Value,
-        Component.Gpu => _gpuLoad?.Value,
+        Component.Gpu or Component.Hotspot => _gpuLoad?.Value,
         // Mainboard wird von CPU und GPU aufgeheizt -> die höhere Last zählt
         _ => Math.Max(_cpuLoad?.Value ?? 0, _gpuLoad?.Value ?? 0),
     };
 
     public bool HasComponent(Component c) => TempSensor(c) != null;
-
-    /// Temperatur, nach der geregelt wird. GPU: auch der Hot Spot zählt (abzüglich normalem Abstand).
-    public float? ControlTemp(Component c)
-    {
-        var t = Temp(c);
-        if (c == Component.Gpu && _gpuHotspot?.Value is float hs && hs > 1 && hs < 130)
-        {
-            float eff = hs - HotspotOffset;
-            if (t is not float tv || eff > tv) return eff;
-        }
-        return t;
-    }
 
     public float? GpuHotspot => _gpuHotspot?.Value;
 
@@ -346,6 +349,7 @@ sealed class FanController
                 _gpuHotspot = temps.FirstOrDefault(t => t.Name.Contains("Hot Spot", StringComparison.OrdinalIgnoreCase)
                                                      || t.Name.Contains("Hotspot", StringComparison.OrdinalIgnoreCase)
                                                      || t.Name.Contains("Junction", StringComparison.OrdinalIgnoreCase));
+                if (_gpuHotspot != null) _temp[Component.Hotspot] = _gpuHotspot;
             }
             else if (hw.HardwareType == HardwareType.Motherboard && !_temp.ContainsKey(Component.Board) && temps.Count > 0)
             {
@@ -607,7 +611,7 @@ sealed class FanController
 
         foreach (var c in Components.All)
         {
-            if (!ch.Cfg.Uses(c) || ControlTemp(c) is not float raw) continue;
+            if (!ch.Cfg.Uses(c) || Temp(c) is not float raw) continue;
             var st = ch.States[c];
             st.Smooth = st.Smooth is float sm ? sm + 0.35f * (raw - sm) : raw;
             float T = st.Smooth.Value;
@@ -653,8 +657,6 @@ sealed class FanController
             : Math.Max(desired, ch.Output - prof.DownRate);
 
         string who = Components.Name(driver.Value);
-        if (driver == Component.Gpu && GpuHotspot is float hsv && Temp(Component.Gpu) is float gt && hsv - HotspotOffset > gt)
-            who = "GPU-Hot-Spot";
         ch.Status = prof.Profile switch
         {
             FanProfile.Max => "Volle Leistung",
