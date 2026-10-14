@@ -32,6 +32,11 @@ sealed class AppSettings
     public int OverlayY { get; set; } = -1;
     public int OverlayOpacity { get; set; } = 85;
 
+    /// Welche CSV-Spalte welcher Hauptwert ist (Cpu, Gpu, Hotspot, Board, CpuLoad, GpuLoad, CpuPower)
+    public Dictionary<string, string> LogKeys { get; set; } = new();
+    /// Im Verlauf angehakte Werte
+    public List<string> HistorySeries { get; set; } = new();
+
     static readonly string FilePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "app.json");
 
@@ -80,7 +85,7 @@ sealed class DataLogger
 
     public void Clear() => _columns.Clear();
 
-    public void Add(string header, Func<float?> value)
+    public string Add(string header, Func<float?> value)
     {
         // Doppelte Spaltennamen eindeutig machen
         string h = header.Replace(";", ",");
@@ -88,6 +93,7 @@ sealed class DataLogger
         while (_columns.Any(c => c.Header == h)) h = $"{header} ({n++})";
         _columns.Add((h, value));
         _headerLine = "Zeit;" + string.Join(";", _columns.Select(c => c.Header));
+        return h;
     }
 
     /// Wird jede Sekunde aufgerufen; schreibt im eingestellten Abstand

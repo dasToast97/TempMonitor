@@ -101,6 +101,13 @@ sealed class FanChannelSettings
     /// Gemessene Wirkung je Bauteil: um wie viel °C es kühler wird, wenn dieser Lüfter 10 % mehr läuft
     public Dictionary<string, float> Effect { get; set; } = new();
 
+    // ----- Kalibrierung -----
+    /// Ab dieser Leistung läuft der Lüfter sicher an (wird als Untergrenze genutzt)
+    public float? StartPercent { get; set; }
+    public float? MinRpm { get; set; }
+    public float? MaxRpm { get; set; }
+    public DateTime? CalibratedAt { get; set; }
+
     public float? EffectFor(Component c) => Effect.TryGetValue(c.ToString(), out var v) ? v : null;
 
     public static List<float[]> DefaultCurve() => new()
@@ -346,6 +353,12 @@ sealed class FanChannel
     public float IdentifyStartRpm = -1;
     public int ReadbackMismatchTicks;
     public float? DriverTemp;
+
+    // Kalibrierung: 0 = aus, 1 = 100 % messen, 2 = 0 % (bleibt er stehen?), 3 = langsam hochfahren bis er anläuft
+    public int CalPhase;
+    public DateTime CalNext;
+    public float CalPct;
+    public string? CalNote;
     public readonly Dictionary<Component, SourceState> States = new()
     {
         [Component.Cpu] = new(), [Component.Gpu] = new(), [Component.Board] = new(), [Component.Hotspot] = new(),
@@ -580,6 +593,142 @@ sealed class FanController
     }
 
     // ---------------------------------------------------------------------
+    // Kalibrierung: höchste Drehzahl messen und herausfinden, ab wie viel Prozent
+    // der Lüfter sicher anläuft. Alle Lüfter gleichzeitig, dauert 1–2 Minuten.
+    // ---------------------------------------------------------------------
+    public bool Calibrating => Channels.Any(c => c.CalPhase > 0);
+
+    public IEnumerable<FanChannel> Calibratable => Channels.Where(c => !c.IsGpu && c.Rpm != null && !c.NotControllable);
+
+    public void StartCalibration()
+    {
+        lock (_lock)
+        {
+            foreach (var ch in Calibratable)
+            {
+                ch.CalPhase = 1;
+                ch.CalPct = 100;
+                ch.CalNext = DateTime.Now.AddSeconds(10);
+                ch.CalNote = null;
+                Write(ch, 100);
+                ch.Output = 100;
+            }
+        }
+    }
+
+    public void CancelCalibration(string? why = null)
+    {
+        lock (_lock)
+        {
+            foreach (var ch in Channels.Where(c => c.CalPhase > 0))
+            {
+                ch.CalPhase = 0;
+                ch.CalNote = why ?? "abgebrochen";
+                ch.ResetStates();
+                SafeDefault(ch);
+            }
+        }
+    }
+
+    void CalibrateStep(FanChannel ch)
+    {
+        // Sicherheit: während der Messung laufen Lüfter langsam – bei Hitze sofort abbrechen
+        if ((Temp(Component.Cpu) ?? 0) > 85 || (Temp(Component.Gpu) ?? 0) > 85 || (Temp(Component.Board) ?? 0) > 75)
+        {
+            foreach (var c in Channels.Where(c => c.CalPhase > 0))
+            {
+                c.CalPhase = 0;
+                c.CalNote = "abgebrochen – zu warm, bitte im Leerlauf kalibrieren";
+                c.ResetStates();
+                SafeDefault(c);
+            }
+            return;
+        }
+
+        float rpm = ch.Rpm?.Value ?? 0;
+        if (DateTime.Now < ch.CalNext)
+        {
+            Write(ch, ch.CalPct);
+            ch.Output = ch.CalPct;
+            ch.Status = ch.CalPhase switch
+            {
+                1 => "Kalibrierung: 100 % – höchste Drehzahl messen …",
+                2 => "Kalibrierung: 0 % – bleibt der Lüfter stehen?",
+                _ => $"Kalibrierung: {ch.CalPct:0} % – läuft er schon an?",
+            };
+            return;
+        }
+
+        void Done(string note)
+        {
+            ch.CalPhase = 0;
+            ch.CalNote = note;
+            ch.Cfg.CalibratedAt = DateTime.Now;
+            ch.ResetStates();
+            SafeDefault(ch);   // nächster Takt übernimmt wieder das Profil (bzw. das BIOS)
+            ch.Status = "Kalibrierung fertig: " + note;
+            _s.Save();
+        }
+
+        switch (ch.CalPhase)
+        {
+            case 1:
+                ch.Cfg.MaxRpm = rpm;
+                if (ch.Kind == FanKind.Pump)
+                {
+                    // Pumpen nie anhalten
+                    ch.Cfg.StartPercent = null;
+                    Done($"Pumpe, höchstens {rpm:N0} U/min");
+                    return;
+                }
+                if (rpm < 150)
+                {
+                    ch.Cfg.StartPercent = null;
+                    Done("dreht auch bei 100 % nicht – Anschluss leer oder nicht steuerbar");
+                    return;
+                }
+                ch.CalPhase = 2;
+                ch.CalPct = 0;
+                ch.CalNext = DateTime.Now.AddSeconds(10);
+                break;
+
+            case 2:
+                if (rpm >= 150)
+                {
+                    // Bleibt nie stehen (Mindestdrehzahl vom Mainboard/Lüfter) -> keine Untergrenze nötig
+                    ch.Cfg.MinRpm = rpm;
+                    ch.Cfg.StartPercent = null;
+                    Done($"läuft immer (mind. {rpm:N0} U/min), höchstens {ch.Cfg.MaxRpm:N0} U/min");
+                    return;
+                }
+                ch.CalPhase = 3;
+                ch.CalPct = 5;
+                ch.CalNext = DateTime.Now.AddSeconds(4);
+                break;
+
+            default:
+                if (rpm >= 150)
+                {
+                    ch.Cfg.MinRpm = rpm;
+                    ch.Cfg.StartPercent = Math.Min(100, ch.CalPct + 5);   // etwas Reserve
+                    Done($"läuft ab {ch.CalPct:0} % an (Untergrenze {ch.Cfg.StartPercent:0} %), höchstens {ch.Cfg.MaxRpm:N0} U/min");
+                    return;
+                }
+                ch.CalPct += 5;
+                if (ch.CalPct > 70)
+                {
+                    ch.Cfg.StartPercent = null;
+                    Done("läuft erst über 70 % an – keine Untergrenze gesetzt");
+                    return;
+                }
+                ch.CalNext = DateTime.Now.AddSeconds(4);
+                break;
+        }
+        Write(ch, ch.CalPct);
+        ch.Output = ch.CalPct;
+    }
+
+    // ---------------------------------------------------------------------
     // Lüftergruppen
     // ---------------------------------------------------------------------
     /// Lüfter, die in Gruppen dürfen (Grafikkarten-Lüfter regelt der Grafiktreiber eigenständig)
@@ -785,9 +934,15 @@ sealed class FanController
         }
     }
 
-    /// Gemeinsamer Anfang: Erkennen, nicht steuerbar, BIOS. true = Lüfter ist damit fertig.
+    /// Gemeinsamer Anfang: Kalibrierung, Erkennen, nicht steuerbar, BIOS. true = Lüfter ist damit fertig.
     bool Prelude(FanChannel ch, ProfileInfo prof)
     {
+        if (ch.CalPhase > 0)
+        {
+            CalibrateStep(ch);
+            return true;
+        }
+
         // ----- Erkennen: 5 Sekunden volle Drehzahl -----
         if (DateTime.Now < ch.IdentifyUntil)
         {
@@ -839,6 +994,7 @@ sealed class FanController
     {
         float min = prof.MinPercent;
         if (ch.Kind == FanKind.Pump) min = Math.Max(min, _s.PumpMinPercent);
+        else if (ch.Cfg.StartPercent is float sp && prof.Profile != FanProfile.Max) min = Math.Max(min, sp);
         min = Math.Max(min, ch.Control.MinSoftwareValue);
         float max = Math.Min(100f, ch.Control.MaxSoftwareValue > 0 ? ch.Control.MaxSoftwareValue : 100f);
         return (Math.Min(min, max), max);

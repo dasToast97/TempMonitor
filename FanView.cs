@@ -14,6 +14,7 @@ sealed class FanView : FlowLayoutPanel
     readonly List<Control> _fullWidth = new();
     Label? _profileInfo;
     TargetsPanel? _targets;
+    CalibrationPanel? _calib;
 
     float K => DeviceDpi / 96f;
     int S(float px) => (int)(px * K);
@@ -121,6 +122,15 @@ sealed class FanView : FlowLayoutPanel
         {
             AddSection("Lüftergruppen", Color.FromArgb(167, 139, 250));
             AddFull(new GroupsPanel(_ctl, () => BeginInvoke(Rebuild)) { Margin = new Padding(S(6), S(2), S(6), S(4)) });
+        }
+
+        // ----- Kalibrierung -----
+        _calib = null;
+        if (_ctl.Calibratable.Any())
+        {
+            AddSection("Kalibrierung", Color.FromArgb(45, 212, 191));
+            _calib = new CalibrationPanel(_ctl) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+            AddFull(_calib);
         }
 
         // ----- Sicherheit (optional) -----
@@ -295,6 +305,7 @@ sealed class FanView : FlowLayoutPanel
     public void RefreshValues()
     {
         foreach (var c in _cards) c.RefreshValues();
+        _calib?.RefreshValues();
     }
 }
 
@@ -781,7 +792,9 @@ sealed class FanCard : Control
 
         string sub = (pump ? "Pumpe" : "Lüfter") + " · " + _ch.HardwareName + (_ch.Od8 != null ? " · AMD Overdrive 8" : _ch.Od8Note != null ? " · Overdrive 8 nicht verfügbar" : "") +
                      (_ch.DisplayName != _ch.DefaultName ? $" · {_ch.DefaultName}" : "") +
-                     (_ctl.GroupOf(_ch) is FanGroup grp ? $" · Gruppe „{grp.Name}“" : "");
+                     (_ctl.GroupOf(_ch) is FanGroup grp ? $" · Gruppe „{grp.Name}“" : "") +
+                     (_ch.Cfg.StartPercent is float sp && !pump ? $" · startet ab {sp:0} %" : "") +
+                     (_ch.Cfg.MaxRpm is float mx && mx > 0 ? $" · max {mx:N0} U/min" : "");
         TextRenderer.DrawText(g, sub, SmallFont, new Rectangle(S(48), S(40), Width - S(210), S(16)), Theme.Muted, L);
 
         // Drehzahl groß
@@ -1197,6 +1210,98 @@ sealed class GroupsPanel : Panel
             return;
         _ctl.ReplaceGroups(sug);
         _changed();
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        using var pen = new Pen(Theme.Border);
+        e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+    }
+}
+
+// ===========================================================================
+// Kalibrierung: Starthilfe-Grenze und Höchstdrehzahl je Lüfter messen
+// ===========================================================================
+sealed class CalibrationPanel : Panel
+{
+    readonly FanController _ctl;
+    readonly Label _note, _state;
+    readonly Button _btn;
+    float K => DeviceDpi / 96f;
+    int S(float px) => (int)(px * K);
+
+    public CalibrationPanel(FanController ctl)
+    {
+        _ctl = ctl;
+        BackColor = Theme.Card;
+        _note = new Label
+        {
+            ForeColor = Theme.Muted, AutoSize = true, UseMnemonic = false,
+            Text = "Misst für jeden Mainboard-Lüfter die höchste Drehzahl und ab wie viel Prozent er sicher anläuft. " +
+                   "Diese Grenze wird danach als Untergrenze genutzt – so bleibt kein Lüfter bei niedriger Leistung stehen. " +
+                   "Dauert etwa 1–2 Minuten, am besten im Leerlauf. Pumpen werden nur bei 100 % gemessen und nie angehalten.",
+        };
+        _btn = PageBar.Button("Alle Lüfter kalibrieren", K, 210);
+        _btn.Click += (_, _) => Toggle();
+        _state = new Label { ForeColor = Theme.Text, AutoSize = true, UseMnemonic = false };
+        Controls.AddRange(new Control[] { _note, _btn, _state });
+        Resize += (_, _) => Layout2();
+        RefreshValues();
+    }
+
+    void Layout2()
+    {
+        _note.Location = new Point(S(14), S(12));
+        _note.MaximumSize = new Size(Math.Max(S(300), Width - S(28)), 0);
+        int y = S(12) + _note.PreferredHeight + S(10);
+        _btn.Location = new Point(S(14), y);
+        _btn.Height = S(30);
+        _state.Location = new Point(_btn.Right + S(14), y + S(6));
+        _state.MaximumSize = new Size(Math.Max(S(200), Width - _state.Left - S(14)), 0);
+        int h = Math.Max(_btn.Bottom, _state.Bottom) + S(12);
+        if (Height != h) Height = h;
+    }
+
+    void Toggle()
+    {
+        if (_ctl.Calibrating)
+        {
+            _ctl.CancelCalibration();
+            RefreshValues();
+            return;
+        }
+        if (MessageBox.Show(FindForm(),
+                "Die Lüfter laufen dabei nacheinander auf 100 %, kurz auf 0 % und dann langsam wieder hoch.\n\n" +
+                "Bei hohen Temperaturen bricht die Messung von selbst ab.\nJetzt kalibrieren?",
+                "Lüfter kalibrieren", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            return;
+        _ctl.StartCalibration();
+        RefreshValues();
+    }
+
+    public void RefreshValues()
+    {
+        bool run = _ctl.Calibrating;
+        string bt = run ? "Kalibrierung abbrechen" : "Alle Lüfter kalibrieren";
+        if (_btn.Text != bt) _btn.Text = bt;
+
+        string st;
+        if (run)
+        {
+            var list = _ctl.Calibratable.ToList();
+            int done = list.Count(c => c.CalPhase == 0);
+            st = $"Läuft … {done} von {list.Count} fertig";
+        }
+        else
+        {
+            var cal = _ctl.Calibratable.Where(c => c.Cfg.CalibratedAt != null).ToList();
+            var notes = _ctl.Channels.Where(c => c.CalNote != null).Select(c => $"{c.DisplayName}: {c.CalNote}").ToList();
+            st = notes.Count > 0 ? string.Join("\n", notes)
+               : cal.Count > 0 ? $"{cal.Count} Lüfter kalibriert (zuletzt {cal.Max(c => c.Cfg.CalibratedAt):dd.MM.yyyy})"
+               : "Noch nicht kalibriert.";
+        }
+        if (_state.Text != st) { _state.Text = st; Layout2(); }
     }
 
     protected override void OnPaint(PaintEventArgs e)

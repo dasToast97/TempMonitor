@@ -120,8 +120,9 @@ sealed class MainForm : Form
     FanController? _fans;
     FanView? _fanView;
     readonly NotifyIcon _tray;
-    readonly TabButton _tempTab, _fanTab, _setTab;
+    readonly TabButton _tempTab, _fanTab, _setTab, _anaTab;
     SettingsView? _settingsView;
+    AnalysisView? _analysis;
     KeySensors? _keys;
     readonly WarningMonitor _warn = new();
     readonly AutoSwitcher _auto = new();
@@ -238,11 +239,14 @@ sealed class MainForm : Form
         };
         _setTab = new TabButton("Einstellungen") { Dock = DockStyle.Left, Width = (int)(150 * K) };
         _fanTab = new TabButton("Lüfter") { Dock = DockStyle.Left, Width = (int)(130 * K) };
+        _anaTab = new TabButton("Analyse") { Dock = DockStyle.Left, Width = (int)(130 * K) };
         _tempTab = new TabButton("Übersicht") { Dock = DockStyle.Left, Width = (int)(140 * K), Selected = true };
         _tempTab.Click += (_, _) => { ShowTab(0); ShowDashboard(); };
         _fanTab.Click += (_, _) => ShowTab(1);
         _setTab.Click += (_, _) => ShowTab(2);
+        _anaTab.Click += (_, _) => ShowTab(3);
         nav.Controls.Add(_setTab);   // Dock Left: zuletzt hinzugefügt steht ganz links
+        nav.Controls.Add(_anaTab);
         nav.Controls.Add(_fanTab);
         nav.Controls.Add(_tempTab);
 
@@ -315,6 +319,17 @@ sealed class MainForm : Form
         _settingsView = new SettingsView(ApplyOverlay, RestartApp) { Dock = DockStyle.Fill, Visible = false };
         Controls.Add(_settingsView);
         _settingsView.BringToFront();
+        try
+        {
+            _analysis = new AnalysisView(_computer, () => _keys, _fans) { Dock = DockStyle.Fill, Visible = false };
+            Controls.Add(_analysis);
+            _analysis.BringToFront();
+        }
+        catch (Exception ex)
+        {
+            _analysis = null;
+            ErrorLog.Write("Analyse", ex);
+        }
         ApplyOverlay();
 
         UpdateTrayMenu();
@@ -336,12 +351,19 @@ sealed class MainForm : Form
     {
         if (tab == 1 && _fanView == null) tab = 0;
         if (tab == 2 && _settingsView == null) tab = 0;
+        if (tab == 3 && _analysis == null) tab = 0;
         _tempTab.Selected = tab == 0;
         _fanTab.Selected = tab == 1;
         _setTab.Selected = tab == 2;
+        _anaTab.Selected = tab == 3;
         _tempArea.Visible = tab == 0;
         if (_fanView != null) _fanView.Visible = tab == 1;
         if (_settingsView != null) _settingsView.Visible = tab == 2;
+        if (_analysis != null)
+        {
+            _analysis.Visible = tab == 3;
+            if (tab == 3) _analysis.Activate();
+        }
         if (tab == 1) _fanView?.RefreshValues();
     }
 
@@ -646,21 +668,38 @@ sealed class MainForm : Form
     void SetupLogger()
     {
         _logger.Clear();
+        var keys = new Dictionary<string, string>();
+        void Key(ISensor sensor, string header)
+        {
+            if (_keys == null) return;
+            if (sensor == _keys.Cpu) keys["Cpu"] = header;
+            if (sensor == _keys.Gpu) keys["Gpu"] = header;
+            if (sensor == _keys.Hotspot) keys["Hotspot"] = header;
+            if (sensor == _keys.Board) keys["Board"] = header;
+            if (sensor == _keys.CpuLoad) keys["CpuLoad"] = header;
+            if (sensor == _keys.GpuLoad) keys["GpuLoad"] = header;
+        }
         foreach (var hw in _computer.Hardware.OrderBy(h => Order(h.HardwareType)))
         {
             string cat = Category(hw.HardwareType);
             foreach (var s in AllSensors(hw).Where(IsUsefulTemp))
             {
                 var sensor = s;
-                _logger.Add($"{cat} {sensor.Name} [°C]", () => sensor.Value);
+                Key(sensor, _logger.Add($"{cat} {sensor.Name} [°C]", () => sensor.Value));
             }
             if (MainLoad(hw) is ISensor load)
-                _logger.Add($"{cat} Auslastung [%]", () => load.Value);
+                Key(load, _logger.Add($"{cat} Auslastung [%]", () => load.Value));
             foreach (var s in AllSensors(hw).Where(x => x.SensorType == SensorType.Power && x.Name.Contains("Package", StringComparison.OrdinalIgnoreCase)))
             {
                 var sensor = s;
-                _logger.Add($"{cat} {sensor.Name} [W]", () => sensor.Value);
+                string h = _logger.Add($"{cat} {sensor.Name} [W]", () => sensor.Value);
+                if (hw.HardwareType == HardwareType.Cpu && !keys.ContainsKey("CpuPower")) keys["CpuPower"] = h;
             }
+        }
+        if (!keys.OrderBy(k => k.Key).SequenceEqual(AppSettings.Instance.LogKeys.OrderBy(k => k.Key)))
+        {
+            AppSettings.Instance.LogKeys = keys;
+            AppSettings.Instance.Save();
         }
         if (_fans != null)
         {
@@ -747,6 +786,8 @@ sealed class MainForm : Form
                 else if (_tray.Icon != Icon) _tray.Icon = Icon ?? SystemIcons.Application;
             }
             if (_overlay is { IsDisposed: false }) _overlay.Invalidate();
+            try { _analysis?.Tick(_analysis.Visible && Visible && WindowState != FormWindowState.Minimized); }
+            catch (Exception tex) { ErrorLog.Write("Kühlungs-Test", tex); }
 
             // Tooltip im Infobereich: wichtigste Temperaturen
             string tip = string.Join("  ", _heroes.Select(h => $"{h.Short} {h.Sensor.Value:0}°"));
