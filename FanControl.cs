@@ -603,9 +603,10 @@ sealed class FanController
     {
         lock (_lock)
         {
-            foreach (var g in _s.Groups) g.Members.Remove(ch.Id);
+            var left = _s.Groups.Where(g => g.Members.Remove(ch.Id)).ToList();
             if (group != null && !ch.IsGpu) group.Members.Add(ch.Id);
-            _s.Groups.RemoveAll(g => g.Members.Count == 0 && g != group);
+            // Gruppe, die dadurch leer wird, verschwindet
+            _s.Groups.RemoveAll(g => left.Contains(g) && g.Members.Count == 0 && g != group);
             ch.ResetStates();
             _s.Save();
         }

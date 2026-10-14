@@ -33,6 +33,14 @@ für jeden Sensor einen Verlaufsgraphen der letzten 5 Minuten zeigt.
 - Die **Smart-Automatik** lernt je Bauteil, welche Drehzahl bei welcher Auslastung die Zieltemperatur hält,
   und reagiert dadurch schon beim Lastanstieg. Gespeichert in `%AppData%\TempMonitor\fans.json`.
 
+**Lüftergruppen:** Lüfter einer Gruppe drehen gemeinsam – der führende regelt, die anderen übernehmen seine Leistung.
+„Automatisch gruppieren“ erkennt gleich benannte Lüfter (Front 1, Front 2 …), Pumpen und Lüfter mit gleichen
+Temperaturquellen; oder per „Gruppe“ auf jeder Lüfter-Karte selbst zusammenstellen.
+
+**Automatischer Profilwechsel** (Reiter Einstellungen): beim Spielen (Steam, Epic, GOG, Xbox, EA, Ubisoft, Riot,
+Battle.net werden automatisch erkannt, eigene Programme lassen sich hinzufügen) und/oder nach Zeitplan mit Wochentagen.
+Wer selbst ein Profil wählt, behält es, bis das Spiel bzw. der Zeitraum endet.
+
 **Sicherheit (optional, standardmäßig aus):** Notkühlung mit einstellbaren Grenzwerten für CPU, GPU und Mainboard
 und Stillstand-Erkennung. Beim Beenden oder Absturz übernimmt immer wieder das BIOS.
 
