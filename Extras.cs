@@ -205,6 +205,12 @@ sealed class WarningMonitor
             }
         }
 
+        // Externe Geräte (z. B. XMG Oasis: Durchfluss gestört) – immer melden
+        if (fans != null)
+            foreach (var ch in fans.Channels)
+                if (ch.Ext?.Alarm is string al)
+                    Notify("ext|" + ch.Id, ch.DisplayName, al, tray);
+
         if (s.WarnSsd)
         {
             foreach (var (name, sensor) in k.SsdLife)

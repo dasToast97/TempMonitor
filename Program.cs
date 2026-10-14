@@ -321,6 +321,7 @@ sealed class MainForm : Form
             _fans = new FanController(FanSettings.Load());
             _fans.Discover(_computer);
             FanController.Current = _fans;
+            StartOasis(_fans);
         }
         catch (Exception ex)
         {
@@ -345,7 +346,7 @@ sealed class MainForm : Form
             _fans = null;
             _status.Text = "Lüftersteuerung nicht verfügbar: " + ex.Message;
         }
-        if (_fans is { Channels.Count: > 0 } fc)
+        if (_fans is { } fc)
             SettingsView.Extend += v => AutomationSettings.Build(v, fc, _auto);
         _settingsView = new SettingsView(ApplyOverlay, RestartApp) { Dock = DockStyle.Fill, Visible = false };
         Controls.Add(_settingsView);
@@ -527,6 +528,41 @@ sealed class MainForm : Form
     public void EmergencyRestore()
     {
         try { _fans?.RestoreAll(); } catch { }
+        try { OasisLink.Instance?.Shutdown(); } catch { }
+    }
+
+    /// XMG Oasis: auf Laptops (oder wenn schon einmal gefunden) per Bluetooth suchen und einbinden
+    void StartOasis(FanController fans)
+    {
+        var s = fans.Settings;
+        bool laptop = System.Windows.Forms.SystemInformation.PowerStatus.BatteryChargeStatus != BatteryChargeStatus.NoSystemBattery;
+        if (!s.OasisEnabled || (!laptop && s.OasisAddress == null)) return;
+        try
+        {
+            var link = new OasisLink(s);
+            if (s.OasisAddress != null) fans.AddOasis(link);
+            link.Found += _ =>
+            {
+                fans.Save();
+                try { BeginInvoke(() => fans.AddOasis(link)); } catch { }
+            };
+            fans.ChannelsChanged += () =>
+            {
+                try
+                {
+                    BeginInvoke(() =>
+                    {
+                        _fanView?.Rebuild();
+                        _fanTab.Text = fans.Channels.Count > 0 ? $"Lüfter ({fans.Channels.Count})" : "Lüfter";
+                        SetupLogger();
+                        _tray.ShowBalloonTip(4000, "Toast Temperatur", "XMG Oasis gefunden – Lüfter und Pumpe stehen jetzt im Reiter Lüfter.", ToolTipIcon.Info);
+                    });
+                }
+                catch { }
+            };
+            link.Start();
+        }
+        catch (Exception ex) { ErrorLog.Write("XMG Oasis", ex); }
     }
 
     // ---------------------------------------------------------------------
@@ -738,7 +774,7 @@ sealed class MainForm : Form
             {
                 var c = ch;
                 if (c.Rpm != null) _logger.Add($"{c.DisplayName} [U/min]", () => c.Rpm?.Value);
-                _logger.Add($"{c.DisplayName} [%]", () => c.Output >= 0 ? c.Output : c.ControlSensor.Value);
+                _logger.Add($"{c.DisplayName} [%]", () => c.Output >= 0 ? c.Output : c.Readback);
             }
         }
     }

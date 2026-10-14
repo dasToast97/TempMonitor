@@ -15,6 +15,7 @@ sealed class FanView : FlowLayoutPanel
     Label? _profileInfo;
     TargetsPanel? _targets;
     CalibrationPanel? _calib;
+    Label? _oasisState;
 
     float K => DeviceDpi / 96f;
     int S(float px) => (int)(px * K);
@@ -117,6 +118,14 @@ sealed class FanView : FlowLayoutPanel
             if (lastCard != null) SetFlowBreak(lastCard, true);
         }
 
+        // ----- XMG Oasis -----
+        _oasisState = null;
+        if (OasisLink.Instance is OasisLink link)
+        {
+            AddSection("XMG Oasis (Bluetooth)", Color.FromArgb(56, 189, 248));
+            AddFull(BuildOasisPanel(link));
+        }
+
         // ----- Gruppen -----
         if (_ctl.Groupable.Count() >= 2)
         {
@@ -150,6 +159,41 @@ sealed class FanView : FlowLayoutPanel
         _fullWidth.Add(c);
         Controls.Add(c);
         SetFlowBreak(c, true);
+    }
+
+    Control BuildOasisPanel(OasisLink link)
+    {
+        var st = _ctl.Settings;
+        var c = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+        _oasisState = c.Note(OasisText(link), muted: false);
+        c.Note("Lüfter und Pumpe der Oasis werden wie alle anderen geregelt (Profile, Smart-Automatik, Gruppen) – nach CPU und GPU des Laptops. " +
+               "Bitte im XMG Control Center die Wasserkühlung nicht gleichzeitig steuern, sonst überschreiben sich beide.");
+        c.Combo("Pumpenspannung:", new[] { "11 V", "12 V (stärkste)", "7 V (leiseste)", "8 V" }, st.OasisPumpVoltage,
+            i => { st.OasisPumpVoltage = i; _ctl.Save(); });
+        c.Numbers(
+            ("Wenn Toast Temperatur nicht steuert: Lüfter", st.OasisReleaseFan, 0, 100, "%", (Action<float>)(v => { st.OasisReleaseFan = v; _ctl.Save(); })),
+            ("Pumpe", st.OasisReleasePump, 20, 100, "%", (Action<float>)(v => { st.OasisReleasePump = v; _ctl.Save(); })));
+        c.Buttons(
+            ("Neu suchen", () =>
+            {
+                link.Forget();
+                _ctl.Save();
+            }),
+            ("Protokoll öffnen", () =>
+            {
+                var p = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "oasis.log");
+                try { if (File.Exists(p)) System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(p) { UseShellExecute = true }); } catch { }
+            }));
+        c.Check("Nach der XMG Oasis suchen (nach dem Ausschalten: Neustart)", st.OasisEnabled, v => { st.OasisEnabled = v; _ctl.Save(); });
+        return c;
+    }
+
+    static string OasisText(OasisLink l)
+    {
+        if (!l.Connected) return "● " + l.State;
+        string flow = l.Flow switch { 2 => "Durchfluss in Ordnung", -1 => "Durchfluss: warte auf Meldung", _ => $"⚠ Durchfluss gestört (Code {l.Flow})" };
+        return $"● Verbunden · {l.Model ?? "XMG Oasis"}" + (l.Firmware != null ? $" · Firmware {l.Firmware}" : "") + $" · {flow}" +
+               (l.ControlCenterRunning ? "  ·  Control Center läuft ebenfalls" : "");
     }
 
     Control BuildZeroPanel()
@@ -341,6 +385,15 @@ sealed class FanView : FlowLayoutPanel
     {
         foreach (var c in _cards) c.RefreshValues();
         _calib?.RefreshValues();
+        if (_oasisState != null && OasisLink.Instance is OasisLink ol)
+        {
+            string t = OasisText(ol);
+            if (_oasisState.Text != t)
+            {
+                _oasisState.Text = t;
+                _oasisState.ForeColor = !ol.Connected ? Theme.Warm : ol.Flow is >= 0 and not 2 ? Theme.Hot : Theme.Cool;
+            }
+        }
     }
 }
 
@@ -838,7 +891,7 @@ sealed class FanCard : Control
         TextRenderer.DrawText(g, "U/min", SmallFont, new Rectangle(Width - S(48), S(22), S(36), S(16)), Theme.Muted, L);
 
         // Leistungsbalken
-        float pct = _ch.Output >= 0 ? _ch.Output : (_ch.ControlSensor.Value ?? 0);
+        float pct = _ch.Output >= 0 ? _ch.Output : (_ch.Readback ?? 0);
         bool bios = _ctl.Profile == FanProfile.Bios || _ch.Faulted || _ch.NotControllable || _ch.Output < 0;
         var barCol = bios ? Theme.Muted : ProfileButton.ColorFor(_ctl.Profile);
         var bar = new Rectangle(S(16), S(102), Width - S(32), S(12));

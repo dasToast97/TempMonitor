@@ -203,6 +203,15 @@ sealed class FanSettings
     public FanProfile IdleProfile { get; set; } = FanProfile.Eco;
 
     // ----- Lüfter-Stopp im Leerlauf -----
+    // ----- XMG Oasis (Bluetooth) -----
+    public bool OasisEnabled { get; set; } = true;
+    public ulong? OasisAddress { get; set; }
+    /// Pumpenspannung: 0 = 11 V, 1 = 12 V, 2 = 7 V, 3 = 8 V
+    public int OasisPumpVoltage { get; set; }
+    /// Werte, wenn Toast Temperatur nicht steuert (BIOS-Profil, Beenden)
+    public float OasisReleaseFan { get; set; } = 60f;
+    public float OasisReleasePump { get; set; } = 100f;
+
     public bool ZeroRpmEnabled { get; set; }
     public float ZeroCpu { get; set; } = 50f;
     public float ZeroGpu { get; set; } = 50f;
@@ -332,8 +341,13 @@ sealed class SourceState
 
 sealed class FanChannel
 {
-    public required IControl Control { get; init; }
-    public required ISensor ControlSensor { get; init; }
+    /// Mainboard/GPU-Steuerung über LibreHardwareMonitor (null bei externen Geräten wie der XMG Oasis)
+    public IControl? Control { get; init; }
+    public ISensor? ControlSensor { get; init; }
+    /// Externes Gerät (z. B. XMG Oasis über Bluetooth)
+    public IExternalFan? Ext { get; init; }
+    /// Zuletzt bekannte Leistung (Rückmeldung) in %
+    public float? Readback => Ext != null ? Ext.LastPercent : ControlSensor?.Value;
     public ISensor? Rpm { get; init; }
     public required string Id { get; init; }
     public required string DefaultName { get; init; }
@@ -625,6 +639,36 @@ sealed class FanController
     // ---------------------------------------------------------------------
     public bool Calibrating => Channels.Any(c => c.CalPhase > 0);
 
+    /// Wird ausgelöst, wenn später Lüfter dazukommen (z. B. XMG Oasis gefunden)
+    public event Action? ChannelsChanged;
+
+    public void AddOasis(OasisLink link)
+    {
+        lock (_lock)
+        {
+            if (Channels.Any(c => c.Ext is OasisFan)) return;
+            foreach (bool pump in new[] { false, true })
+            {
+                string id = pump ? "oasis/pump" : "oasis/fan";
+                var cfg = _s.For(id);
+                if (!cfg.SourcesInitialized)
+                {
+                    cfg.UseCpu = cfg.UseGpu = true;   // externe Wasserkühlung kühlt CPU und GPU des Laptops
+                    cfg.SourcesInitialized = true;
+                }
+                Channels.Add(new FanChannel
+                {
+                    Ext = new OasisFan(link, _s, pump),
+                    Id = id,
+                    DefaultName = pump ? "XMG Oasis · Pumpe" : "XMG Oasis · Lüfter",
+                    HardwareName = "XMG Oasis (Bluetooth)",
+                    Cfg = cfg,
+                });
+            }
+        }
+        ChannelsChanged?.Invoke();
+    }
+
     public IEnumerable<FanChannel> Calibratable => Channels.Where(c => !c.IsGpu && c.Rpm != null && !c.NotControllable);
 
     public void StartCalibration()
@@ -914,7 +958,8 @@ sealed class FanController
     static void SafeDefault(FanChannel ch)
     {
         if (ch.Od8 != null) { try { ch.Od8.Restore(); } catch { } }
-        try { ch.Control.SetDefault(); } catch { }
+        if (ch.Ext != null) { try { ch.Ext.Release(); } catch { } }
+        try { ch.Control?.SetDefault(); } catch { }
         ch.Output = -1;
     }
 
@@ -922,7 +967,8 @@ sealed class FanController
     static void Write(FanChannel ch, float pct)
     {
         if (ch.Od8 != null) ch.Od8.SetPercent(pct);
-        else ch.Control.SetSoftware(pct);
+        else if (ch.Ext != null) ch.Ext.SetPercent(pct);
+        else ch.Control?.SetSoftware(pct);
     }
 
     // ---------------------------------------------------------------------
@@ -967,6 +1013,15 @@ sealed class FanController
         if (ch.CalPhase > 0)
         {
             CalibrateStep(ch);
+            return true;
+        }
+
+        // Externes Gerät noch nicht verbunden
+        if (ch.Ext is { Ready: false } ext)
+        {
+            ch.Status = "XMG Oasis: " + (ext.Problem ?? "nicht verbunden");
+            ch.Output = -1;
+            ch.Driver = null;
             return true;
         }
 
@@ -1022,8 +1077,8 @@ sealed class FanController
         float min = prof.MinPercent;
         if (ch.Kind == FanKind.Pump) min = Math.Max(min, _s.PumpMinPercent);
         else if (ch.Cfg.StartPercent is float sp && prof.Profile != FanProfile.Max) min = Math.Max(min, sp);
-        min = Math.Max(min, ch.Control.MinSoftwareValue);
-        float max = Math.Min(100f, ch.Control.MaxSoftwareValue > 0 ? ch.Control.MaxSoftwareValue : 100f);
+        min = Math.Max(min, ch.Control?.MinSoftwareValue ?? 0f);
+        float max = Math.Min(100f, ch.Control is { MaxSoftwareValue: > 0 } c ? c.MaxSoftwareValue : 100f);
         return (Math.Min(min, max), max);
     }
 
@@ -1132,7 +1187,7 @@ sealed class FanController
 
         if (ch.Output < 0)
         {
-            ch.Output = ch.ControlSensor.Value ?? 50f;
+            ch.Output = ch.Readback ?? 50f;
             if (ch.LastTestedPct < 0 && ch.Rpm?.Value is float r0)
             {
                 ch.LastTestedPct = ch.Output;
@@ -1250,6 +1305,8 @@ sealed class FanController
         Write(ch, next);
         if (ch.Od8?.LastError is string err)
             ch.Status += $" · {err}";
+        if (ch.Ext?.Alarm is string alarm) ch.Status = "⚠ " + alarm;
+        else if (ch.Ext?.Note is string note) ch.Status += $" · {note}";
         if (GroupOf(ch) is FanGroup grp && MembersOf(grp).Count() > 1)
             ch.Status += $" · führt Gruppe „{grp.Name}“";
         CheckResponse(ch, next);
@@ -1271,7 +1328,7 @@ sealed class FanController
 
         // a) Rückmeldung des Treibers: meldet er dauerhaft eine ganz andere Leistung als befohlen?
         //    (bei AMD Overdrive 8 nicht, dort ist die Rückmeldung der Bibliothek nicht aussagekräftig)
-        if (ch.Od8 == null && ch.ControlSensor.Value is float rb && rb >= 0 && rb <= 100)
+        if (ch.Od8 == null && ch.Ext == null && ch.ControlSensor?.Value is float rb && rb >= 0 && rb <= 100)
         {
             if (Math.Abs(rb - now) > 15) ch.ReadbackMismatchTicks++;
             else ch.ReadbackMismatchTicks = 0;

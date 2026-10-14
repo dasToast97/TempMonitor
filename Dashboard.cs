@@ -568,7 +568,7 @@ sealed class FansTile : Control
         foreach (var ch in chans)
         {
             float? rpm = ch.Rpm?.Value;
-            float pct = ch.Output >= 0 ? ch.Output : (ch.ControlSensor.Value ?? 0);
+            float pct = ch.Output >= 0 ? ch.Output : (ch.Readback ?? 0);
             string kind = ch.Kind == FanKind.Pump ? "Pumpe" : "";
 
             // Zeile 1: Name + Drehzahl
