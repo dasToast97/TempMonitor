@@ -139,7 +139,6 @@ sealed class UpdateVisitor : IVisitor
 sealed class SmartUpdater
 {
     readonly UpdateVisitor _visitor = new();
-    readonly SmartUpdater _updater = new();
     readonly Dictionary<IHardware, DateTime> _last = new();
 
     static bool Slow(HardwareType t) =>
