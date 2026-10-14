@@ -44,6 +44,15 @@ Wer selbst ein Profil wählt, behält es, bis das Spiel bzw. der Zeitraum endet.
 **Kalibrierung:** misst je Lüfter die Höchstdrehzahl und ab wie viel Prozent er sicher anläuft – diese Grenze wird
 danach als Untergrenze genutzt, damit kein Lüfter bei niedriger Leistung stehen bleibt.
 
+**Lautlos im Leerlauf:** kalibrierte Lüfter bleiben in „Energiesparend“ und „Ausgewogen“ ganz stehen, solange CPU und GPU
+unter der eingestellten Temperatur sind (Standard 50 °C), und laufen 4 °C darüber mit kurzem Anschub wieder an. Nie für Pumpen.
+
+**Automatischer Profilwechsel** – Vorrang: Spiel → Programm-Regel (z. B. Blender → Leistung) → Leerlauf (keine Eingabe
+seit X Minuten) → Zeitplan.
+
+**Sparmodus** (Standard an): Laufwerke und Netzwerk werden seltener abgefragt; im Hintergrund ohne Lüftersteuerung
+misst das Programm nur alle 2 Sekunden.
+
 ### Analyse
 
 - **Verlauf** aus den Aufzeichnungen: Tag oder letzte 7 Tage wählen, Werte an-/abhaken, mit dem Mausrad zoomen,
