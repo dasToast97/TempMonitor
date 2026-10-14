@@ -46,6 +46,10 @@ Wer selbst ein Profil wählt, behält es, bis das Spiel bzw. der Zeitraum endet.
 wie alle anderen. Der Durchfluss wird überwacht (Warnung bei Störung). Pumpenspannung und die Werte beim Beenden sind einstellbar.
 Das XMG Control Center sollte die Wasserkühlung nicht gleichzeitig steuern. Protokoll: `%AppData%\TempMonitor\oasis.log`.
 
+**Tongfang-Laptops (XMG NEO u. a.):** Über die Firmware-Schnittstelle des Control Centers zeigt Toast Temperatur die
+Drehzahlen der Laptop-Lüfter und stellt den Leistungsmodus passend zum Lüfterprofil ein (Leise / Ausgewogen / Leistung,
+Lüfter-Boost bei „Maximale Kühlung“). Eine eigene Lüfterkurve bietet die Firmware nicht. Protokoll: `%AppData%\TempMonitor\laptop.log`.
+
 **Kalibrierung:** misst je Lüfter die Höchstdrehzahl und ab wie viel Prozent er sicher anläuft – diese Grenze wird
 danach als Untergrenze genutzt, damit kein Lüfter bei niedriger Leistung stehen bleibt.
 
