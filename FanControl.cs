@@ -41,9 +41,9 @@ static class Profiles
     public static readonly ProfileInfo[] All =
     {
         new(FanProfile.Bios,        "Standard (BIOS)",  "Mainboard und Grafikkarte regeln selbst",      false,   0,   0,   0, new float[] { 0, 0, 0, 0 }),
-        new(FanProfile.Eco,         "Energiesparend",   "So leise wie möglich",                         true,   20,   4,   1, new float[] { 78, 75, 55, 90 }),
-        new(FanProfile.Balanced,    "Ausgewogen",       "Ruhig und kühl",                               true,   25,   6,   2, new float[] { 68, 70, 48, 85 }),
-        new(FanProfile.Performance, "Leistung",         "Kühl für Spiele & Rendern",                    true,   35,  10,   2, new float[] { 58, 62, 42, 78 }),
+        new(FanProfile.Eco,         "Energiesparend",   "So leise wie möglich",                         true,   20,   4,   1, new float[] { 78, 75, 62, 90 }),
+        new(FanProfile.Balanced,    "Ausgewogen",       "Ruhig und kühl",                               true,   25,   6,   2, new float[] { 68, 70, 56, 85 }),
+        new(FanProfile.Performance, "Leistung",         "Kühl für Spiele & Rendern",                    true,   35,  10,   2, new float[] { 58, 62, 50, 78 }),
         new(FanProfile.Max,         "Maximale Kühlung", "Alle Lüfter dauerhaft auf 100 %",              false, 100, 100, 100, new float[] { 0, 0, 0, 0 }),
         new(FanProfile.Custom,      "Eigene Kurve",     "Für jeden Lüfter eine eigene Kurve festlegen", false,   0,   8,   3, new float[] { 0, 0, 0, 0 }),
     };
