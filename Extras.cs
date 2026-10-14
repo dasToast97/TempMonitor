@@ -245,7 +245,7 @@ static class TrayIconPainter
         string text = $"{v:0}";
         if (text == _lastText && _lastHandle != IntPtr.Zero) return null;   // unverändert
 
-        int size = Math.Max(16, SystemInformation.SmallIconSize.Width);
+        int size = Math.Max(16, System.Windows.Forms.SystemInformation.SmallIconSize.Width);
         using var bmp = new Bitmap(size, size);
         using (var g = Graphics.FromImage(bmp))
         {
@@ -304,7 +304,7 @@ sealed class OverlayForm : Form
 
         var s = AppSettings.Instance;
         var wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
-        Location = s.OverlayX >= 0 && s.OverlayY >= 0 && SystemInformation.VirtualScreen.Contains(new Point(s.OverlayX, s.OverlayY))
+        Location = s.OverlayX >= 0 && s.OverlayY >= 0 && System.Windows.Forms.SystemInformation.VirtualScreen.Contains(new Point(s.OverlayX, s.OverlayY))
             ? new Point(s.OverlayX, s.OverlayY)
             : new Point(wa.Right - Width - 20, wa.Top + 20);
 
