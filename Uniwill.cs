@@ -31,6 +31,8 @@ sealed class UniwillEc
     public static UniwillEc? Instance { get; private set; }
     public string Board { get; private set; } = "";
     public bool Active { get; private set; }
+    /// Gegenprobe fehlgeschlagen -> nichts mehr schreiben
+    public bool Disabled { get; private set; }
     public string? LastError { get; private set; }
 
     // gewünschte Leistung 0–100 je Lüfter, -1 = nicht gesetzt
@@ -227,11 +229,21 @@ sealed class UniwillEc
             return;
         }
 
+        if (Disabled) return;
         if (!Active)
         {
             _manualBefore = Read(RegManual);
             Write(RegManual, 0x01);
             SetFullFanMode(true);
+            // Gegenprobe: ist das Bit wirklich gesetzt? Sonst stimmt die Schnittstelle nicht -> Finger weg
+            if (Read(RegMode) is not byte check || (check & FullFanBit) == 0)
+            {
+                Disabled = true;
+                SetFullFanMode(false);
+                if (_manualBefore is byte mb) Write(RegManual, mb);
+                Log("Gegenprobe fehlgeschlagen – der EC übernimmt die Einstellung nicht. Laptop-Lüfter werden nicht gesteuert.");
+                return;
+            }
             Active = true;
             _lastRestart = now;
             Log($"Lüftersteuerung übernommen (vorher Handbetrieb = {_manualBefore})");
@@ -293,9 +305,9 @@ sealed class UniwillFan : IExternalFan
 
     public void SetPercent(float pct) => _ec.SetPercent(_fan, pct);
     public void Release() => _ec.Unset(_fan);
-    public bool Ready => true;
+    public bool Ready => !_ec.Disabled;
     public float? LastPercent => _ec.CurrentPercent(_fan);
-    public string? Problem => null;
+    public string? Problem => _ec.Disabled ? "Laptop-Lüfter: Der Embedded Controller nimmt die Steuerung nicht an – der Laptop regelt selbst (Details im Protokoll)" : null;
     public string? Alarm => null;
     public string? Note => null;
 }

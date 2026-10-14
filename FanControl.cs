@@ -1125,7 +1125,7 @@ sealed class FanController
         // Externes Gerät noch nicht verbunden
         if (ch.Ext is { Ready: false } ext)
         {
-            ch.Status = "XMG Oasis: " + (ext.Problem ?? "nicht verbunden");
+            ch.Status = ext is OasisFan ? "XMG Oasis: " + (ext.Problem ?? "nicht verbunden") : (ext.Problem ?? "Nicht bereit");
             ch.Output = -1;
             ch.Driver = null;
             return true;
