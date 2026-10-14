@@ -124,6 +124,7 @@ sealed class MainForm : Form
     SettingsView? _settingsView;
     KeySensors? _keys;
     readonly WarningMonitor _warn = new();
+    readonly AutoSwitcher _auto = new();
     OverlayForm? _overlay;
     string? _lastError;
     readonly List<(string Short, ISensor Sensor)> _heroes = new();
@@ -309,6 +310,8 @@ sealed class MainForm : Form
             _fans = null;
             _status.Text = "Lüftersteuerung nicht verfügbar: " + ex.Message;
         }
+        if (_fans is { Channels.Count: > 0 } fc)
+            SettingsView.Extend += v => AutomationSettings.Build(v, fc, _auto);
         _settingsView = new SettingsView(ApplyOverlay, RestartApp) { Dock = DockStyle.Fill, Visible = false };
         Controls.Add(_settingsView);
         _settingsView.BringToFront();
@@ -712,7 +715,23 @@ sealed class MainForm : Form
                 if (_fanView is { Visible: true }) _fanView.RefreshValues();
             }
 
-            string prof = fans != null && fans.Channels.Count > 0 ? $" · Lüfter: {Profiles.Get(fans.Profile).Title}" : "";
+            // Automatischer Profilwechsel (Spiele / Zeitplan)
+            if (fans is { Channels.Count: > 0 })
+            {
+                try
+                {
+                    if (_auto.Update(fans) is string msg)
+                    {
+                        _fanView?.SyncProfile();
+                        UpdateTrayMenu();
+                        if (fans.Settings.AutoNotify) _tray.ShowBalloonTip(4000, "Toast Temperatur", msg, ToolTipIcon.Info);
+                    }
+                }
+                catch (Exception aex) { ErrorLog.Write("Profil-Automatik", aex); }
+            }
+
+            string prof = fans != null && fans.Channels.Count > 0
+                ? $" · Lüfter: {Profiles.Get(fans.Profile).Title}{(fans.Override != null ? " (automatisch)" : "")}" : "";
             string rec = _logger.Enabled ? (_logger.LastError != null ? " · ⚠ Aufzeichnung: " + _logger.LastError : " · ● Aufzeichnung") : "";
             _status.Text = $"Live · {DateTime.Now:HH:mm:ss}{prof}{rec}";
 

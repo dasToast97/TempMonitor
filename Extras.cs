@@ -535,6 +535,8 @@ sealed class SettingsView : FlowLayoutPanel
         return c;
     }
 
+    public void AddFullControl(Control c) => AddFull(c);
+
     void AddFull(Control c)
     {
         _full.Add(c);

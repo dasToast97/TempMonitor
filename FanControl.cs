@@ -51,6 +51,37 @@ static class Profiles
     public static ProfileInfo Get(FanProfile p) => All.First(i => i.Profile == p);
 }
 
+sealed class FanGroup
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N")[..8];
+    public string Name { get; set; } = "Gruppe";
+    /// Reihenfolge zählt: der erste (steuerbare) Lüfter führt die Gruppe
+    public List<string> Members { get; set; } = new();
+}
+
+/// Zeitraum für den automatischen Profilwechsel. Days: Bit 0 = Montag … Bit 6 = Sonntag
+sealed class ScheduleRule
+{
+    public string From { get; set; } = "22:00";
+    public string To { get; set; } = "07:00";
+    public FanProfile Profile { get; set; } = FanProfile.Eco;
+    public int Days { get; set; } = 127;
+
+    static int Minutes(string s) =>
+        TimeSpan.TryParse(s, out var t) ? (int)t.TotalMinutes % 1440 : 0;
+
+    static bool OnDay(int days, DateTime d) => (days & (1 << (((int)d.DayOfWeek + 6) % 7))) != 0;
+
+    public bool Active(DateTime now)
+    {
+        int f = Minutes(From), t = Minutes(To), m = now.Hour * 60 + now.Minute;
+        if (f == t) return OnDay(Days, now);                    // ganzer Tag
+        if (f < t) return m >= f && m < t && OnDay(Days, now);
+        // über Mitternacht: gehört zum Starttag
+        return (m >= f && OnDay(Days, now)) || (m < t && OnDay(Days, now.AddDays(-1)));
+    }
+}
+
 // ===========================================================================
 // Einstellungen (werden in %AppData%\TempMonitor\fans.json gespeichert)
 // ===========================================================================
@@ -136,6 +167,19 @@ sealed class FanSettings
     public float PumpMinPercent { get; set; } = 60f;
 
     public Dictionary<string, FanChannelSettings> Fans { get; set; } = new();
+
+    // ----- Lüftergruppen: der erste Lüfter regelt, die anderen folgen -----
+    public List<FanGroup> Groups { get; set; } = new();
+
+    // ----- Automatischer Profilwechsel -----
+    public bool AutoGame { get; set; }
+    public FanProfile GameProfile { get; set; } = FanProfile.Performance;
+    public bool GameDetectStores { get; set; } = true;
+    public List<string> GameExes { get; set; } = new();
+    public List<string> GameIgnore { get; set; } = new();
+    public bool AutoSchedule { get; set; }
+    public List<ScheduleRule> Schedule { get; set; } = new();
+    public bool AutoNotify { get; set; } = true;
 
     static readonly string Dir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor");
@@ -326,7 +370,30 @@ sealed class FanController
     public List<FanChannel> Channels { get; } = new();
     public int HiddenCount { get; private set; }
     public FanSettings Settings => _s;
-    public FanProfile Profile => _s.Profile;
+    /// Das gerade wirksame Profil (Automatik geht vor der eigenen Wahl)
+    public FanProfile Profile => Override ?? _s.Profile;
+    /// Das von Hand gewählte Profil
+    public FanProfile ManualProfile => _s.Profile;
+    /// Vom automatischen Profilwechsel gesetzt (Spiel / Zeitplan), sonst null
+    public FanProfile? Override { get; private set; }
+    public string? OverrideReason { get; private set; }
+    /// Hat man während einer Automatik selbst gewählt, bleibt diese Automatik aus, bis ihr Anlass endet
+    public string? HeldReason { get; set; }
+
+    /// Wird vom automatischen Profilwechsel aufgerufen. true = Profil hat sich geändert.
+    public bool SetOverride(FanProfile? p, string? reason)
+    {
+        lock (_lock)
+        {
+            if (p == _s.Profile) p = null;
+            if (p == null) reason = null;
+            if (p == Override) { OverrideReason = reason; return false; }
+            Override = p;
+            OverrideReason = reason;
+            ResetForProfile(Profile);
+            return true;
+        }
+    }
 
     readonly Dictionary<Component, ISensor?> _temp = new();
     ISensor? _gpuHotspot;
@@ -489,19 +556,143 @@ sealed class FanController
     {
         lock (_lock)
         {
+            if (Override != null) HeldReason = OverrideReason;
+            Override = null;
+            OverrideReason = null;
             _s.Profile = p;
-            foreach (var ch in Channels)
-            {
-                ch.Faulted = false;
-                ch.NoSpinTicks = 0;
-                ch.TestStart = null;
-                ch.LastTestedPct = -1;
-                ch.ReadbackMismatchTicks = 0;
-                ch.ResetStates();
-                if (p == FanProfile.Bios) SafeDefault(ch);
-            }
+            ResetForProfile(p);
             _s.Save();
         }
+    }
+
+    void ResetForProfile(FanProfile p)
+    {
+        foreach (var ch in Channels)
+        {
+            ch.Faulted = false;
+            ch.NoSpinTicks = 0;
+            ch.TestStart = null;
+            ch.LastTestedPct = -1;
+            ch.ReadbackMismatchTicks = 0;
+            ch.ResetStates();
+            if (p == FanProfile.Bios) SafeDefault(ch);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Lüftergruppen
+    // ---------------------------------------------------------------------
+    /// Lüfter, die in Gruppen dürfen (Grafikkarten-Lüfter regelt der Grafiktreiber eigenständig)
+    public IEnumerable<FanChannel> Groupable => Channels.Where(c => !c.IsGpu);
+
+    public FanChannel? ById(string id) => Channels.FirstOrDefault(c => c.Id == id);
+
+    public FanGroup? GroupOf(FanChannel ch) => _s.Groups.FirstOrDefault(g => g.Members.Contains(ch.Id));
+
+    /// Der Lüfter, der für die Gruppe regelt: der erste angeschlossene, steuerbare
+    public FanChannel? LeaderOf(FanGroup g) =>
+        g.Members.Select(ById).FirstOrDefault(c => c != null && !c.NotControllable);
+
+    public IEnumerable<FanChannel> MembersOf(FanGroup g) =>
+        g.Members.Select(ById).Where(c => c != null).Cast<FanChannel>();
+
+    public bool IsFollower(FanChannel ch) =>
+        GroupOf(ch) is FanGroup g && LeaderOf(g) is FanChannel l && l != ch;
+
+    public void SetGroup(FanChannel ch, FanGroup? group)
+    {
+        lock (_lock)
+        {
+            foreach (var g in _s.Groups) g.Members.Remove(ch.Id);
+            if (group != null && !ch.IsGpu) group.Members.Add(ch.Id);
+            _s.Groups.RemoveAll(g => g.Members.Count == 0 && g != group);
+            ch.ResetStates();
+            _s.Save();
+        }
+    }
+
+    public FanGroup NewGroup(string name)
+    {
+        lock (_lock)
+        {
+            var g = new FanGroup { Name = string.IsNullOrWhiteSpace(name) ? $"Gruppe {_s.Groups.Count + 1}" : name.Trim() };
+            _s.Groups.Add(g);
+            return g;
+        }
+    }
+
+    public void RemoveGroup(FanGroup g)
+    {
+        lock (_lock)
+        {
+            _s.Groups.Remove(g);
+            foreach (var ch in Channels) ch.ResetStates();
+            _s.Save();
+        }
+    }
+
+    public void SetLeader(FanGroup g, FanChannel ch)
+    {
+        lock (_lock)
+        {
+            if (!g.Members.Remove(ch.Id)) return;
+            g.Members.Insert(0, ch.Id);
+            foreach (var m in MembersOf(g)) m.ResetStates();
+            _s.Save();
+        }
+    }
+
+    public void ReplaceGroups(List<FanGroup> groups)
+    {
+        lock (_lock)
+        {
+            _s.Groups = groups;
+            foreach (var ch in Channels) ch.ResetStates();
+            _s.Save();
+        }
+    }
+
+    /// Automatische Erkennung: gleiche Namen (Front 1, Front 2 …), Pumpen, und Lüfter,
+    /// die nach denselben Bauteilen regeln (z. B. beide Lüfter eines CPU-Kühlers)
+    public List<FanGroup> SuggestGroups()
+    {
+        var result = new List<FanGroup>();
+        var free = Groupable.Where(c => !c.NotControllable).ToList();
+
+        // 1) Eigene Namen mit gleichem Anfang: "Front oben", "Front unten", "Front 3" -> "Front"
+        string Stem(string n)
+        {
+            n = System.Text.RegularExpressions.Regex.Replace(n.Trim(), @"[\s#\-_]*\d+$", "");
+            var first = n.Split(new[] { ' ', '-', '_' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? n;
+            return first.Length >= 3 ? first : n;
+        }
+        foreach (var grp in free.Where(c => !string.IsNullOrWhiteSpace(c.Cfg.CustomName))
+                                .GroupBy(c => Stem(c.Cfg.CustomName!), StringComparer.OrdinalIgnoreCase)
+                                .Where(g => g.Count() >= 2).ToList())
+        {
+            var name = char.ToUpper(grp.Key[0]) + grp.Key[1..];
+            result.Add(new FanGroup { Name = name, Members = grp.Select(c => c.Id).ToList() });
+            foreach (var c in grp) free.Remove(c);
+        }
+
+        // 2) Pumpen
+        var pumps = free.Where(c => c.Kind == FanKind.Pump).ToList();
+        if (pumps.Count >= 2)
+        {
+            result.Add(new FanGroup { Name = "Pumpen", Members = pumps.Select(c => c.Id).ToList() });
+            foreach (var c in pumps) free.Remove(c);
+        }
+        free.RemoveAll(c => c.Kind == FanKind.Pump);
+
+        // 3) Gleiche Temperaturquellen
+        foreach (var grp in free.GroupBy(c => (c.Cfg.UseCpu, c.Cfg.UseGpu, c.Cfg.UseBoard)).Where(g => g.Count() >= 2))
+        {
+            var (cpu, gpu, board) = grp.Key;
+            string name = cpu && !gpu ? "CPU-Kühler" : gpu ? "Gehäuselüfter" : board ? "Mainboard-Lüfter" : "Lüfter";
+            if (result.Any(r => r.Name == name)) name += $" {result.Count(r => r.Name.StartsWith(name)) + 1}";
+            result.Add(new FanGroup { Name = name, Members = grp.Select(c => c.Id).ToList() });
+        }
+        return result;
     }
 
     /// Lässt einen Lüfter 5 Sekunden auf 100 % laufen, damit man ihn zuordnen kann
@@ -564,15 +755,24 @@ sealed class FanController
     {
         lock (_lock)
         {
-            var prof = Profiles.Get(_s.Profile);
-            foreach (var ch in Channels)
+            var prof = Profiles.Get(Profile);
+            // Erst die regelnden Lüfter, dann die Gruppen-Mitglieder, die ihnen folgen
+            foreach (bool followers in new[] { false, true })
             {
-                try { TickChannel(ch, prof); }
-                catch (Exception ex)
+                foreach (var ch in Channels)
                 {
-                    SafeDefault(ch);
-                    ch.Faulted = true;
-                    ch.Status = "Fehler – BIOS übernimmt: " + ex.Message;
+                    if (IsFollower(ch) != followers) continue;
+                    try
+                    {
+                        if (followers) TickFollower(ch, prof);
+                        else TickChannel(ch, prof);
+                    }
+                    catch (Exception ex)
+                    {
+                        SafeDefault(ch);
+                        ch.Faulted = true;
+                        ch.Status = "Fehler – BIOS übernimmt: " + ex.Message;
+                    }
                 }
             }
 
@@ -584,7 +784,8 @@ sealed class FanController
         }
     }
 
-    void TickChannel(FanChannel ch, ProfileInfo prof)
+    /// Gemeinsamer Anfang: Erkennen, nicht steuerbar, BIOS. true = Lüfter ist damit fertig.
+    bool Prelude(FanChannel ch, ProfileInfo prof)
     {
         // ----- Erkennen: 5 Sekunden volle Drehzahl -----
         if (DateTime.Now < ch.IdentifyUntil)
@@ -593,7 +794,7 @@ sealed class FanController
             ch.Output = 100;
             Write(ch, 100);
             ch.Status = "Erkennen: dieser Lüfter läuft gerade auf 100 % …";
-            return;
+            return true;
         }
         if (ch.Identifying)
         {
@@ -621,16 +822,77 @@ sealed class FanController
                 : ch.IsGpu
                 ? "Lässt sich nicht steuern – der Grafiktreiber regelt diesen Lüfter selbst. „Erkennen“ testet erneut."
                 : "Lässt sich nicht steuern – der Lüfter reagiert nicht auf Befehle. „Erkennen“ testet erneut.";
-            return;
+            return true;
         }
 
         if (prof.Profile == FanProfile.Bios)
         {
             if (ch.Output >= 0) SafeDefault(ch);
             ch.Status = "Wird vom BIOS / Treiber geregelt";
+            return true;
+        }
+        return ch.Faulted;
+    }
+
+    (float Min, float Max) Limits(FanChannel ch, ProfileInfo prof)
+    {
+        float min = prof.MinPercent;
+        if (ch.Kind == FanKind.Pump) min = Math.Max(min, _s.PumpMinPercent);
+        min = Math.Max(min, ch.Control.MinSoftwareValue);
+        float max = Math.Min(100f, ch.Control.MaxSoftwareValue > 0 ? ch.Control.MaxSoftwareValue : 100f);
+        return (Math.Min(min, max), max);
+    }
+
+    /// Gruppen-Mitglied: übernimmt die Leistung des führenden Lüfters
+    void TickFollower(FanChannel ch, ProfileInfo prof)
+    {
+        if (Prelude(ch, prof)) return;
+        var g = GroupOf(ch)!;
+        var leader = LeaderOf(g)!;
+
+        if (leader.Output < 0 || leader.Faulted)
+        {
+            if (ch.Output >= 0) SafeDefault(ch);
+            ch.Driver = null;
+            ch.Status = $"Gruppe „{g.Name}“ · {leader.DisplayName} wird gerade vom BIOS geregelt – dieser Lüfter auch";
             return;
         }
-        if (ch.Faulted) return;
+
+        var (min, max) = Limits(ch, prof);
+        // Während der führende Lüfter per „Erkennen“ auf 100 % läuft, nicht mitziehen
+        float src = leader.Identifying ? (ch.Output >= 0 ? ch.Output : leader.Output) : leader.Output;
+        float next = Math.Clamp(src, min, max);
+        ch.Output = next;
+        ch.Driver = leader.Driver;
+        ch.DriverTemp = leader.DriverTemp;
+        Write(ch, next);
+        ch.Status = $"Gruppe „{g.Name}“ · folgt {leader.DisplayName}" +
+                    (leader.Driver is Component d && leader.DriverTemp is float t ? $" (bestimmt von {Components.Name(d)}, {t:0} °C)" : "");
+        if (leader.Status.StartsWith("⚠")) ch.Status = "⚠ " + ch.Status;
+        if (ch.Od8?.LastError is string err) ch.Status += $" · {err}";
+        CheckResponse(ch, next);
+        if (ch.NotControllable) return;
+        StallCheck(ch, next);
+    }
+
+    void StallCheck(FanChannel ch, float next)
+    {
+        // Sicherheit (optional): Lüfter dreht trotz Befehl nicht -> zurück ans BIOS
+        if (_s.StallDetection && ch.Rpm?.Value is float rpm && rpm < 50 && next >= 40)
+        {
+            if (++ch.NoSpinTicks >= 15)
+            {
+                SafeDefault(ch);
+                ch.Faulted = true;
+                ch.Status = "Lüfter reagiert nicht – BIOS übernimmt";
+            }
+        }
+        else ch.NoSpinTicks = 0;
+    }
+
+    void TickChannel(FanChannel ch, ProfileInfo prof)
+    {
+        if (Prelude(ch, prof)) return;
 
         // ----- Für jedes gewählte Bauteil die nötige Leistung bestimmen, die höchste gewinnt -----
         var targets = _s.TargetsFor(prof.Profile);
@@ -702,10 +964,7 @@ sealed class FanController
         ch.Driver = driver;
         ch.DriverTemp = driverTemp;
 
-        float min = prof.MinPercent;
-        if (ch.Kind == FanKind.Pump) min = Math.Max(min, _s.PumpMinPercent);
-        min = Math.Max(min, ch.Control.MinSoftwareValue);
-        float max = Math.Min(100f, ch.Control.MaxSoftwareValue > 0 ? ch.Control.MaxSoftwareValue : 100f);
+        var (min, max) = Limits(ch, prof);
         desired = Math.Clamp(desired, min, max);
 
         // Sanft ändern: schnell hoch, langsam runter
@@ -739,20 +998,11 @@ sealed class FanController
         Write(ch, next);
         if (ch.Od8?.LastError is string err)
             ch.Status += $" · {err}";
+        if (GroupOf(ch) is FanGroup grp && MembersOf(grp).Count() > 1)
+            ch.Status += $" · führt Gruppe „{grp.Name}“";
         CheckResponse(ch, next);
         if (ch.NotControllable) return;
-
-        // Sicherheit (optional): Lüfter dreht trotz Befehl nicht -> zurück ans BIOS
-        if (_s.StallDetection && ch.Rpm?.Value is float rpm && rpm < 50 && next >= 40)
-        {
-            if (++ch.NoSpinTicks >= 15)
-            {
-                SafeDefault(ch);
-                ch.Faulted = true;
-                ch.Status = "Lüfter reagiert nicht – BIOS übernimmt";
-            }
-        }
-        else ch.NoSpinTicks = 0;
+        StallCheck(ch, next);
     }
 
     // ---------------------------------------------------------------------

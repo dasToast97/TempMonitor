@@ -32,9 +32,18 @@ sealed class FanView : FlowLayoutPanel
         Build();
     }
 
+    /// Nach Gruppen-Änderungen alles neu aufbauen (Scroll-Position bleibt)
+    public void Rebuild()
+    {
+        var pos = AutoScrollPosition;
+        Build();
+        AutoScrollPosition = new Point(-pos.X, -pos.Y);
+    }
+
     void Build()
     {
         SuspendLayout();
+        foreach (Control old in Controls.Cast<Control>().ToList()) old.Dispose();
         Controls.Clear();
         _buttons.Clear();
         _cards.Clear();
@@ -57,9 +66,10 @@ sealed class FanView : FlowLayoutPanel
         {
             ForeColor = Theme.Muted,
             AutoSize = false,
-            Height = S(40),
+            Height = S(58),
             Margin = new Padding(S(8), S(4), S(8), 0),
             Font = new Font("Segoe UI", 9.5f),
+            UseMnemonic = false,
         };
         AddFull(_profileInfo);
 
@@ -92,15 +102,25 @@ sealed class FanView : FlowLayoutPanel
         }
         else
         {
+            // Gruppen zusammen anzeigen: erst die Gruppen (in Mitglieder-Reihenfolge), dann der Rest
+            var ordered = _ctl.Settings.Groups.SelectMany(g => _ctl.MembersOf(g)).ToList();
+            ordered.AddRange(_ctl.Channels.Where(c => !ordered.Contains(c)));
             FanCard? lastCard = null;
-            foreach (var ch in _ctl.Channels)
+            foreach (var ch in ordered)
             {
-                var card = new FanCard(ch, _ctl);
+                var card = new FanCard(ch, _ctl, () => BeginInvoke(Rebuild));
                 _cards.Add(card);
                 Controls.Add(card);
                 lastCard = card;
             }
             if (lastCard != null) SetFlowBreak(lastCard, true);
+        }
+
+        // ----- Gruppen -----
+        if (_ctl.Groupable.Count() >= 2)
+        {
+            AddSection("Lüftergruppen", Color.FromArgb(167, 139, 250));
+            AddFull(new GroupsPanel(_ctl, () => BeginInvoke(Rebuild)) { Margin = new Padding(S(6), S(2), S(6), S(4)) });
         }
 
         // ----- Sicherheit (optional) -----
@@ -217,7 +237,7 @@ sealed class FanView : FlowLayoutPanel
 
     public void SelectProfile(FanProfile p)
     {
-        if (p == _ctl.Profile) return;
+        if (p == _ctl.Profile && _ctl.Override == null) return;
 
         if (p != FanProfile.Bios && !_ctl.Settings.WarningAccepted)
         {
@@ -234,12 +254,18 @@ sealed class FanView : FlowLayoutPanel
         }
 
         _ctl.SetProfile(p);
-        foreach (var b in _buttons) b.Selected = b.Info.Profile == p;
+        SyncProfile();
+        ProfileChanged?.Invoke();
+    }
+
+    /// Anzeige an das wirksame Profil anpassen (auch nach automatischem Wechsel)
+    public void SyncProfile()
+    {
+        foreach (var b in _buttons) b.Selected = b.Info.Profile == _ctl.Profile;
         SuspendLayout();
         UpdateProfileInfo();
         ApplyCustomMode();
         ResumeLayout();
-        ProfileChanged?.Invoke();
     }
 
     void ApplyCustomMode()
@@ -260,6 +286,9 @@ sealed class FanView : FlowLayoutPanel
             _ => "Smart-Automatik: Jeder Lüfter regelt nach allen bei ihm angehakten Bauteilen – wer gerade mehr Kühlung braucht, bestimmt. " +
                  "Sie lernt, welche Drehzahl bei welcher Auslastung nötig ist, und reagiert dadurch schon beim Lastanstieg.",
         };
+        if (_ctl.Override != null && _ctl.OverrideReason != null)
+            _profileInfo.Text = $"⟳ Automatisch gewechselt ({_ctl.OverrideReason}). Deine Wahl: „{Profiles.Get(_ctl.ManualProfile).Title}“ – " +
+                                "ein Klick auf ein Profil übernimmt wieder von Hand.\n" + _profileInfo.Text;
         _targets?.ShowFor(p);
     }
 
@@ -478,6 +507,10 @@ sealed class FanCard : Control
     readonly Dictionary<Component, CheckBox> _sources = new();
     readonly Label _sourceLabel;
     readonly CurveEditor _curve;
+    readonly ComboBox? _group;
+    readonly Label _follow;
+    readonly Action _rebuild;
+    readonly bool _follower;
     bool _showCurve;
 
     float K => DeviceDpi / 96f;
@@ -485,10 +518,12 @@ sealed class FanCard : Control
 
     const int BaseHeight = 236;
 
-    public FanCard(FanChannel ch, FanController ctl)
+    public FanCard(FanChannel ch, FanController ctl, Action rebuild)
     {
         _ch = ch;
         _ctl = ctl;
+        _rebuild = rebuild;
+        _follower = ctl.IsFollower(ch);
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
                  ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
         BackColor = Theme.Background;
@@ -579,6 +614,49 @@ sealed class FanCard : Control
         _curve = new CurveEditor(ch.Cfg.Curve) { Visible = false };
         _curve.CurveChanged += () => ctl.Save();
 
+        // Gruppe wählen (nicht für Grafikkarten-Lüfter)
+        _follow = new Label { ForeColor = Theme.Muted, BackColor = Theme.Card, AutoSize = false, UseMnemonic = false, Visible = false };
+        if (!ch.IsGpu && ctl.Groupable.Count() >= 2)
+        {
+            _group = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat,
+                BackColor = Theme.CardHero, ForeColor = Theme.Text,
+            };
+            var groups = ctl.Settings.Groups.ToList();
+            _group.Items.Add("Keine Gruppe");
+            foreach (var g in groups) _group.Items.Add("Gruppe: " + g.Name);
+            _group.Items.Add("Neue Gruppe …");
+            var mine = ctl.GroupOf(ch);
+            _group.SelectedIndex = mine == null ? 0 : groups.IndexOf(mine) + 1;
+            int initial = _group.SelectedIndex;
+            _group.SelectedIndexChanged += (_, _) =>
+            {
+                int i = _group.SelectedIndex;
+                if (i == initial) return;
+                FanGroup? target = null;
+                if (i == _group.Items.Count - 1)
+                {
+                    var name = Prompt.Ask(FindForm(), "Neue Gruppe", "Name der Gruppe, z. B. „Front“ oder „Radiator“:", "");
+                    if (name == null) { _group.SelectedIndex = initial; return; }
+                    target = ctl.NewGroup(name);
+                }
+                else if (i > 0) target = groups[i - 1];
+                ctl.SetGroup(ch, target);
+                _rebuild();
+            };
+            new ToolTip().SetToolTip(_group, "Lüfter einer Gruppe drehen gemeinsam: der erste regelt, die anderen übernehmen seine Leistung");
+            Controls.Add(_group);
+
+            if (_follower && ctl.GroupOf(ch) is FanGroup fg && ctl.LeaderOf(fg) is FanChannel lead)
+            {
+                _follow.Text = $"Folgt „{lead.DisplayName}“ – Temperaturquellen und Kurve kommen vom führenden Lüfter der Gruppe.";
+                _follow.Visible = true;
+                foreach (var cb in _sources.Values) cb.Visible = false;
+            }
+        }
+        Controls.Add(_follow);
+
         Controls.Add(_name);
         Controls.Add(_kind);
         Controls.Add(_identify);
@@ -606,7 +684,7 @@ sealed class FanCard : Control
 
     public void ShowCurve(bool show)
     {
-        _showCurve = show;
+        _showCurve = show && !_follower;
         ApplyLayout();
     }
 
@@ -618,19 +696,23 @@ sealed class FanCard : Control
         _identify.SetBounds(S(120), S(61), S(100), S(28));
         _reset.Location = new Point(S(232), S(67));
         _sourceLabel.Location = new Point(S(16), _ch.IsGpu ? S(160) : S(150));
+        _group?.SetBounds(Width - S(196), S(144), S(180), S(26));
+        _follow.SetBounds(S(16), S(170), Width - S(32), S(26));
+        if (_follower) _sourceLabel.Text = "Gruppe:";
         int x = S(16), w = (Width - S(32)) / 3;
         foreach (var c in Components.Selectable)
         {
             _sources[c].SetBounds(x, S(168), w, S(24));
             x += w;
         }
-        _curve.Visible = _showCurve;
+        _curve.Visible = _showCurve && !_follower;
         _curve.SetBounds(S(12), S(BaseHeight + 4), Width - S(24), S(176));
         Invalidate();
     }
 
     void UpdateSourceTexts()
     {
+        if (_follower) return;
         if (_ch.IsGpu)
         {
             string txt = "Regelt nach der Grafikkarte";
@@ -698,7 +780,8 @@ sealed class FanCard : Control
         const TextFormatFlags R = TextFormatFlags.NoPrefix | TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
 
         string sub = (pump ? "Pumpe" : "Lüfter") + " · " + _ch.HardwareName + (_ch.Od8 != null ? " · AMD Overdrive 8" : _ch.Od8Note != null ? " · Overdrive 8 nicht verfügbar" : "") +
-                     (_ch.DisplayName != _ch.DefaultName ? $" · {_ch.DefaultName}" : "");
+                     (_ch.DisplayName != _ch.DefaultName ? $" · {_ch.DefaultName}" : "") +
+                     (_ctl.GroupOf(_ch) is FanGroup grp ? $" · Gruppe „{grp.Name}“" : "");
         TextRenderer.DrawText(g, sub, SmallFont, new Rectangle(S(48), S(40), Width - S(210), S(16)), Theme.Muted, L);
 
         // Drehzahl groß
@@ -941,5 +1024,185 @@ static class Gfx
         path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
         path.CloseFigure();
         return path;
+    }
+}
+
+// ===========================================================================
+// Lüftergruppen: automatisch erkennen oder von Hand zusammenstellen
+// ===========================================================================
+sealed class GroupsPanel : Panel
+{
+    readonly FanController _ctl;
+    readonly Action _changed;
+    float K => DeviceDpi / 96f;
+    int S(float px) => (int)(px * K);
+
+    public GroupsPanel(FanController ctl, Action changed)
+    {
+        _ctl = ctl;
+        _changed = changed;
+        BackColor = Theme.Card;
+        Height = 100;
+    }
+
+    int _builtWidth = -1;
+
+    protected override void OnCreateControl()
+    {
+        base.OnCreateControl();
+        Build();
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (IsHandleCreated && Width != _builtWidth) Build();
+    }
+
+    Label Lbl(string t, int x, int y, Color col, int w = 0)
+    {
+        var l = new Label
+        {
+            Text = t, ForeColor = col, Location = new Point(x, y), UseMnemonic = false,
+            AutoSize = w == 0, AutoEllipsis = w > 0,
+        };
+        if (w > 0) l.Size = new Size(w, S(22));
+        Controls.Add(l);
+        return l;
+    }
+
+    void Build()
+    {
+        SuspendLayout();
+        _builtWidth = Width;
+        foreach (Control old in Controls.Cast<Control>().ToList()) { Controls.Remove(old); old.Dispose(); }
+        int y = S(12);
+        var note = Lbl("Lüfter einer Gruppe drehen immer gemeinsam: Der führende Lüfter regelt nach seinen Temperaturquellen bzw. seiner Kurve, " +
+                       "die anderen übernehmen seine Leistung (Pumpen behalten ihre Mindestleistung). Zuordnen über „Gruppe“ auf jeder Lüfter-Karte " +
+                       "oder automatisch erkennen lassen.", S(14), y, Theme.Muted);
+        note.MaximumSize = new Size(Math.Max(S(300), Width - S(28)), 0);
+        y += note.PreferredHeight + S(10);
+
+        var groups = _ctl.Settings.Groups.ToList();
+        if (groups.Count == 0)
+        {
+            Lbl("Noch keine Gruppen.", S(14), y, Theme.Text);
+            y += S(30);
+        }
+        foreach (var g in groups)
+        {
+            var members = _ctl.MembersOf(g).ToList();
+            int x = S(14);
+
+            var name = new TextBox
+            {
+                Text = g.Name, BackColor = Theme.CardHero, ForeColor = Theme.Text, BorderStyle = BorderStyle.FixedSingle,
+                Location = new Point(x, y), Width = S(150),
+            };
+            void Rename()
+            {
+                var n = name.Text.Trim();
+                if (n.Length == 0 || n == g.Name) { name.Text = g.Name; return; }
+                g.Name = n;
+                _ctl.Save();
+                _changed();
+            }
+            name.Leave += (_, _) => Rename();
+            name.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; Rename(); } };
+            Controls.Add(name);
+            x += S(162);
+
+            Lbl("führt:", x, y + S(3), Theme.Muted);
+            x += S(42);
+            var lead = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat,
+                BackColor = Theme.CardHero, ForeColor = Theme.Text, Location = new Point(x, y - S(1)), Width = S(170),
+            };
+            foreach (var m in members) lead.Items.Add(m.DisplayName);
+            var leader = _ctl.LeaderOf(g);
+            if (members.Count > 0) lead.SelectedIndex = Math.Max(0, leader == null ? 0 : members.IndexOf(leader));
+            int initial = lead.SelectedIndex;
+            lead.SelectedIndexChanged += (_, _) =>
+            {
+                if (lead.SelectedIndex == initial || lead.SelectedIndex < 0) return;
+                _ctl.SetLeader(g, members[lead.SelectedIndex]);
+                _changed();
+            };
+            Controls.Add(lead);
+            x += S(182);
+
+            string others = members.Count <= 1
+                ? "nur ein Lüfter – weitere über „Gruppe“ auf der Karte hinzufügen"
+                : $"{members.Count} Lüfter: " + string.Join(", ", members.Select(m => m.DisplayName));
+            var info = Lbl(others, x, y + S(3), Theme.Text, Math.Max(S(80), Width - x - S(110)));
+            info.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
+
+            var del = new LinkLabel
+            {
+                Text = "Auflösen", LinkColor = Theme.Muted, ActiveLinkColor = Theme.Text, AutoSize = true,
+                LinkBehavior = LinkBehavior.HoverUnderline, Location = new Point(Width - S(84), y + S(3)),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+            };
+            del.Click += (_, _) => { _ctl.RemoveGroup(g); _changed(); };
+            Controls.Add(del);
+            y += S(34);
+        }
+
+        y += S(4);
+        int bx = S(14);
+        Button Btn(string text, int w, Action click)
+        {
+            var b = PageBar.Button(text, K, w);
+            b.Location = new Point(bx, y);
+            b.Height = S(30);
+            b.Click += (_, _) => click();
+            Controls.Add(b);
+            bx += b.Width + S(10);
+            return b;
+        }
+        Btn("Automatisch gruppieren", 190, AutoGroup);
+        Btn("Neue Gruppe …", 140, () =>
+        {
+            var n = Prompt.Ask(FindForm(), "Neue Gruppe", "Name der Gruppe, z. B. „Front“ oder „Radiator“:", "");
+            if (n == null) return;
+            _ctl.NewGroup(n);
+            _ctl.Save();
+            _changed();
+        });
+        if (groups.Count > 0)
+            Btn("Alle auflösen", 130, () => { _ctl.ReplaceGroups(new()); _changed(); });
+        y += S(44);
+        Height = y;
+        ResumeLayout();
+    }
+
+    void AutoGroup()
+    {
+        var sug = _ctl.SuggestGroups();
+        if (sug.Count == 0)
+        {
+            MessageBox.Show(FindForm(),
+                "Keine passenden Lüfter gefunden.\n\nTipp: Benenne zusammengehörige Lüfter gleich, z. B. „Front 1“, „Front 2“, „Front 3“ – " +
+                "dann werden sie erkannt. Oder stelle die Gruppen über „Gruppe“ auf den Lüfter-Karten selbst zusammen.",
+                "Automatisch gruppieren", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        var text = string.Join("\n", sug.Select(g =>
+            $"•  {g.Name}: " + string.Join(", ", g.Members.Select(id => _ctl.ById(id)?.DisplayName ?? id))));
+        string replace = _ctl.Settings.Groups.Count > 0 ? "\n\nDie bisherigen Gruppen werden ersetzt." : "";
+        if (MessageBox.Show(FindForm(),
+                $"Vorschlag (nach Namen, Pumpen und gleichen Temperaturquellen):\n\n{text}\n\nDer jeweils erste Lüfter führt die Gruppe.{replace}\n\nSo übernehmen?",
+                "Automatisch gruppieren", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            return;
+        _ctl.ReplaceGroups(sug);
+        _changed();
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        using var pen = new Pen(Theme.Border);
+        e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
     }
 }
