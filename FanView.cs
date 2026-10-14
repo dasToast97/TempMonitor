@@ -862,13 +862,18 @@ sealed class FanCard : Control
         if (_follower) return;
         if (_ch.IsGpu)
         {
-            string txt = "Regelt nach der Grafikkarte";
-            if (_ctl.Temp(Component.Gpu) is float gt)
+            string txt;
+            if (_ctl.GpuHotspot is float hs)
             {
-                txt += $":  {gt:0} °C";
-                if (_ctl.GpuHotspot is float hs) txt += $"  ·  Hot Spot {hs:0} °C";
-                if (_ctl.Load(Component.Gpu) is float gl) txt += $"  ·  Last {gl:0} %";
+                txt = $"Regelt nach dem GPU-Hot-Spot:  {hs:0} °C";
+                if (_ctl.Temp(Component.Gpu) is float gt) txt += $"  ·  GPU {gt:0} °C";
             }
+            else
+            {
+                txt = "Regelt nach der Grafikkarte";
+                if (_ctl.Temp(Component.Gpu) is float gt) txt += $":  {gt:0} °C";
+            }
+            if (_ctl.Load(Component.Gpu) is float gl) txt += $"  ·  Last {gl:0} %";
             if (_sourceLabel.Text != txt) _sourceLabel.Text = txt;
             return;
         }

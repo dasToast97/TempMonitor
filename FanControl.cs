@@ -41,11 +41,11 @@ static class Profiles
     public static readonly ProfileInfo[] All =
     {
         new(FanProfile.Bios,        "Standard (BIOS)",  "Mainboard und Grafikkarte regeln selbst",      false,   0,   0,   0, new float[] { 0, 0, 0, 0 }),
-        new(FanProfile.Eco,         "Energiesparend",   "So leise wie möglich",                         true,   20,   4,   1, new float[] { 78, 75, 62, 90 }),
-        new(FanProfile.Balanced,    "Ausgewogen",       "Ruhig und kühl",                               true,   25,   6,   2, new float[] { 68, 70, 56, 85 }),
-        new(FanProfile.Performance, "Leistung",         "Kühl für Spiele & Rendern",                    true,   35,  10,   2, new float[] { 58, 62, 50, 78 }),
+        new(FanProfile.Eco,         "Energiesparend",   "So leise wie möglich",                         true,   20,   4, 0.5f, new float[] { 78, 75, 62, 90 }),
+        new(FanProfile.Balanced,    "Ausgewogen",       "Ruhig und kühl",                               true,   25,   6, 0.8f, new float[] { 68, 70, 56, 85 }),
+        new(FanProfile.Performance, "Leistung",         "Kühl für Spiele & Rendern",                    true,   35,  10, 0.8f, new float[] { 58, 62, 50, 78 }),
         new(FanProfile.Max,         "Maximale Kühlung", "Alle Lüfter dauerhaft auf 100 %",              false, 100, 100, 100, new float[] { 0, 0, 0, 0 }),
-        new(FanProfile.Custom,      "Eigene Kurve",     "Für jeden Lüfter eine eigene Kurve festlegen", false,   0,   8,   3, new float[] { 0, 0, 0, 0 }),
+        new(FanProfile.Custom,      "Eigene Kurve",     "Für jeden Lüfter eine eigene Kurve festlegen", false,   0,   8, 1.5f, new float[] { 0, 0, 0, 0 }),
     };
 
     public static ProfileInfo Get(FanProfile p) => All.First(i => i.Profile == p);
@@ -410,6 +410,7 @@ sealed class FanChannel
     public bool ZeroStopped;
     public DateTime? QuietSince;
     public DateTime KickUntil = DateTime.MinValue;
+    public DateTime LastUpAt = DateTime.MinValue;
     public DateTime RestartedAt = DateTime.MinValue;
     public readonly Dictionary<Component, SourceState> States = new()
     {
@@ -1314,8 +1315,12 @@ sealed class FanController
         foreach (var c in Components.All)
         {
             if (!ch.Cfg.Uses(c) || Temp(c) is not float raw) continue;
+            // Grafikkarten-Lüfter: nach dem Hot Spot regeln (heißester Punkt, eigenes Ziel),
+            // die normale GPU-Temperatur nur, wenn die Karte keinen Hot Spot meldet
+            if (ch.IsGpu && c == Component.Gpu && Temp(Component.Hotspot) is float) continue;
             var st = ch.States[c];
-            st.Smooth = st.Smooth is float sm ? sm + 0.35f * (raw - sm) : raw;
+            // Steigt die Temperatur, schnell folgen; fällt sie, langsam (kurze Lastpausen lassen die Lüfter nicht abfallen)
+            st.Smooth = st.Smooth is float sm ? sm + (raw > sm ? 0.35f : 0.06f) * (raw - sm) : raw;
             float T = st.Smooth.Value;
             float target = targets[(int)c];
 
@@ -1367,9 +1372,18 @@ sealed class FanController
         desired = Math.Clamp(desired, min, max);
 
         // Sanft ändern: schnell hoch, langsam runter
-        float next = desired > ch.Output
-            ? Math.Min(desired, ch.Output + prof.UpRate)
-            : Math.Max(desired, ch.Output - prof.DownRate);
+        // Ruhig einpendeln: schnell hoch; runter erst nach 20 s ohne Anstieg, dann langsam;
+        // kleine Abweichungen (unter 2 %) werden ignoriert, damit die Drehzahl nicht ständig schwankt
+        float next = ch.Output;
+        if (desired > ch.Output + 0.5f)
+        {
+            next = Math.Min(desired, ch.Output + prof.UpRate);
+            ch.LastUpAt = DateTime.Now;
+        }
+        else if (desired < ch.Output - 2f && (DateTime.Now - ch.LastUpAt).TotalSeconds >= 20)
+        {
+            next = Math.Max(desired, ch.Output - prof.DownRate);
+        }
 
         string who = Components.Name(driver.Value);
         ch.Status = prof.Profile switch
