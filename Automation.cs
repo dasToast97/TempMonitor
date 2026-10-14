@@ -55,12 +55,20 @@ static class GameDetector
         return s.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? s : s + ".exe";
     }
 
-    /// Liefert einen lesbaren Namen des laufenden Spiels oder null
-    public static string? Find(IEnumerable<string> exes, IEnumerable<string> ignore, bool stores)
+    public static string NormalizeExe(string s) => Exe(s);
+
+    /// Ein Durchlauf über alle Prozesse: laufendes Spiel (lesbarer Name) und erste passende Programm-Regel
+    public static (string? Game, AppRule? Rule) Scan(bool games, IEnumerable<string> exes, IEnumerable<string> ignore, bool stores,
+                                                      IReadOnlyList<AppRule> rules)
     {
         var mine = new HashSet<string>(exes.Where(e => !string.IsNullOrWhiteSpace(e)).Select(Exe), StringComparer.OrdinalIgnoreCase);
         var skip = new HashSet<string>(ignore.Where(e => !string.IsNullOrWhiteSpace(e)).Select(Exe), StringComparer.OrdinalIgnoreCase);
+        var ruleMap = new Dictionary<string, (int Index, AppRule Rule)>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < rules.Count; i++)
+            if (!string.IsNullOrWhiteSpace(rules[i].Exe)) ruleMap.TryAdd(Exe(rules[i].Exe), (i, rules[i]));
         int self = Environment.ProcessId;
+        string? game = null;
+        (int Index, AppRule Rule)? best = null;
 
         foreach (var p in Process.GetProcesses())
         {
@@ -70,8 +78,11 @@ static class GameDetector
                 {
                     if (p.Id == self || p.Id <= 4) continue;
                     string exe = p.ProcessName + ".exe";
-                    if (skip.Contains(exe)) continue;
-                    if (mine.Contains(exe)) return p.ProcessName;
+                    // Programm-Regeln: die weiter oben in der Liste gewinnt
+                    if (ruleMap.TryGetValue(exe, out var r) && (best == null || r.Index < best.Value.Index)) best = r;
+
+                    if (!games || game != null || skip.Contains(exe)) continue;
+                    if (mine.Contains(exe)) { game = p.ProcessName; continue; }
                     if (!stores) continue;
 
                     var path = ImagePath(p.Id);
@@ -79,12 +90,12 @@ static class GameDetector
                     string low = path.ToLowerInvariant();
                     if (!StorePaths.Any(low.Contains) || NotGames.Any(low.Contains)) continue;
                     if (p.MainWindowHandle == IntPtr.Zero) continue;   // Hintergrund-Helfer
-                    return NiceName(path, p.ProcessName);
+                    game = NiceName(path, p.ProcessName);
                 }
                 catch { /* Prozess beendet / kein Zugriff */ }
             }
         }
-        return null;
+        return (game, best?.Rule);
     }
 
     /// Ordnername des Spiels statt "Win64-Shipping.exe"
@@ -133,10 +144,26 @@ static class GameDetector
 sealed class AutoSwitcher
 {
     DateTime _lastScan = DateTime.MinValue;
-    Task<string?>? _scan;
+    Task<(string? Game, AppRule? Rule)>? _scan;
     string? _game;
+    AppRule? _rule;
 
     public string? CurrentGame => _game;
+    public AppRule? CurrentRule => _rule;
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+
+    [DllImport("user32.dll")]
+    static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+
+    /// Sekunden seit der letzten Maus-/Tastatureingabe
+    public static double IdleSeconds()
+    {
+        var li = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<LASTINPUTINFO>() };
+        if (!GetLastInputInfo(ref li)) return 0;
+        return unchecked((uint)Environment.TickCount - li.dwTime) / 1000.0;
+    }
 
     /// Einmal pro Sekunde auf dem UI-Thread. Gibt eine Meldung zurück, wenn das Profil gewechselt hat.
     public string? Update(FanController ctl)
@@ -146,17 +173,21 @@ sealed class AutoSwitcher
 
         if (_scan is { IsCompleted: true })
         {
-            _game = _scan.Status == TaskStatus.RanToCompletion ? _scan.Result : null;
+            (_game, _rule) = _scan.Status == TaskStatus.RanToCompletion ? _scan.Result : (null, null);
             _scan = null;
         }
+        bool apps = s.AutoApps && s.AppRules.Count > 0;
         if (!s.AutoGame) _game = null;
-        else if (_scan == null && (now - _lastScan).TotalSeconds >= 5)
+        if (!apps) _rule = null;
+        if ((s.AutoGame || apps) && _scan == null && (now - _lastScan).TotalSeconds >= 5)
         {
             _lastScan = now;
+            bool games = s.AutoGame;
             var exes = s.GameExes.ToList();
             var ignore = s.GameIgnore.ToList();
             bool stores = s.GameDetectStores;
-            _scan = Task.Run(() => GameDetector.Find(exes, ignore, stores));
+            var rules = apps ? s.AppRules.Select(r => new AppRule { Exe = r.Exe, Profile = r.Profile }).ToList() : new List<AppRule>();
+            _scan = Task.Run(() => GameDetector.Scan(games, exes, ignore, stores, rules));
         }
 
         FanProfile? want = null;
@@ -165,6 +196,16 @@ sealed class AutoSwitcher
         {
             want = s.GameProfile;
             reason = $"Spiel erkannt: {_game}";
+        }
+        else if (_rule != null)
+        {
+            want = _rule.Profile;
+            reason = $"Programm läuft: {GameDetector.NormalizeExe(_rule.Exe)}";
+        }
+        else if (s.AutoIdle && IdleSeconds() >= Math.Max(1, s.IdleMinutes) * 60)
+        {
+            want = s.IdleProfile;
+            reason = "PC im Leerlauf";
         }
         else if (s.AutoSchedule && s.Schedule.FirstOrDefault(r => r.Active(now)) is ScheduleRule rule)
         {
@@ -202,7 +243,7 @@ static class AutomationSettings
 
         v.AddSection("Automatischer Profilwechsel", Color.FromArgb(250, 204, 21));
         var c = v.AddCard();
-        c.Note("Wechselt das Lüfterprofil von selbst – beim Spielen und/oder zu bestimmten Zeiten. Ein laufendes Spiel geht vor dem Zeitplan. " +
+        c.Note("Wechselt das Lüfterprofil von selbst. Vorrang: Spiel → Programm-Regel → Leerlauf → Zeitplan. " +
                "Wählst du selbst ein Profil, gilt deine Wahl, bis das Spiel beendet ist bzw. der Zeitraum endet.");
         c.Check("Beim Spielen automatisch wechseln", s.AutoGame, x => { s.AutoGame = x; ctl.Save(); });
         c.Combo("Profil beim Spielen:", titles, Index(s.GameProfile), i => { s.GameProfile = Profiles.All[i].Profile; ctl.Save(); });
@@ -225,8 +266,9 @@ static class AutomationSettings
         timer.Tick += (_, _) =>
         {
             if (!live.Visible) return;
-            string t = !s.AutoGame ? "Gerade erkannt: – (ausgeschaltet)"
-                     : auto.CurrentGame is string g ? $"Gerade erkannt: {g}" : "Gerade erkannt: kein Spiel";
+            string t = auto.CurrentGame is string g ? $"Gerade erkannt: {g}"
+                     : auto.CurrentRule is AppRule r ? $"Gerade erkannt: {GameDetector.NormalizeExe(r.Exe)} (Programm-Regel)"
+                     : !s.AutoGame ? "Gerade erkannt: – (Spiele-Erkennung aus)" : "Gerade erkannt: kein Spiel";
             if (ctl.Override != null && ctl.OverrideReason != null) t += $"   ·   aktiv: {Profiles.Get(ctl.Profile).Title} ({ctl.OverrideReason})";
             else if (ctl.HeldReason != null) t += "   ·   pausiert, weil du selbst ein Profil gewählt hast";
             if (live.Text != t) live.Text = t;
@@ -234,8 +276,22 @@ static class AutomationSettings
         timer.Start();
         live.Disposed += (_, _) => timer.Dispose();
 
-        c.Space(8);
-        c.Check("Nach Zeitplan wechseln", s.AutoSchedule, x => { s.AutoSchedule = x; ctl.Save(); });
+        // ----- Programme -----
+        var apps = v.AddCard();
+        apps.Check("Bei bestimmten Programmen wechseln (z. B. Blender → Leistung, Video-Player → Energiesparend)",
+            s.AutoApps, x => { s.AutoApps = x; ctl.Save(); });
+        apps.Note("Reihenfolge = Vorrang: läuft mehr als ein Programm aus der Liste, gilt das obere. Ein Spiel geht immer vor.");
+        v.AddFullControl(new AppRulesEditor(s.AppRules, () => ctl.Save()) { Margin = new Padding((int)(6 * k), 0, (int)(6 * k), (int)(4 * k)) });
+
+        // ----- Leerlauf -----
+        var idle = v.AddCard();
+        idle.Check("Im Leerlauf wechseln – wenn eine Weile keine Maus- oder Tastatureingabe kommt", s.AutoIdle, x => { s.AutoIdle = x; ctl.Save(); });
+        idle.Numbers(("Leerlauf nach", (float)s.IdleMinutes, 1, 120, "Minuten", (Action<float>)(x => { s.IdleMinutes = (int)x; ctl.Save(); })));
+        idle.Combo("Profil im Leerlauf:", titles, Index(s.IdleProfile), x => { s.IdleProfile = Profiles.All[x].Profile; ctl.Save(); });
+        idle.Note("Läuft ein Spiel oder ein Programm aus der Liste (z. B. ein Render), bleibt dessen Profil – auch ohne Eingaben.");
+
+        var c2 = v.AddCard();
+        c2.Check("Nach Zeitplan wechseln", s.AutoSchedule, x => { s.AutoSchedule = x; ctl.Save(); });
         var sched = new ScheduleEditor(s.Schedule, () => ctl.Save()) { Margin = new Padding((int)(6 * k), 0, (int)(6 * k), (int)(4 * k)) };
         v.AddFullControl(sched);
 
@@ -463,5 +519,125 @@ static class Prompt
         f.AcceptButton = ok;
         f.CancelButton = no;
         return f.ShowDialog(owner) == DialogResult.OK ? t.Text.Trim() : null;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Programm-Regeln: Programm -> Profil
+// ---------------------------------------------------------------------------
+sealed class AppRulesEditor : Panel
+{
+    readonly List<AppRule> _rules;
+    readonly Action _save;
+    float K => DeviceDpi / 96f;
+    int S(float px) => (int)(px * K);
+
+    public AppRulesEditor(List<AppRule> rules, Action save)
+    {
+        _rules = rules;
+        _save = save;
+        BackColor = Theme.Card;
+        Rebuild();
+    }
+
+    protected override void OnCreateControl()
+    {
+        base.OnCreateControl();
+        Rebuild();
+    }
+
+    ComboBox Combo(int x, int y, int w)
+    {
+        var c = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat,
+            BackColor = Theme.CardHero, ForeColor = Theme.Text, Location = new Point(x, y), Width = w,
+        };
+        Controls.Add(c);
+        return c;
+    }
+
+    LinkLabel Link(string text, int x, int y, Action click)
+    {
+        var l = new LinkLabel
+        {
+            Text = text, LinkColor = Theme.Muted, ActiveLinkColor = Theme.Text, AutoSize = true,
+            LinkBehavior = LinkBehavior.HoverUnderline, Location = new Point(x, y + S(4)),
+        };
+        l.Click += (_, _) => click();
+        Controls.Add(l);
+        return l;
+    }
+
+    void Rebuild()
+    {
+        SuspendLayout();
+        foreach (Control old in Controls.Cast<Control>().ToList()) { Controls.Remove(old); old.Dispose(); }
+        var titles = Profiles.All.Select(p => p.Title).ToArray();
+        int y = S(4);
+
+        if (_rules.Count == 0)
+        {
+            Controls.Add(new Label
+            {
+                Text = "Noch keine Programme. Programm starten, unten auswählen und hinzufügen.",
+                ForeColor = Theme.Muted, AutoSize = true, Location = new Point(S(14), y + S(4)), UseMnemonic = false,
+            });
+            y += S(30);
+        }
+
+        for (int idx = 0; idx < _rules.Count; idx++)
+        {
+            var r = _rules[idx];
+            int pos = idx;
+            var name = new TextBox
+            {
+                Text = r.Exe, BackColor = Theme.CardHero, ForeColor = Theme.Text, BorderStyle = BorderStyle.FixedSingle,
+                Location = new Point(S(14), y), Width = S(220), PlaceholderText = "Programm.exe",
+            };
+            name.Leave += (_, _) => { r.Exe = name.Text.Trim(); _save(); };
+            Controls.Add(name);
+            Controls.Add(new Label { Text = "→", ForeColor = Theme.Muted, AutoSize = true, Location = new Point(S(242), y + S(3)) });
+            var prof = Combo(S(266), y - S(1), S(170));
+            prof.Items.AddRange(titles);
+            prof.SelectedIndex = Math.Max(0, Array.FindIndex(Profiles.All, p => p.Profile == r.Profile));
+            prof.SelectedIndexChanged += (_, _) => { r.Profile = Profiles.All[prof.SelectedIndex].Profile; _save(); };
+            int x = S(450);
+            if (pos > 0)
+                x = Link("▲ nach oben", x, y, () => { _rules.RemoveAt(pos); _rules.Insert(pos - 1, r); _save(); BeginInvoke(Rebuild); }).Right + S(12);
+            Link("Entfernen", Math.Max(x, S(560)), y, () => { _rules.Remove(r); _save(); BeginInvoke(Rebuild); });
+            y += S(34);
+        }
+
+        // Hinzufügen aus den laufenden Programmen
+        var running = Combo(S(14), y + S(2), S(420));
+        var procs = new List<(string Exe, string Title)>();
+        void Fill()
+        {
+            procs.Clear();
+            procs.AddRange(GameDetector.RunningWithWindow());
+            running.Items.Clear();
+            foreach (var (exe, title) in procs) running.Items.Add($"{title}  ({exe})");
+            if (running.Items.Count > 0) running.SelectedIndex = 0;
+        }
+        Fill();
+        running.DropDown += (_, _) => { int keep = running.SelectedIndex; Fill(); };
+        var add = PageBar.Button("Hinzufügen", K, 120);
+        add.Location = new Point(S(446), y);
+        add.Height = S(30);
+        add.Click += (_, _) =>
+        {
+            if (running.SelectedIndex < 0) return;
+            string exe = procs[running.SelectedIndex].Exe;
+            if (_rules.Any(x => GameDetector.NormalizeExe(x.Exe).Equals(exe, StringComparison.OrdinalIgnoreCase))) return;
+            _rules.Add(new AppRule { Exe = exe });
+            _save();
+            BeginInvoke(Rebuild);
+        };
+        Controls.Add(add);
+        Link("Leere Zeile (Name selbst eintippen)", add.Right + S(14), y + S(2), () => { _rules.Add(new AppRule()); _save(); BeginInvoke(Rebuild); });
+        y += S(44);
+        Height = y;
+        ResumeLayout();
     }
 }

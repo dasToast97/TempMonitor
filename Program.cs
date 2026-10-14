@@ -91,6 +91,36 @@ sealed class UpdateVisitor : IVisitor
 }
 
 // ---------------------------------------------------------------------------
+// Sparmodus: langsame Bauteile (Laufwerke, Netzwerk, RAM) seltener abfragen,
+// im Hintergrund ohne aktive Lüftersteuerung alles nur alle 2 Sekunden
+// ---------------------------------------------------------------------------
+sealed class SmartUpdater
+{
+    readonly UpdateVisitor _visitor = new();
+    readonly SmartUpdater _updater = new();
+    readonly Dictionary<IHardware, DateTime> _last = new();
+
+    static bool Slow(HardwareType t) =>
+        t is HardwareType.Storage or HardwareType.Network or HardwareType.Memory
+        || t.ToString() is "Battery" or "Psu";
+
+    public void Update(IComputer computer, bool hidden, bool needFast)
+    {
+        var now = DateTime.Now;
+        bool save = AppSettings.Instance.PowerSave;
+        foreach (var hw in computer.Hardware)
+        {
+            double every = !save ? 1
+                         : Slow(hw.HardwareType) ? (hidden ? 10 : 3)
+                         : hidden && !needFast ? 2 : 1;
+            if (_last.TryGetValue(hw, out var t) && (now - t).TotalSeconds < every - 0.2) continue;
+            _last[hw] = now;
+            hw.Accept(_visitor);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Hauptfenster
 // ---------------------------------------------------------------------------
 sealed class MainForm : Form
@@ -109,6 +139,7 @@ sealed class MainForm : Form
     };
 
     readonly UpdateVisitor _visitor = new();
+    readonly SmartUpdater _updater = new();
     readonly Panel _tempArea;
     readonly HistoryStore _history = new();
     DashboardView? _dash;
@@ -735,9 +766,12 @@ sealed class MainForm : Form
         try
         {
             var fans = _fans;
+            bool hidden = !Visible || WindowState == FormWindowState.Minimized;
+            bool needFast = (fans != null && fans.Channels.Count > 0 && (fans.Profile != FanProfile.Bios || fans.Calibrating))
+                            || (_analysis?.TestRunning ?? false) || AppSettings.Instance.OverlayEnabled;
             await Task.Run(() =>
             {
-                _computer.Accept(_visitor);
+                _updater.Update(_computer, hidden, needFast);
                 fans?.Tick();
                 _history.Record(_computer);
                 _logger.Tick();

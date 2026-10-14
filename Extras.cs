@@ -586,6 +586,8 @@ sealed class SettingsView : FlowLayoutPanel
         var a = AddCard();
         a.Check("Werte im Hintergrund aufzeichnen (CSV-Datei pro Tag in Dokumente\\Toast Temperatur)", s.LogEnabled, v => { s.LogEnabled = v; Save(); });
         a.Numbers(("Abstand zwischen zwei Messungen", (float)s.LogIntervalSeconds, 1, 60, "Sekunden", (Action<float>)(v => { s.LogIntervalSeconds = (int)v; Save(); })));
+        a.Check("Sparmodus: Laufwerke & Netzwerk seltener abfragen, im Hintergrund ohne Lüftersteuerung nur alle 2 Sekunden messen",
+            s.PowerSave, v => { s.PowerSave = v; Save(); });
         bool auto = Autostart.IsEnabled;
         a.Check("Mit Windows starten (unsichtbar im Hintergrund)", auto, v =>
         {

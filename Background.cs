@@ -13,6 +13,8 @@ sealed class AppSettings
     public bool LogEnabled { get; set; } = true;
     public int LogIntervalSeconds { get; set; } = 5;
     public bool CloseHintShown { get; set; }
+    /// Sparmodus: Laufwerke/Netzwerk seltener abfragen, im Hintergrund weniger oft messen
+    public bool PowerSave { get; set; } = true;
 
     // ----- Warnungen (Windows-Benachrichtigung) -----
     public bool WarnEnabled { get; set; } = true;

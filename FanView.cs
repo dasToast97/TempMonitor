@@ -129,8 +129,11 @@ sealed class FanView : FlowLayoutPanel
         if (_ctl.Calibratable.Any())
         {
             AddSection("Kalibrierung", Color.FromArgb(45, 212, 191));
-            _calib = new CalibrationPanel(_ctl) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+            _calib = new CalibrationPanel(_ctl, () => BeginInvoke(Rebuild)) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
             AddFull(_calib);
+
+            AddSection("Lautlos im Leerlauf", Color.FromArgb(129, 140, 248));
+            AddFull(BuildZeroPanel());
         }
 
         // ----- Sicherheit (optional) -----
@@ -147,6 +150,38 @@ sealed class FanView : FlowLayoutPanel
         _fullWidth.Add(c);
         Controls.Add(c);
         SetFlowBreak(c, true);
+    }
+
+    Control BuildZeroPanel()
+    {
+        var st = _ctl.Settings;
+        var c = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+        c.Note("Im Leerlauf bleiben die Lüfter ganz stehen – wie bei Grafikkarten. Sobald es wärmer wird, laufen sie mit einem kurzen " +
+               "Anschub wieder an. Gilt in den Profilen „Energiesparend“ und „Ausgewogen“, nie für Pumpen. Jeder Lüfter achtet auf die " +
+               "Bauteile, die bei ihm angehakt sind.");
+        c.Check("Lüfter im Leerlauf anhalten", st.ZeroRpmEnabled, v => { st.ZeroRpmEnabled = v; _ctl.Save(); });
+        c.Numbers(
+            ("Stehen bleiben, solange CPU unter", st.ZeroCpu, 30, 75, "°C", (Action<float>)(v => { st.ZeroCpu = v; _ctl.Save(); })),
+            ("und GPU unter", st.ZeroGpu, 30, 75, "°C", (Action<float>)(v => { st.ZeroGpu = v; _ctl.Save(); })));
+        c.Note("Wieder anlaufen: 4 °C darüber. Mainboard-Lüfter ohne CPU/GPU-Haken bleiben stehen, solange das Mainboard 10 °C unter seiner Grenze ist.");
+
+        var cand = _ctl.StopCandidates.ToList();
+        var missing = _ctl.Channels.Where(x => !x.IsGpu && x.Kind == FanKind.Fan && !x.NotControllable && x.Cfg.StartPercent == null).ToList();
+        if (cand.Count > 0)
+        {
+            c.Space(4);
+            c.Note("Diese Lüfter dürfen stehen bleiben:", muted: false);
+            foreach (var ch in cand)
+            {
+                var fan = ch;
+                c.Check(fan.DisplayName + (fan.Cfg.StartPercent is float sp ? $"   (läuft ab {sp:0} % an)" : ""), fan.Cfg.AllowStop,
+                    v => { fan.Cfg.AllowStop = v; _ctl.Save(); });
+            }
+        }
+        if (missing.Count > 0)
+            c.Note($"Nicht möglich für: {string.Join(", ", missing.Select(m => m.DisplayName))} – noch nicht kalibriert oder " +
+                   "der Lüfter bleibt auch bei 0 % nicht stehen. Erst oben kalibrieren.");
+        return c;
     }
 
     Control BuildSafetyPanel()
@@ -1231,9 +1266,13 @@ sealed class CalibrationPanel : Panel
     float K => DeviceDpi / 96f;
     int S(float px) => (int)(px * K);
 
-    public CalibrationPanel(FanController ctl)
+    readonly Action _finished;
+    bool _wasRunning;
+
+    public CalibrationPanel(FanController ctl, Action finished)
     {
         _ctl = ctl;
+        _finished = finished;
         BackColor = Theme.Card;
         _note = new Label
         {
@@ -1283,6 +1322,8 @@ sealed class CalibrationPanel : Panel
     public void RefreshValues()
     {
         bool run = _ctl.Calibrating;
+        if (_wasRunning && !run) { _wasRunning = false; _finished(); return; }
+        _wasRunning = run;
         string bt = run ? "Kalibrierung abbrechen" : "Alle Lüfter kalibrieren";
         if (_btn.Text != bt) _btn.Text = bt;
 

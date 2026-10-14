@@ -59,6 +59,13 @@ sealed class FanGroup
     public List<string> Members { get; set; } = new();
 }
 
+/// Programm -> Profil (z. B. Blender.exe -> Leistung)
+sealed class AppRule
+{
+    public string Exe { get; set; } = "";
+    public FanProfile Profile { get; set; } = FanProfile.Performance;
+}
+
 /// Zeitraum für den automatischen Profilwechsel. Days: Bit 0 = Montag … Bit 6 = Sonntag
 sealed class ScheduleRule
 {
@@ -107,6 +114,8 @@ sealed class FanChannelSettings
     public float? MinRpm { get; set; }
     public float? MaxRpm { get; set; }
     public DateTime? CalibratedAt { get; set; }
+    /// Darf im Leerlauf ganz stehen bleiben (wenn "Lüfter-Stopp im Leerlauf" an ist)
+    public bool AllowStop { get; set; } = true;
 
     public float? EffectFor(Component c) => Effect.TryGetValue(c.ToString(), out var v) ? v : null;
 
@@ -187,6 +196,16 @@ sealed class FanSettings
     public bool AutoSchedule { get; set; }
     public List<ScheduleRule> Schedule { get; set; } = new();
     public bool AutoNotify { get; set; } = true;
+    public bool AutoApps { get; set; }
+    public List<AppRule> AppRules { get; set; } = new();
+    public bool AutoIdle { get; set; }
+    public int IdleMinutes { get; set; } = 10;
+    public FanProfile IdleProfile { get; set; } = FanProfile.Eco;
+
+    // ----- Lüfter-Stopp im Leerlauf -----
+    public bool ZeroRpmEnabled { get; set; }
+    public float ZeroCpu { get; set; } = 50f;
+    public float ZeroGpu { get; set; } = 50f;
 
     static readonly string Dir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor");
@@ -359,6 +378,12 @@ sealed class FanChannel
     public DateTime CalNext;
     public float CalPct;
     public string? CalNote;
+
+    // Lüfter-Stopp im Leerlauf
+    public bool ZeroStopped;
+    public DateTime? QuietSince;
+    public DateTime KickUntil = DateTime.MinValue;
+    public DateTime RestartedAt = DateTime.MinValue;
     public readonly Dictionary<Component, SourceState> States = new()
     {
         [Component.Cpu] = new(), [Component.Gpu] = new(), [Component.Board] = new(), [Component.Hotspot] = new(),
@@ -368,6 +393,8 @@ sealed class FanChannel
     {
         foreach (var c in Components.All) States[c] = new SourceState();
         Driver = null;
+        ZeroStopped = false;
+        QuietSince = null;
     }
 }
 
@@ -1019,6 +1046,8 @@ sealed class FanController
         // Während der führende Lüfter per „Erkennen“ auf 100 % läuft, nicht mitziehen
         float src = leader.Identifying ? (ch.Output >= 0 ? ch.Output : leader.Output) : leader.Output;
         float next = Math.Clamp(src, min, max);
+        ch.ZeroStopped = leader.ZeroStopped && CanStop(ch);
+        if (ch.ZeroStopped) next = 0;
         ch.Output = next;
         ch.Driver = leader.Driver;
         ch.DriverTemp = leader.DriverTemp;
@@ -1026,10 +1055,52 @@ sealed class FanController
         ch.Status = $"Gruppe „{g.Name}“ · folgt {leader.DisplayName}" +
                     (leader.Driver is Component d && leader.DriverTemp is float t ? $" (bestimmt von {Components.Name(d)}, {t:0} °C)" : "");
         if (leader.Status.StartsWith("⚠")) ch.Status = "⚠ " + ch.Status;
+        if (ch.ZeroStopped) ch.Status = $"Gruppe „{g.Name}“ · steht still wie {leader.DisplayName} (Leerlauf)";
         if (ch.Od8?.LastError is string err) ch.Status += $" · {err}";
         CheckResponse(ch, next);
         if (ch.NotControllable) return;
         StallCheck(ch, next);
+    }
+
+    /// Darf dieser Lüfter überhaupt stehen bleiben? Nur kalibrierte Gehäuse-/CPU-Lüfter, keine Pumpen
+    public bool CanStop(FanChannel ch) =>
+        _s.ZeroRpmEnabled && ch.Cfg.AllowStop && !ch.IsGpu && ch.Kind == FanKind.Fan && ch.Cfg.StartPercent != null;
+
+    /// Lüfter, die die Voraussetzungen erfüllen (ohne den Schalter)
+    public IEnumerable<FanChannel> StopCandidates =>
+        Channels.Where(c => !c.IsGpu && c.Kind == FanKind.Fan && c.Cfg.StartPercent != null && !c.NotControllable);
+
+    float ZeroLimit(Component c) => c switch
+    {
+        Component.Cpu => _s.ZeroCpu,
+        Component.Gpu => _s.ZeroGpu,
+        _ => _s.BoardLimit - 10,
+    };
+
+    bool WantsZero(FanChannel ch, ProfileInfo prof)
+    {
+        if (!CanStop(ch) || prof.Profile is not (FanProfile.Eco or FanProfile.Balanced))
+        {
+            ch.QuietSince = null;
+            return false;
+        }
+        var used = Components.Selectable.Where(c => ch.Cfg.Uses(c) && Temp(c) is float).ToList();
+        if (used.Count == 0) return false;
+        // Hysterese: stehen bleiben, bis es 4 °C über der Grenze ist
+        float extra = ch.ZeroStopped ? 4f : 0f;
+        bool cool = used.All(c => Temp(c)!.Value < ZeroLimit(c) + extra);
+        if (!cool) { ch.QuietSince = null; return false; }
+        if (ch.ZeroStopped) return true;
+        // Erst nach 30 s Ruhe anhalten, und frühestens 60 s nach dem letzten Anlaufen
+        ch.QuietSince ??= DateTime.Now;
+        return (DateTime.Now - ch.QuietSince.Value).TotalSeconds >= 30 && (DateTime.Now - ch.RestartedAt).TotalSeconds >= 60;
+    }
+
+    string ZeroStatus(FanChannel ch)
+    {
+        var used = Components.Selectable.Where(c => ch.Cfg.Uses(c) && Temp(c) is float);
+        return "Steht still (Leerlauf) · läuft an ab " +
+               string.Join(" oder ", used.Select(c => $"{Components.Name(c)} {ZeroLimit(c) + 4:0} °C"));
     }
 
     void StallCheck(FanChannel ch, float next)
@@ -1151,6 +1222,30 @@ sealed class FanController
         }
 
         next = Math.Clamp(next, min, max);
+
+        // Lüfter-Stopp im Leerlauf (nur Energiesparend / Ausgewogen, nie bei Notkühlung oder Mainboard-Grenze)
+        if (!emergency && !boardGuard && WantsZero(ch, prof))
+        {
+            if (!ch.ZeroStopped) { ch.ZeroStopped = true; ch.Output = 0; }
+            next = 0;
+            ch.Status = ZeroStatus(ch);
+        }
+        else
+        {
+            if (ch.ZeroStopped)
+            {
+                // Wieder anlaufen: kurz kräftig anschieben, dann normal regeln
+                ch.ZeroStopped = false;
+                ch.KickUntil = DateTime.Now.AddSeconds(3);
+                ch.RestartedAt = DateTime.Now;
+            }
+            if (DateTime.Now < ch.KickUntil)
+            {
+                next = Math.Max(next, Math.Min(max, Math.Max(50f, (ch.Cfg.StartPercent ?? 30f) + 20f)));
+                ch.Status = "Läuft wieder an …";
+            }
+        }
+
         ch.Output = next;
         Write(ch, next);
         if (ch.Od8?.LastError is string err)
