@@ -640,6 +640,7 @@ sealed class MainForm : Form
     {
         try { _fans?.RestoreAll(); } catch { }
         try { OasisLink.Instance?.Shutdown(); } catch { }
+        try { _rgb?.Shutdown(); } catch { }
     }
 
     /// XMG Oasis: auf Laptops (oder wenn schon einmal gefunden) per Bluetooth suchen und einbinden

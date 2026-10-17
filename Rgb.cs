@@ -146,7 +146,7 @@ sealed class PolychromeUsb : IDisposable
     }
 
     /// Bericht senden und Antwort lesen (ohne führende Report-ID)
-    byte[]? Transfer(byte[] data)
+    byte[]? Transfer(byte[] data, int timeoutMs = 600)
     {
         lock (_gate)
         {
@@ -156,7 +156,7 @@ sealed class PolychromeUsb : IDisposable
                 Array.Copy(data, 0, buf, 1, Math.Min(data.Length, buf.Length - 1));   // buf[0] = Report-ID 0
                 _dev.Stream.Write(buf, 0, buf.Length);
                 var inBuf = new byte[_dev.InLength];
-                using var cts = new CancellationTokenSource(600);
+                using var cts = new CancellationTokenSource(timeoutMs);
                 int n = _dev.Stream.ReadAsync(inBuf, 0, inBuf.Length, cts.Token).GetAwaiter().GetResult();
                 LastError = null;
                 return n > 1 ? inBuf[1..n] : null;
@@ -222,6 +222,64 @@ sealed class PolychromeUsb : IDisposable
         return Transfer(Msg(0x15, 0x02, fields)) != null;
     }
 
+    // ----- Direkt-Modus: jede LED einzeln (für die eigenen Effekte von Toast Temperatur) -----
+    public bool Direct { get; private set; }
+
+    public void EnterDirect()
+    {
+        Transfer(Msg(0x15, 0x03, (3, 0)));                  // R/G-Tausch aus (sonst flackert es bei jedem Bild)
+        foreach (var z in Zones) Transfer(Msg(0x10, (byte)z.Index, (3, 0x0F), (7, 0xE0), (8, 0xFF)));
+        Direct = true;
+    }
+
+    public void ExitDirect()
+    {
+        if (!Direct) return;
+        byte bits = 0;
+        foreach (var z in Zones) if (z.RgSwap) bits |= (byte)(1 << z.Index);
+        Transfer(Msg(0x15, 0x03, (3, bits)));
+        Direct = false;
+    }
+
+    /// Ein Bild schicken: Farben je Zone (Reihenfolge wie Zones), lückenlos hintereinander
+    public bool WriteFrame(IReadOnlyList<Color[]> perZone)
+    {
+        var bytes = new List<byte>(1024);
+        int capacity = 0;
+        for (int i = 0; i < Zones.Count; i++)
+        {
+            var z = Zones[i];
+            var cols = i < perZone.Count ? perZone[i] : Array.Empty<Color>();
+            for (int l = 0; l < z.LedCount; l++)
+            {
+                var c = l < cols.Length ? cols[l] : Color.Black;
+                bytes.Add(z.RgSwap ? c.R : c.G);
+                bytes.Add(z.RgSwap ? c.G : c.R);
+                bytes.Add(c.B);
+            }
+            capacity += z.Kind == RgbZoneKind.Addressable ? 100 : z.LedCount;
+        }
+        int total = (capacity + 8) * 3;
+        while (bytes.Count < total) bytes.Add(0);
+
+        int pos = 0;
+        bool first = true;
+        while (pos < bytes.Count)
+        {
+            var b = new byte[64];
+            b[0] = 0x10;
+            b[2] = 0xFF;
+            b[3] = first ? (byte)0xE3 : (byte)0xE4;
+            if (first) b[6] = 0xFF;
+            b[63] = 0x65;
+            int offset = first ? 8 : 4, cap = first ? 54 : 57;
+            for (int k = 0; k < cap && pos < bytes.Count; k++) b[offset + k] = bytes[pos++];
+            if (Transfer(b, 120) == null && LastError != null) return false;
+            first = false;
+        }
+        return true;
+    }
+
     /// Im Mainboard speichern – bleibt dann auch ohne Toast Temperatur und nach dem Neustart
     public bool Commit() => Transfer(Msg(0x12, 0x00)) != null;
 
@@ -245,6 +303,10 @@ sealed class RgbSettings
     public string TempSource { get; set; } = "Max";   // CPU, GPU, Hotspot, Max
     public Dictionary<int, RgbZoneSettings> Zones { get; set; } = new();
     public bool ApplyOnStart { get; set; }
+
+    /// true = eigene Effekte von Toast Temperatur (jede LED einzeln), false = Effekte des Mainboards
+    public bool Custom { get; set; }
+    public CustomEffect Effect { get; set; } = CustomEffect.Presets[0].Effect.Clone();
 
     static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor");
     static readonly string FilePath = Path.Combine(Dir, "rgb.json");
@@ -298,7 +360,30 @@ sealed class RgbService
         Device = dev;
         _keys = keys;
         Settings = RgbSettings.Load();
-        if (Settings.ApplyOnStart) Task.Run(ApplyAll);
+        Engine = new EffectEngine(this);
+        if (Settings.Custom) Engine.Start();
+        else if (Settings.ApplyOnStart) Task.Run(ApplyAll);
+    }
+
+    public EffectEngine Engine { get; }
+
+    public float? Temperature() => _keys()?.Value(Settings.TempSource);
+
+    /// Zwischen Mainboard-Effekten und eigenen Effekten umschalten
+    public void SetCustom(bool on)
+    {
+        Settings.Custom = on;
+        Settings.Save();
+        if (on) Engine.Start();
+        else Task.Run(() => { Engine.Stop(); ApplyAll(); });
+    }
+
+    /// Beim Beenden: eigene Effekte stoppen, das Mainboard übernimmt mit seinen Effekten
+    public void Shutdown()
+    {
+        if (!Engine.Running) return;
+        Engine.Stop();
+        try { ApplyAll(); } catch { }
     }
 
     public static readonly (string Name, byte Mode)[] Modes =
@@ -349,6 +434,7 @@ sealed class RgbService
     /// Jede Sekunde: Zonen im Temperatur-Modus nachführen (nur bei spürbarer Änderung senden)
     public void TickTemperature(bool force = false)
     {
+        if (Settings.Custom) return;
         if (_keys()?.Value(Settings.TempSource) is not float t) return;
         var col = TempColor(t);
         foreach (var z in Device.Zones)
@@ -396,41 +482,114 @@ sealed class RgbView : FlowLayoutPanel
         var st = _svc.Settings;
         Add(new SectionHeader("RGB-Beleuchtung · ASRock Polychrome", Color.FromArgb(244, 114, 182)) { Height = S(40), Margin = new Padding(S(6), S(14), S(6), S(4)) });
         var top = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
-        top.Note("Steuert die Beleuchtung über das Mainboard. Am ARGB-Anschluss mit Hub: Ein Verteiler-Hub schickt allen Geräten dasselbe Signal – " +
-                 "als LED-Anzahl die des längsten angeschlossenen Geräts eintragen (oder die Summe, wenn die Geräte hintereinander geschaltet sind).");
-        top.Check("Alle Anschlüsse gleich einstellen", st.Sync, v => { st.Sync = v; st.Save(); RebuildSoon(); });
+        top.Combo("Steuerung:", new[] { "Effekte vom Mainboard (laufen auch ohne Toast Temperatur)", "Eigene Effekte (jede LED einzeln, frei einstellbar)" },
+            st.Custom ? 1 : 0, i => { _svc.SetCustom(i == 1); RebuildSoon(); });
+        if (top.Controls.OfType<ComboBox>().LastOrDefault() is ComboBox modeBox) modeBox.Width = S(420);
+        top.Note("Mit Hub am ARGB-Anschluss: Ein Verteiler-Hub schickt allen Geräten dasselbe Signal – als LED-Anzahl die des längsten Geräts " +
+                 "eintragen (oder die Summe, wenn die Geräte hintereinander geschaltet sind).");
+        Add(top);
+
+        if (st.Custom) BuildCustom();
+        else BuildHardware();
+
+        // LED-Anzahl der ARGB-Anschlüsse (für beide Arten)
+        var info = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+        info.Note("Erkannt: " + string.Join(" · ", _svc.Device.Zones.Select(z => z.Kind == RgbZoneKind.Addressable ? $"{z.Name} ({z.LedCount} LEDs)" : z.Name)));
+        foreach (var z in _svc.Device.Zones.Where(z => z.Kind == RgbZoneKind.Addressable))
+        {
+            var zz = z;
+            info.Numbers(($"LEDs an {z.Name}", (float)z.LedCount, 1, 100, "", (Action<float>)(v => Debounce(() => _svc.Device.SetLedCount(zz, (int)v)))));
+        }
+        Add(info);
+    }
+
+    void BuildHardware()
+    {
+        var st = _svc.Settings;
+        var hw = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+        hw.Check("Alle Anschlüsse gleich einstellen", st.Sync, v => { st.Sync = v; st.Save(); RebuildSoon(); });
         string[] sources = { "CPU", "GPU", "Hotspot", "Max" };
-        top.Combo("„Temperatur als Farbe“ nach:", new[] { "CPU", "Grafikkarte", "GPU-Hot-Spot", "Höchster Wert von CPU und GPU" },
+        hw.Combo("„Temperatur als Farbe“ nach:", new[] { "CPU", "Grafikkarte", "GPU-Hot-Spot", "Höchster Wert von CPU und GPU" },
             Array.IndexOf(sources, st.TempSource), i => { st.TempSource = sources[i]; st.Save(); _svc.TickTemperature(force: true); });
-        top.Note("Temperatur-Farbe: unter 45 °C blau · 60 °C grün · 75 °C gelb · ab 88 °C rot");
-        top.Check("Beim Start von Toast Temperatur die Einstellungen anwenden", st.ApplyOnStart, v => { st.ApplyOnStart = v; st.Save(); });
-        top.Buttons(("Im Mainboard speichern", () =>
+        hw.Note("Temperatur-Farbe: unter 45 °C blau · 60 °C grün · 75 °C gelb · ab 88 °C rot");
+        hw.Check("Beim Start von Toast Temperatur die Einstellungen anwenden", st.ApplyOnStart, v => { st.ApplyOnStart = v; st.Save(); });
+        hw.Buttons(("Im Mainboard speichern", () =>
         {
             bool ok = _svc.Device.Commit();
             MessageBox.Show(FindForm(), ok
                 ? "Gespeichert. Die Beleuchtung bleibt jetzt auch ohne Toast Temperatur und nach einem Neustart so.\n(„Temperatur als Farbe“ funktioniert nur, solange Toast Temperatur läuft.)"
                 : "Speichern fehlgeschlagen: " + _svc.Device.LastError, "RGB");
         }));
-        Add(top);
+        Add(hw);
 
         var zones = st.Sync ? _svc.Device.Zones.Take(1).ToList() : _svc.Device.Zones;
         foreach (var z in zones)
         {
-            string title = st.Sync ? "Alle Anschlüsse" : z.Name;
-            Add(new SectionHeader(title, Theme.Muted) { Height = S(34), Margin = new Padding(S(6), S(10), S(6), S(2)) });
+            Add(new SectionHeader(st.Sync ? "Alle Anschlüsse" : z.Name, Theme.Muted) { Height = S(34), Margin = new Padding(S(6), S(10), S(6), S(2)) });
             Add(BuildZone(z, st.Sync));
         }
-        if (st.Sync)
+    }
+
+    void BuildCustom()
+    {
+        var st = _svc.Settings;
+        var fx = st.Effect;
+        void Save() => st.Save();
+
+        Add(new SectionHeader("Eigener Effekt", Theme.Muted) { Height = S(34), Margin = new Padding(S(6), S(10), S(6), S(2)) });
+        Add(new LedPreview(_svc.Engine) { Height = S(46), Margin = new Padding(S(6), S(2), S(6), S(4)) });
+
+        var c = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+        var presetNames = new[] { "– Voreinstellung wählen –" }.Concat(CustomEffect.Presets.Select(p => p.Name)).ToArray();
+        c.Combo("Voreinstellung:", presetNames, 0, i =>
         {
-            var info = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
-            info.Note("Erkannt: " + string.Join(" · ", _svc.Device.Zones.Select(z => z.Kind == RgbZoneKind.Addressable ? $"{z.Name} ({z.LedCount} LEDs)" : z.Name)));
-            foreach (var z in _svc.Device.Zones.Where(z => z.Kind == RgbZoneKind.Addressable))
-            {
-                var zz = z;
-                info.Numbers(($"LEDs an {z.Name}", (float)z.LedCount, 1, 100, "", (Action<float>)(v => Debounce(() => _svc.Device.SetLedCount(zz, (int)v)))));
-            }
-            Add(info);
+            if (i <= 0) return;
+            st.Effect = CustomEffect.Presets[i - 1].Effect.Clone();
+            Save();
+            RebuildSoon();
+        });
+        var types = Enum.GetValues<EffectType>();
+        c.Combo("Effekt:", types.Select(CustomEffect.Name).ToArray(), Array.IndexOf(types, fx.Type), i => { fx.Type = types[i]; Save(); RebuildSoon(); });
+        c.Note(fx.Type switch
+        {
+            EffectType.Breathing => "Wird heller und dunkler, bei jedem Atemzug die nächste Farbe.",
+            EffectType.Wave => "Die Farben laufen als Welle durch die LEDs.",
+            EffectType.RainbowWave => "Alle Regenbogenfarben laufen durch (Farben unten werden nicht genutzt).",
+            EffectType.Gradient => "Farbverlauf über alle LEDs – bei Geschwindigkeit 0 steht er still.",
+            EffectType.Comet => "Ein Lichtpunkt mit Schweif läuft durch. Farbe 1 = Komet, Farbe 2 = Hintergrund.",
+            EffectType.Sparkle => "Zufällige LEDs funkeln auf. Letzte Farbe = Hintergrund (ab 3 Farben).",
+            EffectType.ColorCycle => "Alle LEDs wechseln gemeinsam durch die Farben.",
+            EffectType.Fire => "Flackern wie Feuer aus den gewählten Farben.",
+            _ => "Farbe zeigt die Temperatur (blau → rot), dazu eine sanfte Welle.",
+        });
+        Add(c);
+
+        if (fx.Type is not (EffectType.RainbowWave or EffectType.TempWave))
+        {
+            Add(new SectionHeader("Farben", Theme.Muted) { Height = S(30), Margin = new Padding(S(6), S(6), S(6), S(2)) });
+            Add(new ColorListEditor(fx.Colors, Save) { Margin = new Padding(S(6), S(2), S(6), S(4)) });
         }
+
+        var p = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+        p.Numbers(
+            ("Helligkeit", (float)fx.Brightness, 5, 100, "%", (Action<float>)(v => { fx.Brightness = (int)v; Save(); })),
+            ("Dunkelste Stufe", (float)fx.MinLevel, 0, 100, "%", (Action<float>)(v => { fx.MinLevel = (int)v; Save(); })));
+        p.Note("Dunkelste Stufe: 0 % = geht ganz aus, höher = wird nur gedimmt.");
+        p.Numbers(
+            ("Weichheit / Fade", (float)fx.Softness, 0, 100, "%", (Action<float>)(v => { fx.Softness = (int)v; Save(); })),
+            ("Geschwindigkeit", (float)fx.Speed, 0, 100, "%", (Action<float>)(v => { fx.Speed = (int)v; Save(); })));
+        p.Note("Weichheit: 0 % = harte Wechsel / Blinken, 100 % = ganz weiche Übergänge.");
+        p.Numbers(("Breite (LEDs je Welle / Schweif)", (float)fx.Width, 2, 100, "", (Action<float>)(v => { fx.Width = (int)v; Save(); })));
+        p.Check("Richtung umkehren", fx.Reverse, v => { fx.Reverse = v; Save(); });
+        p.Check("Von der Mitte aus (gespiegelt)", fx.Mirror, v => { fx.Mirror = v; Save(); });
+        if (fx.Type == EffectType.TempWave)
+        {
+            string[] sources = { "CPU", "GPU", "Hotspot", "Max" };
+            p.Combo("Temperatur von:", new[] { "CPU", "Grafikkarte", "GPU-Hot-Spot", "Höchster Wert von CPU und GPU" },
+                Array.IndexOf(sources, st.TempSource), i => { st.TempSource = sources[i]; Save(); });
+        }
+        p.Note("Eigene Effekte laufen, solange Toast Temperatur läuft. Beim Beenden übernimmt das Mainboard mit den Mainboard-Effekten.");
+        Add(p);
     }
 
     Control BuildZone(RgbZone z, bool all)
@@ -502,4 +661,392 @@ sealed class RgbView : FlowLayoutPanel
         Build();
         ResumeLayout();
     });
+}
+
+// ===========================================================================
+// Eigene Effekte (laufen in Toast Temperatur, jede LED einzeln)
+// ===========================================================================
+enum EffectType { Breathing, Wave, RainbowWave, Gradient, Comet, Sparkle, ColorCycle, Fire, TempWave }
+
+sealed class CustomEffect
+{
+    public EffectType Type { get; set; } = EffectType.Wave;
+    public List<int> Colors { get; set; } = new();
+    public int Speed { get; set; } = 50;        // 1–100
+    public int Brightness { get; set; } = 100;  // 5–100
+    public int Width { get; set; } = 20;        // LEDs je Wellenlänge / Schweif
+    public bool Reverse { get; set; }
+    /// Dunkelste Stufe 0–100 (0 = geht ganz aus)
+    public int MinLevel { get; set; }
+    /// Weichheit / Fade 0–100 (0 = harte Wechsel, 100 = ganz weich)
+    public int Softness { get; set; } = 80;
+    /// Von der Mitte nach außen (gespiegelt)
+    public bool Mirror { get; set; }
+
+    public CustomEffect Clone() => new()
+    {
+        Type = Type, Colors = Colors.ToList(), Speed = Speed, Brightness = Brightness, Width = Width, Reverse = Reverse,
+        MinLevel = MinLevel, Softness = Softness, Mirror = Mirror,
+    };
+
+    public static string Name(EffectType t) => t switch
+    {
+        EffectType.Breathing => "Atmen",
+        EffectType.Wave => "Welle",
+        EffectType.RainbowWave => "Regenbogen-Welle",
+        EffectType.Gradient => "Farbverlauf",
+        EffectType.Comet => "Lauflicht (Komet)",
+        EffectType.Sparkle => "Funkeln",
+        EffectType.ColorCycle => "Farbwechsel",
+        EffectType.Fire => "Feuer",
+        _ => "Temperatur-Welle",
+    };
+
+    static int C(int r, int g, int b) => System.Drawing.Color.FromArgb(r, g, b).ToArgb();
+
+    public static readonly (string Name, CustomEffect Effect)[] Presets =
+    {
+        ("Ozean", new() { Type = EffectType.Wave, Colors = { C(0, 40, 255), C(0, 200, 255), C(0, 255, 160) }, Speed = 35, Width = 30 }),
+        ("Polarlicht", new() { Type = EffectType.Wave, Colors = { C(0, 255, 120), C(40, 80, 255), C(190, 0, 255) }, Speed = 25, Width = 40 }),
+        ("Feuer", new() { Type = EffectType.Fire, Colors = { C(255, 30, 0), C(255, 120, 0), C(255, 200, 40) }, Speed = 60, Width = 10 }),
+        ("Neon-Atmen", new() { Type = EffectType.Breathing, Colors = { C(255, 0, 200), C(0, 230, 255) }, Speed = 40 }),
+        ("Sonnenuntergang", new() { Type = EffectType.Gradient, Colors = { C(255, 60, 0), C(255, 0, 90), C(120, 0, 255) }, Speed = 15, Width = 30 }),
+        ("Regenbogen", new() { Type = EffectType.RainbowWave, Speed = 45, Width = 30 }),
+        ("Komet", new() { Type = EffectType.Comet, Colors = { C(255, 255, 255), C(0, 60, 255) }, Speed = 55, Width = 12 }),
+        ("Sternenhimmel", new() { Type = EffectType.Sparkle, Colors = { C(255, 255, 255), C(120, 160, 255), C(10, 10, 40) }, Speed = 50 }),
+        ("Farbwechsel", new() { Type = EffectType.ColorCycle, Colors = { C(255, 0, 0), C(0, 255, 0), C(0, 80, 255) }, Speed = 30 }),
+        ("Temperatur-Welle", new() { Type = EffectType.TempWave, Speed = 30, Width = 25 }),
+    };
+}
+
+static class EffectRenderer
+{
+    static readonly Random Rnd = new();
+    static readonly Dictionary<(int, int), float> Sparks = new();
+
+    static Color Lerp(Color a, Color b, float f)
+    {
+        f = Math.Clamp(f, 0, 1);
+        return Color.FromArgb((int)(a.R + (b.R - a.R) * f), (int)(a.G + (b.G - a.G) * f), (int)(a.B + (b.B - a.B) * f));
+    }
+
+    static Color Scale(Color c, float f)
+    {
+        f = Math.Clamp(f, 0, 1);
+        return Color.FromArgb((int)(c.R * f), (int)(c.G * f), (int)(c.B * f));
+    }
+
+    static float _soft = 0.8f;
+
+    /// Übergang formen: weich = linear, hart = Sprung in der Mitte
+    static float Shape(float f)
+    {
+        float w = Math.Max(0.02f, _soft);
+        return Math.Clamp((f - 0.5f) / w + 0.5f, 0, 1);
+    }
+
+    /// Farbe an Position p (0..1, zyklisch) im Farbverlauf der Palette
+    static Color Palette(List<Color> pal, float p, bool cyclic = true)
+    {
+        if (pal.Count == 0) return Color.White;
+        if (pal.Count == 1) return pal[0];
+        p -= MathF.Floor(p);
+        int n = cyclic ? pal.Count : pal.Count - 1;
+        float x = p * n;
+        int i = (int)x;
+        return Lerp(pal[i % pal.Count], pal[(i + 1) % pal.Count], Shape(x - i));
+    }
+
+    public static Color Hue(float h)
+    {
+        h = (h % 360 + 360) % 360 / 60f;
+        float x = 1 - MathF.Abs(h % 2 - 1);
+        (float r, float g, float b) = (int)h switch
+        {
+            0 => (1f, x, 0f), 1 => (x, 1f, 0f), 2 => (0f, 1f, x), 3 => (0f, x, 1f), 4 => (x, 0f, 1f), _ => (1f, 0f, x),
+        };
+        return Color.FromArgb((int)(r * 255), (int)(g * 255), (int)(b * 255));
+    }
+
+    /// LED-Farben einer Zone zum Zeitpunkt t (Sekunden). temp = aktuelle Temperatur (für Temperatur-Effekte)
+    public static Color[] Render(CustomEffect fx, int zone, int count, double t, float? temp)
+    {
+        var res = new Color[Math.Max(1, count)];
+        var pal = fx.Colors.Select(Color.FromArgb).ToList();
+        if (pal.Count == 0) pal.Add(Color.FromArgb(0, 120, 255));
+        float speed = Math.Clamp(fx.Speed, 1, 100) / 100f;
+        float width = Math.Max(2, fx.Width);
+        float bright = Math.Clamp(fx.Brightness, 5, 100) / 100f;
+        float dir = fx.Reverse ? -1 : 1;
+        float min = Math.Clamp(fx.MinLevel, 0, 100) / 100f;
+        _soft = Math.Clamp(fx.Softness, 0, 100) / 100f;
+        int n = res.Length;
+        float Level(float l) => min + (1 - min) * Math.Clamp(l, 0, 1);
+
+        for (int idx = 0; idx < n; idx++)
+        {
+            // Von der Mitte aus: beide Hälften laufen gespiegelt
+            int i = fx.Mirror ? (int)MathF.Round(MathF.Abs(idx - (n - 1) / 2f)) : idx;
+            float pos = i / width;
+            Color c;
+            switch (fx.Type)
+            {
+                case EffectType.Breathing:
+                {
+                    float period = 9f - speed * 7.5f;                // 9 s … 1,5 s
+                    double cycle = t / period;
+                    int k = (int)Math.Floor(cycle);
+                    float phase = (float)(cycle - k);
+                    float level = MathF.Pow(MathF.Sin(phase * MathF.PI), 2);
+                    // Weichheit: 0 = An/Aus-Blinken, 1 = sanftes Atmen
+                    level = _soft >= 0.98f ? level : Shape(level);
+                    c = Scale(pal[((k % pal.Count) + pal.Count) % pal.Count], Level(level));
+                    break;
+                }
+                case EffectType.Wave:
+                    c = Palette(pal, pos - dir * (float)(t * (0.05 + speed * 1.2)));
+                    break;
+                case EffectType.RainbowWave:
+                    c = Hue(pos * 360f - dir * (float)(t * (20 + speed * 300)));
+                    break;
+                case EffectType.Gradient:
+                    c = Palette(pal, (float)i / Math.Max(1, n - 1) * 0.999f - dir * (float)(t * speed * 0.15), cyclic: speed > 0.05f);
+                    break;
+                case EffectType.Comet:
+                {
+                    float span = n + width;
+                    float head = (float)((t * (3 + speed * 60)) % span);
+                    if (fx.Reverse) head = span - head;
+                    float d = fx.Reverse ? i - head : head - i;
+                    float tail = d >= 0 && d < width ? 1 - d / width : 0;
+                    tail = _soft < 0.3f ? (tail > 0 ? 1 : 0) : MathF.Pow(tail, 2.5f - _soft * 1.5f);
+                    var bg = pal.Count > 1 ? Scale(pal[1], Math.Max(min, 0.02f)) : Scale(pal[0], min);
+                    c = Lerp(bg, pal[0], tail);
+                    break;
+                }
+                case EffectType.Sparkle:
+                {
+                    var bg = Scale(pal.Count > 2 ? pal[^1] : Color.FromArgb(40, 40, 90), Math.Max(min, 0.05f));
+                    var key = (zone, idx);
+                    Sparks.TryGetValue(key, out float lvl);
+                    // Weichheit = wie langsam ein Funke verglimmt
+                    lvl = Math.Max(0, lvl - (0.02f + (1 - _soft) * 0.25f) - speed * 0.05f);
+                    if (Rnd.NextDouble() < 0.004 + speed * 0.03) lvl = 1;
+                    Sparks[key] = lvl;
+                    var sparkCol = pal[(i * 7 + zone) % Math.Max(1, pal.Count > 2 ? pal.Count - 1 : pal.Count)];
+                    c = Lerp(bg, sparkCol, lvl);
+                    break;
+                }
+                case EffectType.ColorCycle:
+                    c = Palette(pal, (float)(t * (0.02 + speed * 0.3)));
+                    break;
+                case EffectType.Fire:
+                {
+                    float noise = (float)(Math.Sin(i * 1.7 + t * (3 + speed * 9)) * 0.5 + Math.Sin(i * 0.6 - t * (2 + speed * 5)) * 0.3
+                                          + Rnd.NextDouble() * 0.4);
+                    c = Scale(Palette(pal, Math.Clamp(noise * 0.5f + 0.4f, 0, 0.999f), cyclic: false), Level(0.3f + noise * 0.6f));
+                    break;
+                }
+                default:   // Temperatur-Welle
+                {
+                    var tc = RgbService.TempColor(temp ?? 50);
+                    float wave = 0.5f + 0.5f * MathF.Sin(pos * MathF.PI * 2 - dir * (float)(t * (1 + speed * 6)));
+                    c = Scale(tc, Level(_soft >= 0.98f ? wave : Shape(wave)));
+                    break;
+                }
+            }
+            res[idx] = Scale(c, bright);
+        }
+        return res;
+    }
+}
+
+/// Spielt den eigenen Effekt ab (ca. 20 Bilder pro Sekunde, eigener Hintergrund-Thread)
+sealed class EffectEngine
+{
+    readonly RgbService _svc;
+    Thread? _thread;
+    volatile bool _run;
+    public Color[]? Preview { get; private set; }
+
+    public EffectEngine(RgbService svc) => _svc = svc;
+    public bool Running => _run;
+
+    public void Start()
+    {
+        if (_run) return;
+        _run = true;
+        _thread = new Thread(Loop) { IsBackground = true, Name = "RGB-Effekte" };
+        _thread.Start();
+    }
+
+    public void Stop()
+    {
+        _run = false;
+        _thread?.Join(1500);
+        _thread = null;
+    }
+
+    void Loop()
+    {
+        var dev = _svc.Device;
+        try { dev.EnterDirect(); }
+        catch (Exception ex) { RgbSettings.Log("Direkt-Modus: " + ex.Message); }
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        int fails = 0;
+        while (_run)
+        {
+            long start = sw.ElapsedMilliseconds;
+            try
+            {
+                var fx = _svc.Settings.Effect;
+                float? temp = _svc.Temperature();
+                double t = sw.Elapsed.TotalSeconds;
+                var frame = dev.Zones.Select(z => EffectRenderer.Render(fx, z.Index, z.LedCount, t, temp)).ToList();
+                Preview = EffectRenderer.Render(fx, 99, 60, t, temp);
+                if (!dev.WriteFrame(frame))
+                {
+                    if (++fails == 20) RgbSettings.Log("Bilder kommen nicht an: " + dev.LastError);
+                }
+                else fails = 0;
+            }
+            catch (Exception ex) { RgbSettings.Log("Effekt: " + ex.Message); }
+            int wait = 50 - (int)(sw.ElapsedMilliseconds - start);
+            if (wait > 0) Thread.Sleep(wait);
+        }
+        try { dev.ExitDirect(); } catch { }
+    }
+}
+
+/// Live-Vorschau des eigenen Effekts als Leiste
+sealed class LedPreview : Control
+{
+    readonly EffectEngine _engine;
+    readonly System.Windows.Forms.Timer _timer = new() { Interval = 50 };
+
+    public LedPreview(EffectEngine engine)
+    {
+        _engine = engine;
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+        BackColor = Theme.Card;
+        _timer.Tick += (_, _) => { if (Visible) Invalidate(); };
+        _timer.Start();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _timer.Dispose();
+        base.Dispose(disposing);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.Clear(BackColor);
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        var cols = _engine.Preview;
+        if (cols == null || cols.Length == 0)
+        {
+            TextRenderer.DrawText(g, "Vorschau startet …", Font, ClientRectangle, Theme.Muted,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            return;
+        }
+        float w = (Width - 20f) / cols.Length;
+        float d = Math.Min(w * 0.8f, Height - 16f);
+        for (int i = 0; i < cols.Length; i++)
+        {
+            float x = 10 + i * w + (w - d) / 2, y = (Height - d) / 2;
+            var c = cols[i];
+            using (var glow = new SolidBrush(Color.FromArgb(60, c))) g.FillEllipse(glow, x - d * 0.3f, y - d * 0.3f, d * 1.6f, d * 1.6f);
+            using var b = new SolidBrush(c);
+            g.FillEllipse(b, x, y, d, d);
+        }
+    }
+}
+
+/// Farbliste: bis zu 6 Farben, anklicken zum Ändern, + / – zum Hinzufügen und Entfernen
+sealed class ColorListEditor : Panel
+{
+    readonly List<int> _colors;
+    readonly Action _save;
+    float K => DeviceDpi / 96f;
+    int S(float px) => (int)(px * K);
+
+    public ColorListEditor(List<int> colors, Action save)
+    {
+        _colors = colors;
+        _save = save;
+        if (_colors.Count == 0) _colors.Add(Color.FromArgb(0, 120, 255).ToArgb());
+        BackColor = Theme.Card;
+        Height = 60;
+        Rebuild();
+    }
+
+    protected override void OnCreateControl()
+    {
+        base.OnCreateControl();
+        Rebuild();
+    }
+
+    void Rebuild()
+    {
+        SuspendLayout();
+        foreach (Control c in Controls.Cast<Control>().ToList()) { Controls.Remove(c); c.Dispose(); }
+        int x = S(14), y = S(10), sz = S(40);
+        for (int i = 0; i < _colors.Count; i++)
+        {
+            int idx = i;
+            var col = Color.FromArgb(_colors[i]);
+            var b = new Button
+            {
+                BackColor = col, FlatStyle = FlatStyle.Flat, Location = new Point(x, y), Size = new Size(sz, sz),
+                Cursor = Cursors.Hand, Text = "",
+            };
+            b.FlatAppearance.BorderColor = Theme.Border;
+            b.FlatAppearance.BorderSize = 2;
+            new ToolTip().SetToolTip(b, $"Farbe {i + 1} – klicken zum Ändern, Rechtsklick zum Entfernen");
+            b.Click += (_, _) =>
+            {
+                using var dlg = new ColorDialog { Color = col, FullOpen = true };
+                if (dlg.ShowDialog(FindForm()) != DialogResult.OK) return;
+                _colors[idx] = dlg.Color.ToArgb();
+                _save();
+                BeginInvoke(Rebuild);
+            };
+            b.MouseUp += (_, e) =>
+            {
+                if (e.Button != MouseButtons.Right || _colors.Count <= 1) return;
+                _colors.RemoveAt(idx);
+                _save();
+                BeginInvoke(Rebuild);
+            };
+            Controls.Add(b);
+            x += sz + S(10);
+        }
+        if (_colors.Count < 6)
+        {
+            var add = PageBar.Button("+ Farbe", K, 100);
+            add.Location = new Point(x + S(6), y + (sz - S(30)) / 2);
+            add.Height = S(30);
+            add.Click += (_, _) =>
+            {
+                var last = Color.FromArgb(_colors[^1]);
+                // neue Farbe: Farbton der letzten um 60° weiterdrehen
+                float h = last.GetHue() + 60;
+                _colors.Add(EffectRenderer.Hue(h).ToArgb());
+                _save();
+                BeginInvoke(Rebuild);
+            };
+            Controls.Add(add);
+            x = add.Right + S(14);
+        }
+        var hint = new Label
+        {
+            Text = "Klick = Farbe ändern · Rechtsklick = entfernen", ForeColor = Theme.Muted, AutoSize = true,
+            Location = new Point(x + S(6), y + sz / 2 - S(8)), UseMnemonic = false,
+        };
+        Controls.Add(hint);
+        Height = y + sz + S(10);
+        ResumeLayout();
+    }
 }
