@@ -192,7 +192,9 @@ sealed class MainForm : Form
     FanController? _fans;
     FanView? _fanView;
     readonly NotifyIcon _tray;
-    readonly TabButton _tempTab, _fanTab, _setTab, _anaTab;
+    readonly TabButton _tempTab, _fanTab, _setTab, _anaTab, _rgbTab;
+    RgbView? _rgbView;
+    RgbService? _rgb;
     SettingsView? _settingsView;
     AnalysisView? _analysis;
     KeySensors? _keys;
@@ -312,12 +314,15 @@ sealed class MainForm : Form
         _setTab = new TabButton("Einstellungen") { Dock = DockStyle.Left, Width = (int)(150 * K) };
         _fanTab = new TabButton("Lüfter") { Dock = DockStyle.Left, Width = (int)(130 * K) };
         _anaTab = new TabButton("Analyse") { Dock = DockStyle.Left, Width = (int)(130 * K) };
+        _rgbTab = new TabButton("RGB") { Dock = DockStyle.Left, Width = (int)(100 * K), Visible = false };
         _tempTab = new TabButton("Übersicht") { Dock = DockStyle.Left, Width = (int)(140 * K), Selected = true };
         _tempTab.Click += (_, _) => { ShowTab(0); ShowDashboard(); };
         _fanTab.Click += (_, _) => ShowTab(1);
         _setTab.Click += (_, _) => ShowTab(2);
         _anaTab.Click += (_, _) => ShowTab(3);
+        _rgbTab.Click += (_, _) => ShowTab(4);
         nav.Controls.Add(_setTab);   // Dock Left: zuletzt hinzugefügt steht ganz links
+        nav.Controls.Add(_rgbTab);
         nav.Controls.Add(_anaTab);
         nav.Controls.Add(_fanTab);
         nav.Controls.Add(_tempTab);
@@ -436,6 +441,7 @@ sealed class MainForm : Form
             _analysis = null;
             ErrorLog.Write("Analyse", ex);
         }
+        StartRgb();
         ApplyOverlay();
 
         UpdateTrayMenu();
@@ -459,6 +465,9 @@ sealed class MainForm : Form
         if (tab == 1 && _fanView == null) tab = 0;
         if (tab == 2 && _settingsView == null) tab = 0;
         if (tab == 3 && _analysis == null) tab = 0;
+        if (tab == 4 && _rgbView == null) tab = 0;
+        _rgbTab.Selected = tab == 4;
+        if (_rgbView != null) _rgbView.Visible = tab == 4;
         _tempTab.Selected = tab == 0;
         _fanTab.Selected = tab == 1;
         _setTab.Selected = tab == 2;
@@ -472,6 +481,33 @@ sealed class MainForm : Form
             if (tab == 3) _analysis.Activate();
         }
         if (tab == 1) _fanView?.RefreshValues();
+    }
+
+    /// RGB-Controller des Mainboards im Hintergrund suchen; gefunden -> Reiter "RGB" einblenden
+    void StartRgb()
+    {
+        Task.Run(() =>
+        {
+            Program.Step("RGB suchen");
+            var dev = PolychromeUsb.Probe();
+            if (dev == null) return;
+            try
+            {
+                BeginInvoke(() =>
+                {
+                    try
+                    {
+                        _rgb = new RgbService(dev, () => _keys);
+                        _rgbView = new RgbView(_rgb) { Dock = DockStyle.Fill, Visible = false };
+                        Controls.Add(_rgbView);
+                        _rgbView.BringToFront();
+                        _rgbTab.Visible = true;
+                    }
+                    catch (Exception ex) { ErrorLog.Write("RGB", ex); }
+                });
+            }
+            catch { }
+        });
     }
 
     /// Overlay passend zur Einstellung ein-/ausblenden
@@ -937,6 +973,7 @@ sealed class MainForm : Form
                 else if (_tray.Icon != Icon) _tray.Icon = Icon ?? SystemIcons.Application;
             }
             if (_overlay is { IsDisposed: false }) _overlay.Invalidate();
+            try { _rgb?.TickTemperature(); } catch (Exception rex) { ErrorLog.Write("RGB", rex); }
             try { _analysis?.Tick(_analysis.Visible && Visible && WindowState != FormWindowState.Minimized); }
             catch (Exception tex) { ErrorLog.Write("Kühlungs-Test", tex); }
 
