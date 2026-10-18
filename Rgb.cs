@@ -201,7 +201,7 @@ sealed class RgbZone
     public string Name { get; init; } = "";
     public RgbZoneKind Kind { get; init; }
     public int LedCount { get; set; }
-    public bool RgSwap { get; init; }
+    public bool RgSwap { get; set; }
 }
 
 sealed class PolychromeUsb : IDisposable
@@ -295,10 +295,24 @@ sealed class PolychromeUsb : IDisposable
         return Zones.Count > 0;
     }
 
+    /// Vom Nutzer gesetzt: Rot/Grün am Mainboard tauschen
+    public bool SwapRgFix { get; set; }
+
+    /// Farbreihenfolge neu lesen (ein anderes Programm wie OpenRGB kann sie geändert haben)
+    public void RefreshConfig()
+    {
+        var swap = Transfer(Msg(0x14, 0x03));
+        if (swap == null || swap.Length <= 4) return;
+        byte bits = swap[4];
+        foreach (var z in Zones) z.RgSwap = ((bits >> z.Index) & 1) != 0;
+        RgbSettings.Log($"Konfig neu gelesen: Tausch {bits:X2}");
+    }
+
     /// Effekt einer Zone setzen. speed 0–100 (100 = schnell)
     public bool SetZone(RgbZone z, byte mode, Color c, int speed)
     {
         byte sp = (byte)Math.Clamp(255 - speed * 255 / 100, 0, 255);
+        if (SwapRgFix) c = Color.FromArgb(c.G, c.R, c.B);
         byte first = z.RgSwap ? c.R : c.G, second = z.RgSwap ? c.G : c.R;
         return Transfer(Msg(0x10, (byte)z.Index, (3, mode), (4, first), (5, second), (6, c.B), (7, sp), (8, 0xFF))) != null;
     }
@@ -343,8 +357,9 @@ sealed class PolychromeUsb : IDisposable
             for (int l = 0; l < z.LedCount; l++)
             {
                 var c = l < cols.Length ? cols[l] : Color.Black;
-                bytes.Add(z.RgSwap ? c.R : c.G);
-                bytes.Add(z.RgSwap ? c.G : c.R);
+                bool sw = z.RgSwap ^ SwapRgFix;
+                bytes.Add(sw ? c.R : c.G);
+                bytes.Add(sw ? c.G : c.R);
                 bytes.Add(c.B);
             }
             capacity += z.Kind == RgbZoneKind.Addressable ? 100 : z.LedCount;
@@ -397,6 +412,8 @@ sealed class RgbSettings
     public List<string> DisabledTargets { get; set; } = new();
     /// OpenRGB automatisch mitstarten: null = noch nicht gefragt
     public bool? OpenRgbAuto { get; set; }
+    /// Geräte, bei denen Rot und Grün vertauscht ankommen (Häkchen in der Geräteliste)
+    public List<string> SwapRG { get; set; } = new();
     /// Mainboard: jede LED einzeln (Direktmodus, experimentell) statt einer Farbe je Zone
     public bool BoardPerLed { get; set; }
 
@@ -467,12 +484,13 @@ sealed class RgbService
         if (Ite8291Lightbar.Probe() is Ite8291Lightbar lb) Targets.Add(lb);
         _keys = keys;
         Settings = RgbSettings.Load();
+        if (dev != null) dev.SwapRgFix = Settings.SwapRG.Contains("polychrome");
         Engine = new EffectEngine(this);
         if (dev == null) Settings.Custom = true;   // ohne Mainboard-Controller gibt es nur eigene Effekte
         if (Settings.Custom) Engine.Start();
         else if (Settings.ApplyOnStart) Task.Run(ApplyAll);
         new Thread(Discover) { IsBackground = true, Name = "RGB-Suche" }.Start();
-        if (Settings.OpenRgbAuto == true) StartOpenRgb();
+        if (Settings.OpenRgbAuto == true && Settings.Custom) StartOpenRgb();
     }
 
     public EffectEngine Engine { get; }
@@ -568,8 +586,20 @@ sealed class RgbService
         if (Device == null) on = true;
         Settings.Custom = on;
         Settings.Save();
-        if (on) Engine.Start();
-        else Task.Run(() => { Engine.Stop(); ApplyAll(); });
+        if (on)
+        {
+            Engine.Start();
+            if (Settings.OpenRgbAuto == true) StartOpenRgb();
+        }
+        else Task.Run(() =>
+        {
+            Engine.Stop();
+            // Mainboard-Effekte: OpenRGB darf nicht dazwischenfunken
+            OpenRgbManager.Stop();
+            Thread.Sleep(800);
+            try { Device?.RefreshConfig(); } catch { }
+            ApplyAll();
+        });
     }
 
     /// Beim Beenden: eigene Effekte stoppen, das Mainboard übernimmt mit seinen Effekten
@@ -752,6 +782,17 @@ sealed class RgbView : FlowLayoutPanel
                 if (v) st.DisabledTargets.Remove(tt.Id); else if (!st.DisabledTargets.Contains(tt.Id)) st.DisabledTargets.Add(tt.Id);
                 st.Save();
             });
+            var swapBox = top.Check("      ↳ Rot und Grün sind vertauscht (Haken = korrigieren)", st.SwapRG.Contains(t.Id), v =>
+            {
+                if (v) { if (!st.SwapRG.Contains(tt.Id)) st.SwapRG.Add(tt.Id); } else st.SwapRG.Remove(tt.Id);
+                st.Save();
+                if (tt is PolychromeTarget && _svc.Device != null)
+                {
+                    _svc.Device.SwapRgFix = v;
+                    if (!st.Custom) Task.Run(_svc.ApplyAll);
+                }
+            });
+            swapBox.ForeColor = Theme.Muted;
         }
         if (_svc.Device != null && st.OpenRgbAuto != true)
         {
@@ -1275,6 +1316,9 @@ sealed class EffectEngine
                     var frame = new List<Color[]>(segs.Length);
                     for (int si = 0; si < segs.Length; si++)
                         frame.Add(EffectRenderer.Render(fx, ti * 16 + si, segs[si], t, temp));
+                    if (target is not PolychromeTarget && _svc.Settings.SwapRG.Contains(target.Id))   // Mainboard tauscht selbst (SwapRgFix)
+                        foreach (var seg in frame)
+                            for (int k = 0; k < seg.Length; k++) seg[k] = Color.FromArgb(seg[k].G, seg[k].R, seg[k].B);
                     if (!target.Write(frame))
                     {
                         fails[target] = fails.GetValueOrDefault(target) + 1;
