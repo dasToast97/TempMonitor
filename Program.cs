@@ -775,6 +775,7 @@ sealed class MainForm : Form
             HardwareType.Cpu => new[] { "Package", "Tctl/Tdie", "Tdie", "Tctl", "Core Average", "Core Max" },
             HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel => new[] { "GPU Core", "Core", "Edge" },
             HardwareType.Motherboard => new[] { "System", "Motherboard", "Mainboard", "PCH", "Chipset" },
+            HardwareType.Storage => new[] { "Composite", "Temperature #1", "Temperature" },
             _ => Array.Empty<string>(),
         };
         foreach (var p in prefs)

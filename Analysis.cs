@@ -857,7 +857,10 @@ sealed class HealthPanel : Panel
             var used = sensors.FirstOrDefault(s => s.SensorType == SensorType.Level && s.Name.Contains("Percentage Used", StringComparison.OrdinalIgnoreCase));
             if (rem?.Value is float r) life = r;
             else if (used?.Value is float u) life = Math.Max(0, 100 - u);
-            var temp = sensors.Where(s => s.SensorType == SensorType.Temperature && s.Value is > 0 and < 120).Select(s => s.Value!.Value).DefaultIfEmpty(float.NaN).Max();
+            // Hauptwert wie in der Übersicht (z. B. "Composite Temperature"), nicht der heißeste Einzelsensor:
+            // manche SSDs (Samsung 980) melden zusätzlich einen Controller-Wert, der weit höher liegt
+            var tempSensors = sensors.Where(s => s.SensorType == SensorType.Temperature && s.Value is > 0 and < 120).ToList();
+            var temp = tempSensors.Count > 0 && MainForm.PickMain(hw, tempSensors).Value is float tv ? tv : float.NaN;
             var written = sensors.FirstOrDefault(s => s.SensorType == SensorType.Data && s.Name.Contains("Written", StringComparison.OrdinalIgnoreCase))?.Value;
             var errors = sensors.FirstOrDefault(s => s.Name.Contains("Media Errors", StringComparison.OrdinalIgnoreCase) || s.Name.Contains("Reallocated", StringComparison.OrdinalIgnoreCase))?.Value;
 
