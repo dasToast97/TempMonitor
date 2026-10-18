@@ -73,7 +73,7 @@ misst das Programm nur alle 2 Sekunden.
 - **Kühlungs-Test:** lastet den Prozessor 3/5/10 Minuten voll aus, misst Höchst- und Dauertemperatur, Leistung,
   Heruntertakten und vergleicht mit früheren Tests (z. B. vor/nach dem Entstauben).
 
-**Sicherheit (optional, standardmäßig aus):** Notkühlung mit einstellbaren Grenzwerten für CPU, GPU und Mainboard
+**Sicherheit (Notkühlung standardmäßig an):** Notkühlung mit einstellbaren Grenzwerten für CPU, GPU und Mainboard
 und Stillstand-Erkennung. Beim Beenden oder Absturz übernimmt immer wieder das BIOS.
 
 **AMD-Grafikkarten ab RX 6000:** Die Lüfter werden über AMD Overdrive 8 gesteuert (wie das Lüfter-Tuning

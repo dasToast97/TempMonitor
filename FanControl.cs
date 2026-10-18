@@ -167,8 +167,9 @@ sealed class FanSettings
     /// Zieltemperaturen je Profil: [CPU, GPU, Mainboard]
     public Dictionary<string, float[]> Targets { get; set; } = new();
 
-    // Sicherheitsfunktionen – standardmäßig aus, in den Einstellungen einschaltbar
-    public bool EmergencyEnabled { get; set; }
+    // Sicherheitsfunktionen – Notkühlung standardmäßig an (Schutz der Hardware geht vor)
+    public bool EmergencyEnabled { get; set; } = true;
+    public bool SafetyDefaultMigrated { get; set; } = true;
     public float CpuCritical { get; set; } = 90f;
     public float GpuCritical { get; set; } = 85f;
     public float BoardCritical { get; set; } = 80f;
@@ -238,7 +239,14 @@ sealed class FanSettings
         {
             if (File.Exists(FilePath))
             {
-                var s = JsonSerializer.Deserialize<FanSettings>(File.ReadAllText(FilePath)) ?? new();
+                var json = File.ReadAllText(FilePath);
+                var s = JsonSerializer.Deserialize<FanSettings>(json) ?? new();
+                if (!json.Contains("\"SafetyDefaultMigrated\""))
+                {
+                    // Einmalig: Notkühlung für bestehende Installationen einschalten (war früher standardmäßig aus)
+                    s.EmergencyEnabled = true;
+                    s.SafetyDefaultMigrated = true;
+                }
                 if (s.LearnVersion == 2)
                 {
                     // Version 3: früher konnte die Wirkung negativ gemessen werden (Bauteil heizt gerade auf)
