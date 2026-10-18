@@ -69,6 +69,8 @@ sealed class OpenRgbClient : IDisposable
             Dispose();
             var tcp = new TcpClient { NoDelay = true, ReceiveTimeout = 2000, SendTimeout = 2000 };
             var task = tcp.ConnectAsync("127.0.0.1", 6742);
+            // Fehler beim Verbinden (OpenRGB läuft nicht) still abfangen – sonst meldet .NET später einen Fehler
+            task.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
             if (!task.Wait(600) || !tcp.Connected) { tcp.Dispose(); Status = "OpenRGB läuft nicht (oder SDK-Server aus)"; return false; }
             _tcp = tcp;
             _net = tcp.GetStream();

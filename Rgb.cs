@@ -73,6 +73,32 @@ static class Hid
         return null;
     }
 
+    /// Diagnose: alle HID-Geräte mit Kennung und Berichtsgrößen (nur lesen, ohne Zugriffsrechte)
+    public static List<string> DescribeAll()
+    {
+        var res = new List<string>();
+        foreach (var path in Paths(0))
+        {
+            try
+            {
+                using var h = CreateFile(path, 0, 0x3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+                if (h.IsInvalid) continue;
+                var attr = new HiddAttributes { Size = Marshal.SizeOf<HiddAttributes>() };
+                if (!HidD_GetAttributes(h, ref attr)) continue;
+                string caps = "";
+                if (HidD_GetPreparsedData(h, out var pre))
+                {
+                    HidP_GetCaps(pre, out var c);
+                    HidD_FreePreparsedData(pre);
+                    caps = $" Usage {c.UsagePage:X4}:{c.Usage:X4} In {c.InputReportByteLength} Out {c.OutputReportByteLength} Feature {c.FeatureReportByteLength}";
+                }
+                res.Add($"{attr.VendorID:X4}:{attr.ProductID:X4} v{attr.VersionNumber:X4}{caps}");
+            }
+            catch { }
+        }
+        return res.Distinct().OrderBy(x => x).ToList();
+    }
+
     static List<string> Paths(ushort vid)
     {
         var list = new List<string>();
@@ -93,7 +119,7 @@ static class Hid
                     Marshal.WriteInt32(buf, IntPtr.Size == 8 ? 8 : 6);
                     if (!SetupDiGetDeviceInterfaceDetail(set, ref ifd, buf, size, out _, IntPtr.Zero)) continue;
                     var path = Marshal.PtrToStringUni(buf + 4) ?? "";
-                    if (path.Contains($"vid_{vid:x4}", StringComparison.OrdinalIgnoreCase)) list.Add(path);
+                    if (vid == 0 || path.Contains($"vid_{vid:x4}", StringComparison.OrdinalIgnoreCase)) list.Add(path);
                 }
                 finally { Marshal.FreeHGlobal(buf); }
             }
@@ -414,6 +440,7 @@ sealed class RgbService
         Device = dev;
         if (dev != null) Targets.Add(new PolychromeTarget(dev));
         _keyboard = IteKeyboardTarget.Probe();
+        Task.Run(Diagnose);
         if (_keyboard != null) Targets.Add(_keyboard);
         _keys = keys;
         Settings = RgbSettings.Load();
@@ -425,6 +452,22 @@ sealed class RgbService
     }
 
     public EffectEngine Engine { get; }
+
+    /// Einmal je Start: welche Beleuchtungs-Hardware gibt es? (nur lesen) -> rgb.log
+    static void Diagnose()
+    {
+        try
+        {
+            var all = Hid.DescribeAll();
+            RgbSettings.Log($"HID-Geräte ({all.Count}): " + string.Join(" | ", all));
+            if (UniwillEc.Current is UniwillEc ec)
+            {
+                var regs = new ushort[] { 0x0740, 0x0766, 0x0767, 0x078C, 0x1801, 0x1802, 0x1803, 0x1805, 0x1808 };
+                RgbSettings.Log("Laptop-EC: " + string.Join(" ", regs.Select(r => $"{r:X4}={(ec.Read(r) is byte b ? b.ToString("X2") : "--")}")));
+            }
+        }
+        catch (Exception ex) { RgbSettings.Log("Diagnose: " + ex.Message); }
+    }
 
     /// Im Hintergrund: OpenRGB und Oasis suchen (alle 30 s, falls sie später gestartet werden)
     void Discover()

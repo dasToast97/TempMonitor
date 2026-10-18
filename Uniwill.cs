@@ -18,6 +18,8 @@ sealed class UniwillEc
     const ushort RegMode = 0x0751, RegManual = 0x0741, RegFan1 = 0x1804, RegFan2 = 0x1809;
     const byte FullFanBit = 0x40;
     public const int SpeedMax = 200;
+    /// Zuletzt gefundene Schnittstelle (für Diagnose)
+    public static UniwillEc? Current { get; private set; }
 
     static readonly string LogPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "laptop.log");
@@ -123,6 +125,7 @@ sealed class UniwillEc
                     Log($"EC bereit · Board {ec.Board} · Barebone-ID 0x{id:X2} · Modus 0x{mode:X2} · " +
                         $"Lüfter {ec._current[0]:0} % / {ec._current[1]:0} % · Methode {pick.Name}({inp.Name}{(inp.IsArray ? "[]" : "")})");
                     Instance = ec;
+                    Current = ec;
                     return ec;
                 }
             }
