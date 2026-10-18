@@ -686,9 +686,7 @@ sealed class RgbView : FlowLayoutPanel
     {
         var st = _svc.Settings;
         if (MessageBox.Show(FindForm(),
-                "OpenRGB jetzt einrichten?
-
-Toast Temperatur lädt OpenRGB (Open Source, GPL-2.0) einmalig von codeberg.org/OpenRGB herunter " +
+                "OpenRGB jetzt einrichten?\n\nToast Temperatur lädt OpenRGB (Open Source, GPL-2.0) einmalig von codeberg.org/OpenRGB herunter " +
                 "und startet es künftig automatisch unsichtbar mit. Danach laufen die eigenen Effekte über OpenRGB.",
                 "OpenRGB einrichten", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
         using var progress = new ProgressForm("OpenRGB wird eingerichtet …");
@@ -697,9 +695,7 @@ Toast Temperatur lädt OpenRGB (Open Source, GPL-2.0) einmalig von codeberg.org/
         progress.Close();
         if (!ok)
         {
-            MessageBox.Show(FindForm(), OpenRgbManager.Status + "
-
-Alternativ: OpenRGB von openrgb.org selbst installieren und den SDK-Server starten.",
+            MessageBox.Show(FindForm(), OpenRgbManager.Status + "\n\nAlternativ: OpenRGB von openrgb.org selbst installieren und den SDK-Server starten.",
                 "OpenRGB", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
