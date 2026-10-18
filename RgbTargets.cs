@@ -33,7 +33,8 @@ sealed class PolychromeTarget : IRgbTarget
     DateTime _lastSend;
     int _errors;
 
-    public PolychromeTarget(PolychromeUsb dev, Func<bool> perLed) { _dev = dev; _perLed = perLed; }
+    readonly Func<int, bool> _zoneOn;
+    public PolychromeTarget(PolychromeUsb dev, Func<bool> perLed, Func<int, bool> zoneOn) { _dev = dev; _perLed = perLed; _zoneOn = zoneOn; }
     public string Id => "polychrome";
     public string Name => "Mainboard (ASRock Polychrome)";
     public string Kind => "Mainboard";
@@ -59,6 +60,7 @@ sealed class PolychromeTarget : IRgbTarget
         for (int i = 0; i < _dev.Zones.Count && i < s.Count; i++)
         {
             var z = _dev.Zones[i];
+            if (!_zoneOn(z.Index)) continue;
             var seg = s[i];
             if (seg.Length == 0) continue;
             var c = seg[seg.Length / 2];

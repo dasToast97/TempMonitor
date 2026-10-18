@@ -417,6 +417,8 @@ sealed class RgbSettings
     /// Eigene Effekte, aber das Mainboard läuft mit seinen eigenen (stabilen) Effekten
     public bool BoardHardware { get; set; } = true;
     public bool BoardFollowMigrated { get; set; } = true;
+    /// Mainboard-Anschlüsse ohne Beleuchtung: werden bei eigenen Effekten nicht angesprochen (weniger Befehle = weniger Blitze)
+    public List<int> BoardZonesOff { get; set; } = new();
     /// Mainboard: jede LED einzeln (Direktmodus, experimentell) statt einer Farbe je Zone
     public bool BoardPerLed { get; set; }
 
@@ -489,7 +491,7 @@ sealed class RgbService
     public RgbService(PolychromeUsb? dev, Func<KeySensors?> keys)
     {
         Device = dev;
-        if (dev != null) Targets.Add(new PolychromeTarget(dev, () => Settings?.BoardPerLed == true));
+        if (dev != null) Targets.Add(new PolychromeTarget(dev, () => Settings?.BoardPerLed == true, z => Settings?.BoardZonesOff.Contains(z) != true));
         _keyboard = IteKeyboardTarget.Probe();
         Task.Run(Diagnose);
         if (_keyboard != null) Targets.Add(_keyboard);
@@ -931,6 +933,16 @@ sealed class RgbView : FlowLayoutPanel
         {
             var info = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
             info.Note("Mainboard: " + string.Join(" · ", board.Zones.Select(z => z.Kind == RgbZoneKind.Addressable ? $"{z.Name} ({z.LedCount} LEDs)" : z.Name)));
+            info.Note("Benutzte Anschlüsse – nur wo wirklich Beleuchtung dranhängt (weniger Befehle ans Mainboard = weniger Blitze):", muted: false);
+            foreach (var z in board.Zones)
+            {
+                var zz = z;
+                info.Check(z.Name, !st.BoardZonesOff.Contains(z.Index), v =>
+                {
+                    if (v) st.BoardZonesOff.Remove(zz.Index); else if (!st.BoardZonesOff.Contains(zz.Index)) st.BoardZonesOff.Add(zz.Index);
+                    st.Save();
+                });
+            }
             foreach (var z in board.Zones.Where(z => z.Kind == RgbZoneKind.Addressable))
             {
                 var zz = z;
