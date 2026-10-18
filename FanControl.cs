@@ -433,6 +433,7 @@ sealed class FanChannel
     /// Ergebnis des letzten Erkennens (für die Nachfrage in der Oberfläche)
     public string? IdentifyResult;
     public volatile bool IdentifyFinished;
+    public float IdentifyStartCpu, IdentifyStartGpu;
     public int ReadbackMismatchTicks;
     public float? DriverTemp;
 
@@ -1191,7 +1192,9 @@ sealed class FanController
         {
             float rpm = ch.Rpm?.Value ?? -1;
             // Drehender Lüfter: anhalten – Stillstand sieht und hört man sofort. Steht er gerade: hochdrehen.
-            ch.IdentifyStop = rpm < 0 || rpm >= 300;
+            ch.IdentifyStop = (rpm < 0 || rpm >= 300) && SafeToStop(out _);
+            ch.IdentifyStartCpu = Temp(Component.Cpu) ?? 0;
+            ch.IdentifyStartGpu = Temp(Component.Hotspot) ?? Temp(Component.Gpu) ?? 0;
             // Pumpen nur kurz anhalten (Wasser puffert die Wärme), Lüfter etwas länger
             ch.IdentifyUntil = DateTime.Now.AddSeconds(ch.IdentifyStop && ch.Kind == FanKind.Pump ? 5 : 7);
             ch.IdentifyStartRpm = rpm;
@@ -1204,6 +1207,17 @@ sealed class FanController
             ch.TestStart = null;
             ch.Faulted = false;
         }
+    }
+
+    /// Darf ein Lüfter zum Erkennen kurz angehalten werden? Nur wenn alles kühl ist (Schutz geht vor).
+    public bool SafeToStop(out string? why)
+    {
+        why = null;
+        if (Temp(Component.Cpu) is float c && c >= 75) why = $"CPU ist {c:0} °C warm";
+        else if (Temp(Component.Gpu) is float g && g >= 80) why = $"Grafikkarte ist {g:0} °C warm";
+        else if (Temp(Component.Hotspot) is float h && h >= 90) why = $"GPU-Hot-Spot ist {h:0} °C warm";
+        else if (Temp(Component.Board) is float b && b >= 60) why = $"Mainboard ist {b:0} °C warm";
+        return why == null;
     }
 
     public void ResetLearning(FanChannel ch)
@@ -1320,8 +1334,17 @@ sealed class FanController
         // ----- Erkennen: einige Sekunden anhalten (oder hochdrehen, wenn er steht) -----
         if (DateTime.Now < ch.IdentifyUntil)
         {
-            // Sicherheit: bei heißer CPU/GPU nicht anhalten
-            if (ch.IdentifyStop && (Temp(Component.Cpu) >= 85 || Temp(Component.Hotspot) >= 100)) ch.IdentifyStop = false;
+            // Schutz geht vor: wird es während des Anhaltens warm, sofort abbrechen und voll kühlen
+            if (ch.IdentifyStop)
+            {
+                float cpu = Temp(Component.Cpu) ?? 0, gpu = Temp(Component.Hotspot) ?? Temp(Component.Gpu) ?? 0;
+                if (cpu >= 85 || gpu >= 100 || (Temp(Component.Gpu) ?? 0) >= 90 || cpu - ch.IdentifyStartCpu >= 8 || gpu - ch.IdentifyStartGpu >= 10)
+                {
+                    ch.IdentifyStop = false;
+                    ch.IdentifyUntil = DateTime.Now.AddSeconds(2);   // kurz voll aufdrehen, dann normal weiter
+                    ch.IdentifyResult = "Zum Schutz abgebrochen – die Temperatur stieg beim Anhalten. Der Lüfter läuft wieder.";
+                }
+            }
             ch.Identifying = true;
             float pct = ch.IdentifyStop ? 0 : 100;
             ch.Output = pct;
@@ -1342,7 +1365,8 @@ sealed class FanController
             float before = ch.IdentifyStartRpm;
             bool hasRpm = before >= 0 && ch.IdentifyMaxRpm > 0 || ch.IdentifyMinRpm < float.MaxValue;
             bool reacted;
-            if (!hasRpm) { reacted = true; ch.IdentifyResult = "Dieser Anschluss meldet keine Drehzahl – bitte selbst schauen, was sich bewegt hat."; }
+            if (ch.IdentifyResult != null) reacted = true;   // zum Schutz abgebrochen
+            else if (!hasRpm) { reacted = true; ch.IdentifyResult = "Dieser Anschluss meldet keine Drehzahl – bitte selbst schauen, was sich bewegt hat."; }
             else if (ch.IdentifyStop)
             {
                 float min = ch.IdentifyMinRpm;

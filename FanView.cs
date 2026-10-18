@@ -745,7 +745,23 @@ sealed class FanCard : Control
         };
         _identify.FlatAppearance.BorderColor = Theme.Border;
         new ToolTip().SetToolTip(_identify, "Lässt nur diesen Lüfter kurz auf 100 % laufen, damit du ihn findest – und prüft dabei, ob er sich steuern lässt");
-        _identify.Click += (_, _) => ctl.Identify(ch);
+        _identify.Click += (_, _) =>
+        {
+            // Schutz geht vor: Pumpe oder CPU-Kühler nur nach Bestätigung anhalten, bei Wärme gar nicht
+            bool critical = ch.Kind == FanKind.Pump || (ch.Cfg.UseCpu && !ch.Cfg.UseGpu && !ch.IsGpu);
+            if (!ctl.SafeToStop(out var why))
+            {
+                MessageBox.Show(FindForm(), $"Zum Erkennen wird nicht angehalten, weil gerade {why} ist.\n" +
+                    "Der Lüfter dreht stattdessen kurz voll hoch.", "Erkennen", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            else if (critical && MessageBox.Show(FindForm(),
+                         $"„{ch.DisplayName}“ wird zum Erkennen kurz angehalten ({(ch.Kind == FanKind.Pump ? 5 : 7)} Sekunden).\n\n" +
+                         "Toast Temperatur bricht sofort ab und kühlt voll, sobald die Temperatur steigt. " +
+                         "Trotzdem gilt: Benutzung auf eigene Gefahr.\n\nJetzt anhalten?",
+                         "Erkennen – bitte bestätigen", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+                return;
+            ctl.Identify(ch);
+        };
 
         _reset = new LinkLabel
         {
