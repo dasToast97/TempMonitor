@@ -420,7 +420,8 @@ sealed class RgbSettings
     /// Mainboard-Anschlüsse ohne Beleuchtung: werden bei eigenen Effekten nicht angesprochen (weniger Befehle = weniger Blitze)
     public List<int> BoardZonesOff { get; set; } = new();
     /// Farbbefehle pro Sekunde ans Mainboard bei eigenen Effekten (mehr = weicher, aber mehr Blitz-Gefahr bei manchen Controllern)
-    public int BoardFps { get; set; } = 10;
+    public int BoardFps { get; set; } = 4;
+    public bool BoardWearMigrated { get; set; } = true;
     /// Mainboard: jede LED einzeln (Direktmodus, experimentell) statt einer Farbe je Zone
     public bool BoardPerLed { get; set; }
 
@@ -451,6 +452,8 @@ sealed class RgbSettings
                 var s = JsonSerializer.Deserialize<RgbSettings>(json) ?? new();
                 // Einmalig: Mainboard standardmäßig mit eigenen (stabilen) Effekten, die dem eigenen Effekt folgen
                 if (!json.Contains("\"BoardFollowMigrated\"")) { s.BoardHardware = true; s.BoardFollowMigrated = true; }
+                // Schutz: ASRock speichert jede Einstellung im Controller-Speicher -> Software-Dauersteuerung nutzt ihn ab
+                if (!json.Contains("\"BoardWearMigrated\"")) { s.BoardHardware = true; s.BoardPerLed = false; s.BoardWearMigrated = true; if (s.BoardFps > 4) s.BoardFps = 4; }
                 return s;
             }
         }
@@ -489,6 +492,7 @@ sealed class RgbService
     public RgbSettings Settings { get; }
     readonly Func<KeySensors?> _keys;
     readonly Dictionary<int, Color> _lastTempColor = new();
+    readonly Dictionary<int, DateTime> _lastTempWrite = new();
 
     public RgbService(PolychromeUsb? dev, Func<KeySensors?> keys)
     {
@@ -768,9 +772,11 @@ sealed class RgbService
         foreach (var z in Device!.Zones)
         {
             if (Settings.For(z.Index).Mode != RgbSettings.TempMode) continue;
+            // Schonend: der Controller speichert jede Änderung -> höchstens alle 30 s und nur bei deutlicher Farbänderung
             if (!force && _lastTempColor.TryGetValue(z.Index, out var last)
-                && Math.Abs(last.R - col.R) + Math.Abs(last.G - col.G) + Math.Abs(last.B - col.B) < 12) continue;
-            if (Device.SetZone(z, 0x01, col, 50)) _lastTempColor[z.Index] = col;
+                && (Math.Abs(last.R - col.R) + Math.Abs(last.G - col.G) + Math.Abs(last.B - col.B) < 40
+                    || (DateTime.Now - _lastTempWrite.GetValueOrDefault(z.Index)).TotalSeconds < 30)) continue;
+            if (Device.SetZone(z, 0x01, col, 50)) { _lastTempColor[z.Index] = col; _lastTempWrite[z.Index] = DateTime.Now; }
         }
     }
 }
@@ -901,8 +907,7 @@ sealed class RgbView : FlowLayoutPanel
                  "im Reiter „SDK Server“ auf „Start Server“ klicken (Port 6742) – Toast Temperatur findet die Geräte dann automatisch " +
                  "und spielt seine Effekte auch dort ab.");
         if (_svc.Device != null)
-            top.Check("Mainboard: jede LED einzeln ansteuern (experimentell – bei Flackern/wilden Farben aus lassen)", st.BoardPerLed,
-                v => { st.BoardPerLed = v; st.Save(); });
+            { }
         top.Buttons(("Geräte neu suchen", () => _svc.RescanNow()));
         if (_svc.Device != null)
             top.Note("Mit Hub am ARGB-Anschluss: Ein Verteiler-Hub schickt allen Geräten dasselbe Signal – als LED-Anzahl die des längsten Geräts " +
@@ -915,6 +920,18 @@ sealed class RgbView : FlowLayoutPanel
             bh.Check("Mainboard mit seinen eigenen Effekten laufen lassen (stabil, kein Flackern) – eigene Effekte nur auf den anderen Geräten",
                 st.BoardHardware, v =>
                 {
+                    if (!v && MessageBox.Show(FindForm(),
+                            "Achtung – Risiko für das Mainboard:\n\n" +
+                            "Der RGB-Controller dieses ASRock-Mainboards speichert jede Farbänderung in seinem internen Speicher. " +
+                            "Werden eigene Effekte per Software gesteuert, schreibt Toast Temperatur laufend neue Farben – das kann diesen " +
+                            "Speicher mit der Zeit abnutzen und die Mainboard-Beleuchtung dauerhaft beschädigen. Außerdem blitzt es dabei.\n\n" +
+                            "Empfohlen: Haken drin lassen (eingebaute Effekte, keine Abnutzung).\n\n" +
+                            "Trotzdem per Software steuern? (auf eigene Gefahr, höchstens wenige Farbbefehle pro Sekunde)",
+                            "Mainboard-Beleuchtung – bitte bestätigen", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                    {
+                        RebuildSoon();
+                        return;
+                    }
                     st.BoardHardware = v; st.Save();
                     if (v) Task.Run(_svc.ApplyBoardFromCustom);
                     RebuildSoon();
@@ -935,7 +952,7 @@ sealed class RgbView : FlowLayoutPanel
         {
             var info = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
             info.Note("Mainboard: " + string.Join(" · ", board.Zones.Select(z => z.Kind == RgbZoneKind.Addressable ? $"{z.Name} ({z.LedCount} LEDs)" : z.Name)));
-            info.Numbers(("Farbbefehle pro Sekunde ans Mainboard (mehr = weicher, weniger = weniger Blitze)", (float)Math.Clamp(st.BoardFps, 2, 30), 2, 30, "",
+            if (!st.BoardHardware) info.Numbers(("Farbbefehle pro Sekunde ans Mainboard (nur bei Software-Steuerung; wenig = schonender)", (float)Math.Clamp(st.BoardFps, 1, 5), 1, 5, "",
                 (Action<float>)(v => { st.BoardFps = (int)v; st.Save(); })));
             info.Note("Benutzte Anschlüsse – nur wo wirklich Beleuchtung dranhängt (weniger Befehle ans Mainboard = weniger Blitze):", muted: false);
             foreach (var z in board.Zones)

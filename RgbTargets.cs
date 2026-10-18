@@ -43,20 +43,21 @@ sealed class PolychromeTarget : IRgbTarget
 
     public void Begin()
     {
-        _direct = _perLed();
+        _direct = false;   // Direktmodus (jede LED einzeln) abgeschaltet – flackert und belastet den Controller
         _last.Clear();
         if (_direct) _dev.EnterDirect();
     }
 
     public bool Write(IReadOnlyList<Color[]> s)
     {
-        if (_perLed() != _direct) { End(); Begin(); }
+
         if (_direct) return _dev.WriteFrame(s);
 
         // Standard: jede Zone bekommt eine Farbe über den normalen Statisch-Befehl.
         // Funktioniert mit jedem Controller und jedem Hub, Wellen laufen dann von Zone zu Zone.
         // Der Controller ist langsam: höchstens 12 Updates pro Sekunde, sonst verschluckt er sich (Fehlfarben)
-        if ((DateTime.Now - _lastSend).TotalMilliseconds < 1000.0 / Math.Clamp(_fps(), 2, 30)) return true;
+        // Schonend: höchstens 5 Befehle pro Sekunde (der Controller speichert jede Änderung)
+        if ((DateTime.Now - _lastSend).TotalMilliseconds < 1000.0 / Math.Clamp(_fps(), 1, 5)) return true;
         _lastSend = DateTime.Now;
         for (int i = 0; i < _dev.Zones.Count && i < s.Count; i++)
         {
