@@ -414,6 +414,8 @@ sealed class RgbSettings
     public bool? OpenRgbAuto { get; set; }
     /// Geräte, bei denen Rot und Grün vertauscht ankommen (Häkchen in der Geräteliste)
     public List<string> SwapRG { get; set; } = new();
+    /// Eigene Effekte, aber das Mainboard läuft mit seinen eigenen (stabilen) Effekten
+    public bool BoardHardware { get; set; }
     /// Mainboard: jede LED einzeln (Direktmodus, experimentell) statt einer Farbe je Zone
     public bool BoardPerLed { get; set; }
 
@@ -488,7 +490,7 @@ sealed class RgbService
         Engine = new EffectEngine(this);
         if (dev == null) Settings.Custom = true;   // ohne Mainboard-Controller gibt es nur eigene Effekte
         if (Settings.Custom) Engine.Start();
-        else if (Settings.ApplyOnStart) Task.Run(ApplyAll);
+        if (!Settings.Custom ? Settings.ApplyOnStart : Settings.BoardHardware) Task.Run(ApplyAll);
         new Thread(Discover) { IsBackground = true, Name = "RGB-Suche" }.Start();
         if (Settings.OpenRgbAuto == true && Settings.Custom) StartOpenRgb();
     }
@@ -560,6 +562,7 @@ sealed class RgbService
     public bool IsEnabled(IRgbTarget t)
     {
         if (Settings.DisabledTargets.Contains(t.Id)) return false;
+        if (Settings.BoardHardware && Device != null && (t is PolychromeTarget || IsBoardViaOpenRgb(t))) return false;
         // Steuert OpenRGB das ASRock-Mainboard schon, nicht doppelt senden (sonst Flackern)
         if (t is PolychromeTarget && OpenRgbHasBoard) return false;
         return true;
@@ -575,6 +578,9 @@ sealed class RgbService
                     && (o.Name.Contains("ASRock", StringComparison.OrdinalIgnoreCase) || o.Name.Contains("Polychrome", StringComparison.OrdinalIgnoreCase)));
         }
     }
+
+    static bool IsBoardViaOpenRgb(IRgbTarget t) =>
+        t is OpenRgbTarget o && (o.Name.Contains("ASRock", StringComparison.OrdinalIgnoreCase) || o.Name.Contains("Polychrome", StringComparison.OrdinalIgnoreCase));
 
     bool IsEnabledRaw(IRgbTarget t) => !Settings.DisabledTargets.Contains(t.Id);
 
@@ -613,7 +619,15 @@ sealed class RgbService
             {
                 await Task.Delay(s * 1000);
                 DiscoverOnce();
-                if (OpenRgb.Connected) break;
+                if (OpenRgb.Connected)
+                {
+                    if (Device != null && (!Settings.Custom || Settings.BoardHardware))
+                    {
+                        await Task.Delay(1500);
+                        try { Device.RefreshConfig(); ApplyAll(); } catch { }
+                    }
+                    break;
+                }
             }
         });
     }
@@ -676,7 +690,7 @@ sealed class RgbService
     /// Jede Sekunde: Zonen im Temperatur-Modus nachführen (nur bei spürbarer Änderung senden)
     public void TickTemperature(bool force = false)
     {
-        if (Settings.Custom || Device == null) return;
+        if ((Settings.Custom && !Settings.BoardHardware) || Device == null) return;
         if (_keys()?.Value(Settings.TempSource) is not float t) return;
         var col = TempColor(t);
         foreach (var z in Device!.Zones)
@@ -818,8 +832,21 @@ sealed class RgbView : FlowLayoutPanel
                      "eintragen (oder die Summe, wenn die Geräte hintereinander geschaltet sind).");
         Add(top);
 
+        if (st.Custom && _svc.Device != null)
+        {
+            var bh = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+            bh.Check("Mainboard mit seinen eigenen Effekten laufen lassen (stabil, kein Flackern) – eigene Effekte nur auf den anderen Geräten",
+                st.BoardHardware, v =>
+                {
+                    st.BoardHardware = v; st.Save();
+                    if (v) Task.Run(_svc.ApplyAll);
+                    RebuildSoon();
+                });
+            bh.Note("Empfohlen, wenn die Mainboard-Lüfter bei eigenen Effekten wild flackern (manche Hubs/Lüfter vertragen das nicht).");
+            Add(bh);
+        }
         if (st.Custom || _svc.Device == null) BuildCustom();
-        else BuildHardware();
+        if (!st.Custom && _svc.Device != null || st.Custom && st.BoardHardware && _svc.Device != null) BuildHardware();
 
         if (_svc.Device is PolychromeUsb board)
         {
@@ -970,9 +997,12 @@ sealed class RgbView : FlowLayoutPanel
         colorBtn = card.Controls.OfType<Button>().LastOrDefault();
         if (colorBtn != null) { colorBtn.BackColor = Color.FromArgb(s.Color); colorBtn.ForeColor = Color.FromArgb(s.Color).GetBrightness() > 0.55f ? Color.Black : Color.White; }
         card.Numbers(("Geschwindigkeit", (float)s.Speed, 0, 100, "%", (Action<float>)(v => { s.Speed = (int)v; Changed(); })));
-        card.Note("Mainboard-Effekte kann das Mainboard nur mit Farbe und Tempo. Helligkeit, „nicht ganz aus“, " +
-                  "Weichheit und die Atmen-Zeiten gibt es bei den eigenen Effekten – deine Auswahl wird übernommen:");
-        card.Buttons(("Mit allen Einstellungen weiter →", () => ToCustom(s)));
+        if (!_svc.Settings.Custom)
+        {
+            card.Note("Mainboard-Effekte kann das Mainboard nur mit Farbe und Tempo. Helligkeit, „nicht ganz aus“, " +
+                      "Weichheit und die Atmen-Zeiten gibt es bei den eigenen Effekten – deine Auswahl wird übernommen:");
+            card.Buttons(("Mit allen Einstellungen weiter →", () => ToCustom(s)));
+        }
         if (!all && z.Kind == RgbZoneKind.Addressable)
             card.Numbers(("Anzahl LEDs", (float)z.LedCount, 1, 100, "", (Action<float>)(v => Debounce(() => _svc.Device!.SetLedCount(z, (int)v)))));
         return card;
