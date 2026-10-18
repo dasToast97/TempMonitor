@@ -822,6 +822,10 @@ sealed class RgbView : FlowLayoutPanel
         {
             top.Check("OpenRGB automatisch mitstarten", true, v => { st.OpenRgbAuto = v; st.Save(); if (!v) OpenRgbManager.Stop(); else _svc.StartOpenRgb(); });
         }
+        var rivals = RgbRivals.Running();
+        if (rivals.Count > 0)
+            top.Note("⚠ Läuft gleichzeitig: " + string.Join(", ", rivals) + ". Diese Programme steuern die Beleuchtung auch und funken dazwischen " +
+                     "(Flackern, wilde Farben). Für eigene Effekte bitte beenden und aus dem Autostart nehmen.", muted: false);
         top.Note("OpenRGB: " + _svc.OpenRgb.Status + ". Für Tastaturen, Mäuse, RAM, Grafikkarten u. v. m.: OpenRGB (openrgb.org) starten, " +
                  "im Reiter „SDK Server“ auf „Start Server“ klicken (Port 6742) – Toast Temperatur findet die Geräte dann automatisch " +
                  "und spielt seine Effekte auch dort ab.");
@@ -1499,5 +1503,31 @@ sealed class ColorListEditor : Panel
         Controls.Add(hint);
         Height = y + sz + S(10);
         ResumeLayout();
+    }
+}
+
+/// Andere RGB-Programme, die gleichzeitig dieselben Geräte steuern würden
+static class RgbRivals
+{
+    static readonly (string Process, string Name)[] Known =
+    {
+        ("RazerCentralService", "Razer Synapse"), ("Razer Synapse", "Razer Synapse"), ("Razer Synapse 3", "Razer Synapse"),
+        ("RazerAppEngine", "Razer Synapse"), ("Synapse3", "Razer Synapse"), ("Razer Chroma SDK Service", "Razer Chroma"),
+        ("ROCCAT_Swarm", "ROCCAT Swarm"), ("ROCCAT_Swarm_Monitor", "ROCCAT Swarm"), ("Roccat Swarm", "ROCCAT Swarm"),
+        ("PolyChromeRGB", "ASRock Polychrome RGB"), ("ASRPolychromeRGB", "ASRock Polychrome RGB"), ("AsrPolychromeSync", "ASRock Polychrome RGB"),
+        ("iCUE", "Corsair iCUE"), ("lghub", "Logitech G HUB"), ("lghub_agent", "Logitech G HUB"),
+        ("ArmouryCrate", "ASUS Armoury Crate"), ("LightingService", "ASUS Aura"), ("MysticLight", "MSI Mystic Light"),
+        ("SignalRgb", "SignalRGB"), ("NZXT CAM", "NZXT CAM"), ("SteelSeriesGG", "SteelSeries GG"),
+    };
+
+    public static List<string> Running()
+    {
+        try
+        {
+            var names = System.Diagnostics.Process.GetProcesses().Select(p => { using (p) return p.ProcessName; })
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return Known.Where(k => names.Contains(k.Process)).Select(k => k.Name).Distinct().ToList();
+        }
+        catch { return new List<string>(); }
     }
 }
