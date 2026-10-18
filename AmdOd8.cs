@@ -375,14 +375,20 @@ sealed class AmdOd8Fan : IDisposable
 
     int Clamp(int id, int v) => id < _min.Length && _max[id] > _min[id] ? Math.Clamp(v, _min[id], _max[id]) : v;
 
-    /// Lüfter auf einen festen Prozentwert stellen (flache Kurve)
+    /// Kann der Treiber die Lüfter im Leerlauf anhalten (Zero RPM)?
+    public bool CanZeroRpm => (_caps & ADL_OD8_FAN_ZERO_RPM_CONTROL) != 0;
+    bool _lastZero;
+
+    /// Lüfter auf einen festen Prozentwert stellen (flache Kurve).
+    /// 0 % = Leerlauf: Zero RPM einschalten, der Treiber hält die Lüfter an, solange die Karte kühl ist.
     public bool SetPercent(float pct)
     {
+        bool zero = pct <= 0 && CanZeroRpm;
         lock (_lock)
         {
             if (_ctx == IntPtr.Zero) return false;
             // Nicht jede Sekunde neu schreiben: nur bei spürbarer Änderung oder alle 10 s
-            bool big = _lastPct < 0 || Math.Abs(pct - _lastPct) >= 2 || (pct >= 99 && _lastPct < 99);
+            bool big = _lastPct < 0 || Math.Abs(pct - _lastPct) >= 2 || (pct >= 99 && _lastPct < 99) || zero != _lastZero;
             if (!big && (DateTime.Now - _lastWrite).TotalSeconds < 10) return true;
 
             // 1) Wie bei AMD: Tuning-Modus auf "Manuell", sonst werden Lüfterwerte ignoriert
@@ -413,9 +419,9 @@ sealed class AmdOd8Fan : IDisposable
                 int sp = i == 4 ? Math.Max(speed, 100) : speed;
                 items.Add((tid + 1, Clamp(tid + 1, sp)));
             }
-            // Zero-RPM aus, damit auch kleine Werte wirklich drehen
+            // Zero-RPM: im Leerlauf an (Lüfter dürfen stehen), sonst aus, damit auch kleine Werte wirklich drehen
             if ((_caps & ADL_OD8_FAN_ZERO_RPM_CONTROL) != 0)
-                items.Add((OD8_FAN_ZERORPM_CONTROL, 0));
+                items.Add((OD8_FAN_ZERORPM_CONTROL, zero ? 1 : 0));
 
             if (!Apply(items)) return false;
 
@@ -425,6 +431,7 @@ sealed class AmdOd8Fan : IDisposable
             }
             _changed = true;
             _lastPct = pct;
+            _lastZero = zero;
             _lastWrite = DateTime.Now;
             return true;
         }

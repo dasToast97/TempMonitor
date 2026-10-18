@@ -1340,11 +1340,15 @@ sealed class FanController
 
     /// Darf dieser Lüfter überhaupt stehen bleiben? Nur kalibrierte Gehäuse-/CPU-Lüfter, keine Pumpen
     public bool CanStop(FanChannel ch) =>
-        _s.ZeroRpmEnabled && ch.Cfg.AllowStop && !ch.IsGpu && ch.Kind == FanKind.Fan && ch.Cfg.StartPercent != null;
+        _s.ZeroRpmEnabled && ch.Cfg.AllowStop && ch.Kind == FanKind.Fan && !ch.NotControllable
+        && (ch.IsGpu ? GpuCanStop(ch) : ch.Cfg.StartPercent != null);
+
+    /// Grafikkarte: nur AMD über Overdrive 8 mit Zero-RPM (der Treiber hält die Lüfter selbst sicher an)
+    static bool GpuCanStop(FanChannel ch) => ch.Od8 is { LastError: null, CanZeroRpm: true };
 
     /// Lüfter, die die Voraussetzungen erfüllen (ohne den Schalter)
     public IEnumerable<FanChannel> StopCandidates =>
-        Channels.Where(c => !c.IsGpu && c.Kind == FanKind.Fan && c.Cfg.StartPercent != null && !c.NotControllable);
+        Channels.Where(c => c.Kind == FanKind.Fan && !c.NotControllable && (c.IsGpu ? GpuCanStop(c) : c.Cfg.StartPercent != null));
 
     float ZeroLimit(Component c) => c switch
     {
