@@ -55,6 +55,53 @@ static class Hid
         public void Dispose() { try { Stream.Dispose(); } catch { } }
     }
 
+    /// HID-Gerät mit Feature-Berichten (z. B. Tastatur-Beleuchtung)
+    public static (SafeFileHandle Handle, int FeatureLength, string Path)? OpenFeature(ushort vid, ushort[] pids, int minFeature)
+    {
+        foreach (var path in Paths(vid))
+        {
+            var h = CreateFile(path, 0xC0000000, 0x3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+            if (h.IsInvalid) continue;
+            var attr = new HiddAttributes { Size = Marshal.SizeOf<HiddAttributes>() };
+            if (!HidD_GetAttributes(h, ref attr) || attr.VendorID != vid || !pids.Contains(attr.ProductID)) { h.Dispose(); continue; }
+            if (!HidD_GetPreparsedData(h, out var pre)) { h.Dispose(); continue; }
+            HidP_GetCaps(pre, out var caps);
+            HidD_FreePreparsedData(pre);
+            if (caps.FeatureReportByteLength < minFeature) { h.Dispose(); continue; }
+            return (h, caps.FeatureReportByteLength, path);
+        }
+        return null;
+    }
+
+    static List<string> Paths(ushort vid)
+    {
+        var list = new List<string>();
+        HidD_GetHidGuid(out var guid);
+        IntPtr set = SetupDiGetClassDevs(ref guid, IntPtr.Zero, IntPtr.Zero, 0x02 | 0x10);
+        if (set == IntPtr.Zero || set == new IntPtr(-1)) return list;
+        try
+        {
+            for (int i = 0; ; i++)
+            {
+                var ifd = new SpDeviceInterfaceData { cbSize = Marshal.SizeOf<SpDeviceInterfaceData>() };
+                if (!SetupDiEnumDeviceInterfaces(set, IntPtr.Zero, ref guid, i, ref ifd)) break;
+                SetupDiGetDeviceInterfaceDetail(set, ref ifd, IntPtr.Zero, 0, out int size, IntPtr.Zero);
+                if (size <= 0) continue;
+                IntPtr buf = Marshal.AllocHGlobal(size);
+                try
+                {
+                    Marshal.WriteInt32(buf, IntPtr.Size == 8 ? 8 : 6);
+                    if (!SetupDiGetDeviceInterfaceDetail(set, ref ifd, buf, size, out _, IntPtr.Zero)) continue;
+                    var path = Marshal.PtrToStringUni(buf + 4) ?? "";
+                    if (path.Contains($"vid_{vid:x4}", StringComparison.OrdinalIgnoreCase)) list.Add(path);
+                }
+                finally { Marshal.FreeHGlobal(buf); }
+            }
+        }
+        finally { SetupDiDestroyDeviceInfoList(set); }
+        return list;
+    }
+
     /// Erstes HID-Gerät mit dieser Kennung, das 64-Byte-Berichte senden kann
     public static Device? Open(ushort vid, ushort[] pids)
     {
@@ -303,6 +350,8 @@ sealed class RgbSettings
     public string TempSource { get; set; } = "Max";   // CPU, GPU, Hotspot, Max
     public Dictionary<int, RgbZoneSettings> Zones { get; set; } = new();
     public bool ApplyOnStart { get; set; }
+    /// Geräte, auf denen die eigenen Effekte NICHT laufen sollen
+    public List<string> DisabledTargets { get; set; } = new();
 
     /// true = eigene Effekte von Toast Temperatur (jede LED einzeln), false = Effekte des Mainboards
     public bool Custom { get; set; }
@@ -350,28 +399,87 @@ sealed class RgbSettings
 // ---------------------------------------------------------------------------
 sealed class RgbService
 {
-    public PolychromeUsb Device { get; }
+    public PolychromeUsb? Device { get; }
+    public List<IRgbTarget> Targets { get; } = new();
+    public OpenRgbClient OpenRgb { get; } = new();
+    IteKeyboardTarget? _keyboard;
+    /// Geräte haben sich geändert (OpenRGB verbunden, Oasis gefunden …)
+    public event Action? TargetsChanged;
     public RgbSettings Settings { get; }
     readonly Func<KeySensors?> _keys;
     readonly Dictionary<int, Color> _lastTempColor = new();
 
-    public RgbService(PolychromeUsb dev, Func<KeySensors?> keys)
+    public RgbService(PolychromeUsb? dev, Func<KeySensors?> keys)
     {
         Device = dev;
+        if (dev != null) Targets.Add(new PolychromeTarget(dev));
+        _keyboard = IteKeyboardTarget.Probe();
+        if (_keyboard != null) Targets.Add(_keyboard);
         _keys = keys;
         Settings = RgbSettings.Load();
         Engine = new EffectEngine(this);
+        if (dev == null) Settings.Custom = true;   // ohne Mainboard-Controller gibt es nur eigene Effekte
         if (Settings.Custom) Engine.Start();
+        new Thread(Discover) { IsBackground = true, Name = "RGB-Suche" }.Start();
         else if (Settings.ApplyOnStart) Task.Run(ApplyAll);
     }
 
     public EffectEngine Engine { get; }
+
+    /// Im Hintergrund: OpenRGB und Oasis suchen (alle 30 s, falls sie später gestartet werden)
+    void Discover()
+    {
+        while (true)
+        {
+            DiscoverOnce();
+            Thread.Sleep(30_000);
+        }
+    }
+
+    public void RescanNow() => Task.Run(DiscoverOnce);
+
+    readonly object _discoverGate = new();
+
+    void DiscoverOnce()
+    {
+        lock (_discoverGate)
+        {
+            try
+            {
+                bool changed = false;
+                if (!OpenRgb.Connected && OpenRgb.Connect())
+                {
+                    lock (Targets)
+                    {
+                        Targets.RemoveAll(t => t is OpenRgbTarget);
+                        foreach (var d in OpenRgb.Devices) Targets.Add(new OpenRgbTarget(OpenRgb, d));
+                    }
+                    changed = true;
+                }
+                else if (!OpenRgb.Connected && Targets.Any(t => t is OpenRgbTarget))
+                {
+                    lock (Targets) Targets.RemoveAll(t => t is OpenRgbTarget);
+                    changed = true;
+                }
+                if (OasisLink.Instance is OasisLink ol && ol.Connected && !Targets.Any(t => t is OasisLedTarget))
+                {
+                    lock (Targets) Targets.Add(new OasisLedTarget(ol));
+                    changed = true;
+                }
+                if (changed) TargetsChanged?.Invoke();
+            }
+            catch (Exception ex) { RgbSettings.Log("Suche: " + ex.Message); }
+        }
+    }
+
+    public bool IsEnabled(IRgbTarget t) => !Settings.DisabledTargets.Contains(t.Id);
 
     public float? Temperature() => _keys()?.Value(Settings.TempSource);
 
     /// Zwischen Mainboard-Effekten und eigenen Effekten umschalten
     public void SetCustom(bool on)
     {
+        if (Device == null) on = true;
         Settings.Custom = on;
         Settings.Save();
         if (on) Engine.Start();
@@ -396,6 +504,7 @@ sealed class RgbService
 
     public void Apply(RgbZone z)
     {
+        if (Device == null) return;
         var s = Settings.For(z.Index);
         if (s.Mode == RgbSettings.TempMode)
         {
@@ -409,6 +518,7 @@ sealed class RgbService
 
     public void ApplyAll()
     {
+        if (Device == null) return;
         foreach (var z in Device.Zones) Apply(z);
     }
 
@@ -434,10 +544,10 @@ sealed class RgbService
     /// Jede Sekunde: Zonen im Temperatur-Modus nachführen (nur bei spürbarer Änderung senden)
     public void TickTemperature(bool force = false)
     {
-        if (Settings.Custom) return;
+        if (Settings.Custom || Device == null) return;
         if (_keys()?.Value(Settings.TempSource) is not float t) return;
         var col = TempColor(t);
-        foreach (var z in Device.Zones)
+        foreach (var z in Device!.Zones)
         {
             if (Settings.For(z.Index).Mode != RgbSettings.TempMode) continue;
             if (!force && _lastTempColor.TryGetValue(z.Index, out var last)
@@ -466,7 +576,19 @@ sealed class RgbView : FlowLayoutPanel
         Resize += (_, _) => { int w = DarkMode.FullWidth(this, S(16)); foreach (var c in _full) c.Width = w; };
         DarkMode.Use(this);
         DarkMode.NoHorizontalScroll(this);
+        _svc.TargetsChanged += OnTargetsChanged;
         Build();
+    }
+
+    void OnTargetsChanged()
+    {
+        try { if (IsHandleCreated && !IsDisposed) RebuildSoon(); } catch { }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _svc.TargetsChanged -= OnTargetsChanged;
+        base.Dispose(disposing);
     }
 
     void Add(Control c)
@@ -480,27 +602,52 @@ sealed class RgbView : FlowLayoutPanel
     void Build()
     {
         var st = _svc.Settings;
-        Add(new SectionHeader("RGB-Beleuchtung · ASRock Polychrome", Color.FromArgb(244, 114, 182)) { Height = S(40), Margin = new Padding(S(6), S(14), S(6), S(4)) });
+        Add(new SectionHeader("RGB-Beleuchtung", Color.FromArgb(244, 114, 182)) { Height = S(40), Margin = new Padding(S(6), S(14), S(6), S(4)) });
         var top = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
-        top.Combo("Steuerung:", new[] { "Effekte vom Mainboard (laufen auch ohne Toast Temperatur)", "Eigene Effekte (jede LED einzeln, frei einstellbar)" },
-            st.Custom ? 1 : 0, i => { _svc.SetCustom(i == 1); RebuildSoon(); });
-        if (top.Controls.OfType<ComboBox>().LastOrDefault() is ComboBox modeBox) modeBox.Width = S(420);
-        top.Note("Mit Hub am ARGB-Anschluss: Ein Verteiler-Hub schickt allen Geräten dasselbe Signal – als LED-Anzahl die des längsten Geräts " +
-                 "eintragen (oder die Summe, wenn die Geräte hintereinander geschaltet sind).");
+        if (_svc.Device != null)
+        {
+            top.Combo("Steuerung:", new[] { "Effekte vom Mainboard (laufen auch ohne Toast Temperatur)", "Eigene Effekte (jede LED einzeln, frei einstellbar)" },
+                st.Custom ? 1 : 0, i => { _svc.SetCustom(i == 1); RebuildSoon(); });
+            if (top.Controls.OfType<ComboBox>().LastOrDefault() is ComboBox modeBox) modeBox.Width = S(420);
+        }
+
+        // Geräte: auf welchen die eigenen Effekte laufen
+        List<IRgbTarget> targets;
+        lock (_svc.Targets) targets = _svc.Targets.ToList();
+        top.Note(targets.Count == 0 ? "Noch keine RGB-Geräte gefunden." : "Gefundene Geräte – Haken = eigene Effekte laufen dort:", muted: targets.Count == 0);
+        foreach (var t in targets)
+        {
+            var tt = t;
+            int leds = t.Segments.Sum();
+            top.Check($"{t.Name}   ·   {t.Kind}, {leds} LED{(leds == 1 ? "" : "s")}", _svc.IsEnabled(t), v =>
+            {
+                if (v) st.DisabledTargets.Remove(tt.Id); else if (!st.DisabledTargets.Contains(tt.Id)) st.DisabledTargets.Add(tt.Id);
+                st.Save();
+            });
+        }
+        top.Note("OpenRGB: " + _svc.OpenRgb.Status + ". Für Tastaturen, Mäuse, RAM, Grafikkarten u. v. m.: OpenRGB (openrgb.org) starten, " +
+                 "im Reiter „SDK Server“ auf „Start Server“ klicken (Port 6742) – Toast Temperatur findet die Geräte dann automatisch " +
+                 "und spielt seine Effekte auch dort ab.");
+        top.Buttons(("Geräte neu suchen", () => _svc.RescanNow()));
+        if (_svc.Device != null)
+            top.Note("Mit Hub am ARGB-Anschluss: Ein Verteiler-Hub schickt allen Geräten dasselbe Signal – als LED-Anzahl die des längsten Geräts " +
+                     "eintragen (oder die Summe, wenn die Geräte hintereinander geschaltet sind).");
         Add(top);
 
-        if (st.Custom) BuildCustom();
+        if (st.Custom || _svc.Device == null) BuildCustom();
         else BuildHardware();
 
-        // LED-Anzahl der ARGB-Anschlüsse (für beide Arten)
-        var info = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
-        info.Note("Erkannt: " + string.Join(" · ", _svc.Device.Zones.Select(z => z.Kind == RgbZoneKind.Addressable ? $"{z.Name} ({z.LedCount} LEDs)" : z.Name)));
-        foreach (var z in _svc.Device.Zones.Where(z => z.Kind == RgbZoneKind.Addressable))
+        if (_svc.Device is PolychromeUsb board)
         {
-            var zz = z;
-            info.Numbers(($"LEDs an {z.Name}", (float)z.LedCount, 1, 100, "", (Action<float>)(v => Debounce(() => _svc.Device.SetLedCount(zz, (int)v)))));
+            var info = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+            info.Note("Mainboard: " + string.Join(" · ", board.Zones.Select(z => z.Kind == RgbZoneKind.Addressable ? $"{z.Name} ({z.LedCount} LEDs)" : z.Name)));
+            foreach (var z in board.Zones.Where(z => z.Kind == RgbZoneKind.Addressable))
+            {
+                var zz = z;
+                info.Numbers(($"LEDs an {z.Name}", (float)z.LedCount, 1, 100, "", (Action<float>)(v => Debounce(() => board.SetLedCount(zz, (int)v)))));
+            }
+            Add(info);
         }
-        Add(info);
     }
 
     void BuildHardware()
@@ -515,14 +662,14 @@ sealed class RgbView : FlowLayoutPanel
         hw.Check("Beim Start von Toast Temperatur die Einstellungen anwenden", st.ApplyOnStart, v => { st.ApplyOnStart = v; st.Save(); });
         hw.Buttons(("Im Mainboard speichern", () =>
         {
-            bool ok = _svc.Device.Commit();
+            bool ok = _svc.Device!.Commit();
             MessageBox.Show(FindForm(), ok
                 ? "Gespeichert. Die Beleuchtung bleibt jetzt auch ohne Toast Temperatur und nach einem Neustart so.\n(„Temperatur als Farbe“ funktioniert nur, solange Toast Temperatur läuft.)"
-                : "Speichern fehlgeschlagen: " + _svc.Device.LastError, "RGB");
+                : "Speichern fehlgeschlagen: " + _svc.Device!.LastError, "RGB");
         }));
         Add(hw);
 
-        var zones = st.Sync ? _svc.Device.Zones.Take(1).ToList() : _svc.Device.Zones;
+        var zones = st.Sync ? _svc.Device!.Zones.Take(1).ToList() : _svc.Device!.Zones;
         foreach (var z in zones)
         {
             Add(new SectionHeader(st.Sync ? "Alle Anschlüsse" : z.Name, Theme.Muted) { Height = S(34), Margin = new Padding(S(6), S(10), S(6), S(2)) });
@@ -579,7 +726,20 @@ sealed class RgbView : FlowLayoutPanel
             ("Weichheit / Fade", (float)fx.Softness, 0, 100, "%", (Action<float>)(v => { fx.Softness = (int)v; Save(); })),
             ("Geschwindigkeit", (float)fx.Speed, 0, 100, "%", (Action<float>)(v => { fx.Speed = (int)v; Save(); })));
         p.Note("Weichheit: 0 % = harte Wechsel / Blinken, 100 % = ganz weiche Übergänge.");
-        p.Numbers(("Breite (LEDs je Welle / Schweif)", (float)fx.Width, 2, 100, "", (Action<float>)(v => { fx.Width = (int)v; Save(); })));
+        if (fx.Type == EffectType.Breathing)
+        {
+            p.Note("Atmen – Zeiten in Millisekunden (0 = automatisch aus der Geschwindigkeit):", muted: false);
+            var a = p.Numbers(
+                ("Einblenden", (float)fx.FadeInMs, 0, 20000, "ms", (Action<float>)(v => { fx.FadeInMs = (int)v; Save(); })),
+                ("Hell halten", (float)fx.HoldOnMs, 0, 20000, "ms", (Action<float>)(v => { fx.HoldOnMs = (int)v; Save(); })));
+            var b = p.Numbers(
+                ("Ausblenden", (float)fx.FadeOutMs, 0, 20000, "ms", (Action<float>)(v => { fx.FadeOutMs = (int)v; Save(); })),
+                ("Dunkel halten", (float)fx.HoldOffMs, 0, 20000, "ms", (Action<float>)(v => { fx.HoldOffMs = (int)v; Save(); })));
+            foreach (var n in a.Concat(b)) { n.Increment = 100; n.Width = S(70); }
+            p.Note("Beispiel „nie ganz aus, höchstens 80 %“: Helligkeit 80 %, Dunkelste Stufe 30 %.");
+        }
+        else
+            p.Numbers(("Breite (LEDs je Welle / Schweif)", (float)fx.Width, 2, 100, "", (Action<float>)(v => { fx.Width = (int)v; Save(); })));
         p.Check("Richtung umkehren", fx.Reverse, v => { fx.Reverse = v; Save(); });
         p.Check("Von der Mitte aus (gespiegelt)", fx.Mirror, v => { fx.Mirror = v; Save(); });
         if (fx.Type == EffectType.TempWave)
@@ -603,7 +763,7 @@ sealed class RgbView : FlowLayoutPanel
             if (all)
             {
                 // Einstellungen der ersten Zone auf alle übertragen
-                foreach (var other in _svc.Device.Zones)
+                foreach (var other in _svc.Device!.Zones)
                 {
                     var o = _svc.Settings.For(other.Index);
                     o.Mode = s.Mode; o.Color = s.Color; o.Speed = s.Speed;
@@ -627,7 +787,7 @@ sealed class RgbView : FlowLayoutPanel
         if (colorBtn != null) { colorBtn.BackColor = Color.FromArgb(s.Color); colorBtn.ForeColor = Color.FromArgb(s.Color).GetBrightness() > 0.55f ? Color.Black : Color.White; }
         card.Numbers(("Geschwindigkeit", (float)s.Speed, 0, 100, "%", (Action<float>)(v => { s.Speed = (int)v; Changed(); })));
         if (!all && z.Kind == RgbZoneKind.Addressable)
-            card.Numbers(("Anzahl LEDs", (float)z.LedCount, 1, 100, "", (Action<float>)(v => Debounce(() => _svc.Device.SetLedCount(z, (int)v)))));
+            card.Numbers(("Anzahl LEDs", (float)z.LedCount, 1, 100, "", (Action<float>)(v => Debounce(() => _svc.Device!.SetLedCount(z, (int)v)))));
         return card;
     }
 
@@ -682,11 +842,17 @@ sealed class CustomEffect
     public int Softness { get; set; } = 80;
     /// Von der Mitte nach außen (gespiegelt)
     public bool Mirror { get; set; }
+    /// Atmen: Zeiten in Millisekunden (0 = automatisch aus der Geschwindigkeit)
+    public int FadeInMs { get; set; }
+    public int HoldOnMs { get; set; }
+    public int FadeOutMs { get; set; }
+    public int HoldOffMs { get; set; }
 
     public CustomEffect Clone() => new()
     {
         Type = Type, Colors = Colors.ToList(), Speed = Speed, Brightness = Brightness, Width = Width, Reverse = Reverse,
         MinLevel = MinLevel, Softness = Softness, Mirror = Mirror,
+        FadeInMs = FadeInMs, HoldOnMs = HoldOnMs, FadeOutMs = FadeOutMs, HoldOffMs = HoldOffMs,
     };
 
     public static string Name(EffectType t) => t switch
@@ -793,13 +959,23 @@ static class EffectRenderer
             {
                 case EffectType.Breathing:
                 {
-                    float period = 9f - speed * 7.5f;                // 9 s … 1,5 s
+                    // Einblenden – hell halten – Ausblenden – dunkel halten (frei einstellbar, sonst aus der Geschwindigkeit)
+                    float auto = (9f - speed * 7.5f) / 2f;
+                    float fin = fx.FadeInMs > 0 ? fx.FadeInMs / 1000f : auto;
+                    float hon = fx.HoldOnMs / 1000f;
+                    float fout = fx.FadeOutMs > 0 ? fx.FadeOutMs / 1000f : auto;
+                    float hoff = fx.HoldOffMs / 1000f;
+                    float period = Math.Max(0.1f, fin + hon + fout + hoff);
                     double cycle = t / period;
                     int k = (int)Math.Floor(cycle);
-                    float phase = (float)(cycle - k);
-                    float level = MathF.Pow(MathF.Sin(phase * MathF.PI), 2);
-                    // Weichheit: 0 = An/Aus-Blinken, 1 = sanftes Atmen
-                    level = _soft >= 0.98f ? level : Shape(level);
+                    float x = (float)(cycle - k) * period;
+                    float level;
+                    if (x < fin) level = x / Math.Max(0.001f, fin);
+                    else if (x < fin + hon) level = 1;
+                    else if (x < fin + hon + fout) level = 1 - (x - fin - hon) / Math.Max(0.001f, fout);
+                    else level = 0;
+                    // Weichheit: weich = sanfte Kurve, hart = lineares/abruptes Ein- und Ausblenden
+                    level = _soft >= 0.5f ? (1 - MathF.Cos(level * MathF.PI)) / 2 : (_soft < 0.1f ? (level > 0.5f ? 1 : 0) : level);
                     c = Scale(pal[((k % pal.Count) + pal.Count) % pal.Count], Level(level));
                     break;
                 }
@@ -889,11 +1065,9 @@ sealed class EffectEngine
 
     void Loop()
     {
-        var dev = _svc.Device;
-        try { dev.EnterDirect(); }
-        catch (Exception ex) { RgbSettings.Log("Direkt-Modus: " + ex.Message); }
+        var active = new HashSet<IRgbTarget>();
+        var fails = new Dictionary<IRgbTarget, int>();
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        int fails = 0;
         while (_run)
         {
             long start = sw.ElapsedMilliseconds;
@@ -902,19 +1076,39 @@ sealed class EffectEngine
                 var fx = _svc.Settings.Effect;
                 float? temp = _svc.Temperature();
                 double t = sw.Elapsed.TotalSeconds;
-                var frame = dev.Zones.Select(z => EffectRenderer.Render(fx, z.Index, z.LedCount, t, temp)).ToList();
-                Preview = EffectRenderer.Render(fx, 99, 60, t, temp);
-                if (!dev.WriteFrame(frame))
+                Preview = EffectRenderer.Render(fx, 999, 60, t, temp);
+
+                List<IRgbTarget> targets;
+                lock (_svc.Targets) targets = _svc.Targets.ToList();
+                for (int ti = 0; ti < targets.Count; ti++)
                 {
-                    if (++fails == 20) RgbSettings.Log("Bilder kommen nicht an: " + dev.LastError);
+                    var target = targets[ti];
+                    bool on = _svc.IsEnabled(target);
+                    if (!on)
+                    {
+                        if (active.Remove(target)) { try { target.End(); } catch { } }
+                        continue;
+                    }
+                    if (active.Add(target)) { try { target.Begin(); } catch (Exception ex) { RgbSettings.Log($"{target.Name}: {ex.Message}"); } }
+                    var segs = target.Segments;
+                    var frame = new List<Color[]>(segs.Length);
+                    for (int si = 0; si < segs.Length; si++)
+                        frame.Add(EffectRenderer.Render(fx, ti * 16 + si, segs[si], t, temp));
+                    if (!target.Write(frame))
+                    {
+                        fails[target] = fails.GetValueOrDefault(target) + 1;
+                        if (fails[target] == 40) RgbSettings.Log($"{target.Name}: Bilder kommen nicht an");
+                    }
+                    else fails[target] = 0;
                 }
-                else fails = 0;
+                // entfernte Geräte beenden
+                foreach (var gone in active.Where(a => !targets.Contains(a)).ToList()) active.Remove(gone);
             }
             catch (Exception ex) { RgbSettings.Log("Effekt: " + ex.Message); }
             int wait = 50 - (int)(sw.ElapsedMilliseconds - start);
             if (wait > 0) Thread.Sleep(wait);
         }
-        try { dev.ExitDirect(); } catch { }
+        foreach (var a in active) { try { a.End(); } catch { } }
     }
 }
 

@@ -69,6 +69,9 @@ sealed class OasisLink
     public void SetFan(float pct) { lock (_gate) _fan = Math.Clamp(pct, 0, 100); }
     public void SetPump(float pct) { lock (_gate) _pump = Math.Clamp(pct, 0, 100); }
 
+    /// LED der Oasis setzen: 0x1E = Pumpenkopf, 0x33 = Lüfter
+    public void SetLed(int zone, Color c) => Send($"led {zone} {c.R} {c.G} {c.B}");
+
     public void Forget()
     {
         _s.OasisAddress = null;

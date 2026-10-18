@@ -45,6 +45,7 @@ static class Program
     static string? _model;
     static int _flow = -1;
     static readonly HashSet<string> _unknown = new();
+    static readonly Dictionary<byte, (byte R, byte G, byte B)> Leds = new();
 
     static void Log(string msg)
     {
@@ -103,6 +104,10 @@ static class Program
                         case "fan": _fan = Math.Clamp(F(1), 0, 100); break;
                         case "pump": _pump = Math.Clamp(F(1), 0, 100); break;
                         case "forget": _forget = true; break;
+                        case "led":
+                            if (p.Length >= 5)
+                                lock (Leds) Leds[(byte)F(1)] = ((byte)F(2), (byte)F(3), (byte)F(4));
+                            break;
                         case "exit": _exit = true; break;
                     }
                 }
@@ -150,6 +155,11 @@ static class Program
                 }
 
                 await SendPending();
+                // LEDs (Pumpenkopf 0x1E, Lüfter 0x33): Farbe statisch
+                List<KeyValuePair<byte, (byte R, byte G, byte B)>> leds;
+                lock (Leds) { leds = Leds.ToList(); Leds.Clear(); }
+                foreach (var kv in leds)
+                    await Write(Frame(kv.Key, 1, kv.Value.R, kv.Value.G, kv.Value.B, 0));
                 if ((DateTime.Now - _lastQuery).TotalSeconds >= 10)
                 {
                     _lastQuery = DateTime.Now;

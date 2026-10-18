@@ -490,23 +490,33 @@ sealed class MainForm : Form
         {
             Program.Step("RGB suchen");
             var dev = PolychromeUsb.Probe();
-            if (dev == null) return;
-            try
+            RgbService svc;
+            try { svc = new RgbService(dev, () => _keys); }
+            catch (Exception ex) { ErrorLog.Write("RGB", ex); return; }
+            void Show()
             {
-                BeginInvoke(() =>
+                try
                 {
-                    try
+                    BeginInvoke(() =>
                     {
-                        _rgb = new RgbService(dev, () => _keys);
-                        _rgbView = new RgbView(_rgb) { Dock = DockStyle.Fill, Visible = false };
-                        Controls.Add(_rgbView);
-                        _rgbView.BringToFront();
-                        _rgbTab.Visible = true;
-                    }
-                    catch (Exception ex) { ErrorLog.Write("RGB", ex); }
-                });
+                        try
+                        {
+                            bool any;
+                            lock (svc.Targets) any = svc.Targets.Count > 0;
+                            if (!any || _rgbView != null) return;
+                            _rgbView = new RgbView(svc) { Dock = DockStyle.Fill, Visible = false };
+                            Controls.Add(_rgbView);
+                            _rgbView.BringToFront();
+                            _rgbTab.Visible = true;
+                        }
+                        catch (Exception ex) { ErrorLog.Write("RGB", ex); }
+                    });
+                }
+                catch { }
             }
-            catch { }
+            _rgb = svc;
+            svc.TargetsChanged += Show;   // z. B. OpenRGB oder Oasis später gefunden
+            Show();
         });
     }
 
