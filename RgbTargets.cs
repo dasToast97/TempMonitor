@@ -31,6 +31,7 @@ sealed class PolychromeTarget : IRgbTarget
     bool _direct;
     readonly Dictionary<int, Color> _last = new();
     DateTime _lastSend;
+    int _errors;
 
     public PolychromeTarget(PolychromeUsb dev, Func<bool> perLed) { _dev = dev; _perLed = perLed; }
     public string Id => "polychrome";
@@ -53,7 +54,7 @@ sealed class PolychromeTarget : IRgbTarget
         // Standard: jede Zone bekommt eine Farbe über den normalen Statisch-Befehl.
         // Funktioniert mit jedem Controller und jedem Hub, Wellen laufen dann von Zone zu Zone.
         // Der Controller ist langsam: höchstens 12 Updates pro Sekunde, sonst verschluckt er sich (Fehlfarben)
-        if ((DateTime.Now - _lastSend).TotalMilliseconds < 80) return true;
+        if ((DateTime.Now - _lastSend).TotalMilliseconds < 150) return true;
         _lastSend = DateTime.Now;
         for (int i = 0; i < _dev.Zones.Count && i < s.Count; i++)
         {
@@ -61,8 +62,12 @@ sealed class PolychromeTarget : IRgbTarget
             var seg = s[i];
             if (seg.Length == 0) continue;
             var c = seg[seg.Length / 2];
-            if (_last.TryGetValue(z.Index, out var l) && Math.Abs(l.R - c.R) + Math.Abs(l.G - c.G) + Math.Abs(l.B - c.B) < 6) continue;
-            if (!_dev.SetZone(z, 0x01, c, 50)) return false;
+            if (_last.TryGetValue(z.Index, out var l) && Math.Abs(l.R - c.R) + Math.Abs(l.G - c.G) + Math.Abs(l.B - c.B) < 10) continue;
+            if (!_dev.SetZone(z, 0x01, c, 50))
+            {
+                if (++_errors <= 20) RgbSettings.Log($"Mainboard {z.Name}: Senden fehlgeschlagen ({_dev.LastError})");
+                continue;
+            }
             _last[z.Index] = c;
         }
         return true;
