@@ -419,6 +419,8 @@ sealed class RgbSettings
     public bool BoardFollowMigrated { get; set; } = true;
     /// Mainboard-Anschlüsse ohne Beleuchtung: werden bei eigenen Effekten nicht angesprochen (weniger Befehle = weniger Blitze)
     public List<int> BoardZonesOff { get; set; } = new();
+    /// Farbbefehle pro Sekunde ans Mainboard bei eigenen Effekten (mehr = weicher, aber mehr Blitz-Gefahr bei manchen Controllern)
+    public int BoardFps { get; set; } = 10;
     /// Mainboard: jede LED einzeln (Direktmodus, experimentell) statt einer Farbe je Zone
     public bool BoardPerLed { get; set; }
 
@@ -491,7 +493,7 @@ sealed class RgbService
     public RgbService(PolychromeUsb? dev, Func<KeySensors?> keys)
     {
         Device = dev;
-        if (dev != null) Targets.Add(new PolychromeTarget(dev, () => Settings?.BoardPerLed == true, z => Settings?.BoardZonesOff.Contains(z) != true));
+        if (dev != null) Targets.Add(new PolychromeTarget(dev, () => Settings?.BoardPerLed == true, z => Settings?.BoardZonesOff.Contains(z) != true, () => Settings?.BoardFps ?? 10));
         _keyboard = IteKeyboardTarget.Probe();
         Task.Run(Diagnose);
         if (_keyboard != null) Targets.Add(_keyboard);
@@ -933,6 +935,8 @@ sealed class RgbView : FlowLayoutPanel
         {
             var info = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
             info.Note("Mainboard: " + string.Join(" · ", board.Zones.Select(z => z.Kind == RgbZoneKind.Addressable ? $"{z.Name} ({z.LedCount} LEDs)" : z.Name)));
+            info.Numbers(("Farbbefehle pro Sekunde ans Mainboard (mehr = weicher, weniger = weniger Blitze)", (float)Math.Clamp(st.BoardFps, 2, 30), 2, 30, "",
+                (Action<float>)(v => { st.BoardFps = (int)v; st.Save(); })));
             info.Note("Benutzte Anschlüsse – nur wo wirklich Beleuchtung dranhängt (weniger Befehle ans Mainboard = weniger Blitze):", muted: false);
             foreach (var z in board.Zones)
             {

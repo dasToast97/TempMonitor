@@ -34,7 +34,8 @@ sealed class PolychromeTarget : IRgbTarget
     int _errors;
 
     readonly Func<int, bool> _zoneOn;
-    public PolychromeTarget(PolychromeUsb dev, Func<bool> perLed, Func<int, bool> zoneOn) { _dev = dev; _perLed = perLed; _zoneOn = zoneOn; }
+    readonly Func<int> _fps;
+    public PolychromeTarget(PolychromeUsb dev, Func<bool> perLed, Func<int, bool> zoneOn, Func<int> fps) { _dev = dev; _perLed = perLed; _zoneOn = zoneOn; _fps = fps; }
     public string Id => "polychrome";
     public string Name => "Mainboard (ASRock Polychrome)";
     public string Kind => "Mainboard";
@@ -55,7 +56,7 @@ sealed class PolychromeTarget : IRgbTarget
         // Standard: jede Zone bekommt eine Farbe über den normalen Statisch-Befehl.
         // Funktioniert mit jedem Controller und jedem Hub, Wellen laufen dann von Zone zu Zone.
         // Der Controller ist langsam: höchstens 12 Updates pro Sekunde, sonst verschluckt er sich (Fehlfarben)
-        if ((DateTime.Now - _lastSend).TotalMilliseconds < 100) return true;
+        if ((DateTime.Now - _lastSend).TotalMilliseconds < 1000.0 / Math.Clamp(_fps(), 2, 30)) return true;
         _lastSend = DateTime.Now;
         for (int i = 0; i < _dev.Zones.Count && i < s.Count; i++)
         {
