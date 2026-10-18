@@ -415,7 +415,8 @@ sealed class RgbSettings
     /// Geräte, bei denen Rot und Grün vertauscht ankommen (Häkchen in der Geräteliste)
     public List<string> SwapRG { get; set; } = new();
     /// Eigene Effekte, aber das Mainboard läuft mit seinen eigenen (stabilen) Effekten
-    public bool BoardHardware { get; set; }
+    public bool BoardHardware { get; set; } = true;
+    public bool BoardFollowMigrated { get; set; } = true;
     /// Mainboard: jede LED einzeln (Direktmodus, experimentell) statt einer Farbe je Zone
     public bool BoardPerLed { get; set; }
 
@@ -438,7 +439,17 @@ sealed class RgbSettings
 
     public static RgbSettings Load()
     {
-        try { if (File.Exists(FilePath)) return JsonSerializer.Deserialize<RgbSettings>(File.ReadAllText(FilePath)) ?? new(); }
+        try
+        {
+            if (File.Exists(FilePath))
+            {
+                var json = File.ReadAllText(FilePath);
+                var s = JsonSerializer.Deserialize<RgbSettings>(json) ?? new();
+                // Einmalig: Mainboard standardmäßig mit eigenen (stabilen) Effekten, die dem eigenen Effekt folgen
+                if (!json.Contains("\"BoardFollowMigrated\"")) { s.BoardHardware = true; s.BoardFollowMigrated = true; }
+                return s;
+            }
+        }
         catch { }
         return new();
     }
@@ -490,7 +501,7 @@ sealed class RgbService
         Engine = new EffectEngine(this);
         if (dev == null) Settings.Custom = true;   // ohne Mainboard-Controller gibt es nur eigene Effekte
         if (Settings.Custom) Engine.Start();
-        if (!Settings.Custom ? Settings.ApplyOnStart : Settings.BoardHardware) Task.Run(ApplyAll);
+        if (!Settings.Custom ? Settings.ApplyOnStart : Settings.BoardHardware) Task.Run(() => { if (Settings.Custom) ApplyBoardFromCustom(); else ApplyAll(); });
         new Thread(Discover) { IsBackground = true, Name = "RGB-Suche" }.Start();
         if (Settings.OpenRgbAuto == true && Settings.Custom) StartOpenRgb();
     }
@@ -598,6 +609,7 @@ sealed class RgbService
         {
             Engine.Start();
             if (Settings.OpenRgbAuto == true) StartOpenRgb();
+            if (Settings.BoardHardware && Device != null) Task.Run(ApplyBoardFromCustom);
         }
         else Task.Run(() =>
         {
@@ -626,7 +638,7 @@ sealed class RgbService
                     if (Device != null && (!Settings.Custom || Settings.BoardHardware))
                     {
                         await Task.Delay(1500);
-                        try { Device.RefreshConfig(); ApplyAll(); } catch { }
+                        try { Device.RefreshConfig(); if (Settings.Custom) ApplyBoardFromCustom(); else ApplyAll(); } catch { }
                     }
                     break;
                 }
@@ -662,6 +674,43 @@ sealed class RgbService
         }
         if (!Device.SetZone(z, (byte)s.Mode, Color.FromArgb(s.Color), s.Speed))
             RgbSettings.Log($"{z.Name}: Senden fehlgeschlagen ({Device.LastError})");
+    }
+
+    (byte Mode, string Name) BoardMode() => Settings.Effect.Type switch
+    {
+        EffectType.Breathing => (0x02, "Atmen"),
+        EffectType.ColorCycle => (0x04, "Farbwechsel"),
+        EffectType.Sparkle => (0x05, "Zufall"),
+        EffectType.Wave or EffectType.RainbowWave => (0x07, "Welle"),
+        EffectType.Comet => (0x0B, "Scannen"),
+        EffectType.Fire => (0x0C, "Neon"),
+        EffectType.TempWave => ((byte)RgbSettings.TempMode, "Temperatur als Farbe"),
+        _ => (0x01, "Statisch"),
+    };
+
+    public string BoardFollowText()
+    {
+        var fx = Settings.Effect;
+        var c = fx.Colors.Count > 0 ? Color.FromArgb(fx.Colors[0]) : Color.FromArgb(0, 120, 255);
+        return $"{BoardMode().Name}, erste Farbe (#{c.R:X2}{c.G:X2}{c.B:X2}), Tempo {fx.Speed} %";
+    }
+
+    /// Mischbetrieb: Mainboard-Effekt aus dem eigenen Effekt ableiten (Typ, erste Farbe × Helligkeit, Tempo)
+    public void ApplyBoardFromCustom()
+    {
+        if (Device == null || !Settings.BoardHardware) return;
+        var fx = Settings.Effect;
+        var c = fx.Colors.Count > 0 ? Color.FromArgb(fx.Colors[0]) : Color.FromArgb(0, 120, 255);
+        float b = Math.Clamp(fx.Brightness, 5, 100) / 100f;
+        c = Color.FromArgb((int)(c.R * b), (int)(c.G * b), (int)(c.B * b));
+        var mode = BoardMode().Mode;
+        foreach (var z in Device.Zones)
+        {
+            var s = Settings.For(z.Index);
+            s.Mode = mode; s.Color = c.ToArgb(); s.Speed = Math.Clamp(fx.Speed, 0, 100);
+        }
+        Settings.Save();
+        ApplyAll();
     }
 
     public void ApplyAll()
@@ -845,14 +894,17 @@ sealed class RgbView : FlowLayoutPanel
                 st.BoardHardware, v =>
                 {
                     st.BoardHardware = v; st.Save();
-                    if (v) Task.Run(_svc.ApplyAll);
+                    if (v) Task.Run(_svc.ApplyBoardFromCustom);
                     RebuildSoon();
                 });
-            bh.Note("Empfohlen, wenn die Mainboard-Lüfter bei eigenen Effekten wild flackern (manche Hubs/Lüfter vertragen das nicht).");
+            bh.Note(st.BoardHardware
+                ? "Das Mainboard folgt automatisch deinem Effekt so gut es kann: " + _svc.BoardFollowText() +
+                  ". Helligkeit wirkt über die Farbe; „nicht ganz aus“ und die Atmen-Zeiten kann nur die Software (Maus, Tastatur …)."
+                : "Ohne Haken bekommt auch das Mainboard die eigenen Effekte – bei manchen Hubs/Lüftern flackert das wild.");
             Add(bh);
         }
         if (st.Custom || _svc.Device == null) BuildCustom();
-        if (!st.Custom && _svc.Device != null || st.Custom && st.BoardHardware && _svc.Device != null) BuildHardware();
+        if (!st.Custom && _svc.Device != null) BuildHardware();
 
         if (_svc.Device is PolychromeUsb board)
         {
@@ -898,7 +950,11 @@ sealed class RgbView : FlowLayoutPanel
     {
         var st = _svc.Settings;
         var fx = st.Effect;
-        void Save() => st.Save();
+        void Save()
+        {
+            st.Save();
+            if (st.BoardHardware && _svc.Device != null) Debounce(() => Task.Run(_svc.ApplyBoardFromCustom));
+        }
 
         Add(new SectionHeader("Eigener Effekt", Theme.Muted) { Height = S(34), Margin = new Padding(S(6), S(10), S(6), S(2)) });
         Add(new LedPreview(_svc.Engine) { Height = S(46), Margin = new Padding(S(6), S(2), S(6), S(4)) });
