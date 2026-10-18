@@ -467,7 +467,7 @@ sealed class MainForm : Form
         };
     }
 
-    readonly System.Windows.Forms.Timer _updateTimer = new() { Interval = 5 * 60 * 1000 };
+    readonly System.Windows.Forms.Timer _updateTimer = new() { Interval = 60 * 1000 };
     Updater.ReleaseInfo? _pendingUpdate;
     string? _notifiedTag;
 
@@ -475,7 +475,7 @@ sealed class MainForm : Form
     {
         try
         {
-            if (_exiting) return;
+            if (_exiting || !AppSettings.Instance.AutoUpdateCheck) return;
             var rel = await Updater.PeekAsync();
             if (rel == null) return;
             if (Visible && WindowState != FormWindowState.Minimized)

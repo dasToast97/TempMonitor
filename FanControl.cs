@@ -98,6 +98,8 @@ sealed class FanChannelSettings
     public FanKind? Kind { get; set; }           // null = automatisch erkennen
     /// Automatisch als Pumpe erkannt (Drehzahlverhalten), gilt solange Kind == null
     public bool DetectedPump { get; set; }
+    /// Temperaturquellen hat der Nutzer selbst gewählt (dann nicht automatisch ändern)
+    public bool SourcesUserSet { get; set; }
     public string? PumpReason { get; set; }
     public bool SourcesInitialized { get; set; }
     public bool UseCpu { get; set; }
@@ -190,6 +192,8 @@ sealed class FanSettings
 
     // ----- Lüftergruppen: der erste Lüfter regelt, die anderen folgen -----
     public List<FanGroup> Groups { get; set; } = new();
+    /// Anschlüsse, die trotz fehlender Drehzahl angezeigt werden sollen
+    public List<string> ShowPorts { get; set; } = new();
 
     // ----- Automatischer Profilwechsel -----
     public bool AutoGame { get; set; }
@@ -423,6 +427,12 @@ sealed class FanChannel
     public float TestFromPct, TestToPct, TestStartRpm;
     public float LastTestedPct = -1;
     public float IdentifyStartRpm = -1;
+    /// Erkennen: true = anhalten (fällt am besten auf), false = hochdrehen (wenn er gerade steht)
+    public bool IdentifyStop;
+    public float IdentifyMinRpm = float.MaxValue, IdentifyMaxRpm;
+    /// Ergebnis des letzten Erkennens (für die Nachfrage in der Oberfläche)
+    public string? IdentifyResult;
+    public volatile bool IdentifyFinished;
     public int ReadbackMismatchTicks;
     public float? DriverTemp;
 
@@ -532,6 +542,7 @@ sealed class FanController
         FanNaming.BySensor.Clear();
         FanNaming.Hidden.Clear();
         HiddenCount = 0;
+        HiddenPorts.Clear();
 
         foreach (var hw in computer.Hardware)
         {
@@ -575,64 +586,19 @@ sealed class FanController
 
             // Nicht angeschlossen: Mainboard-Anschluss ohne Drehzahl.
             // GPU-Lüfter bleiben immer, da sie im Leerlauf oft absichtlich stehen.
-            bool connected = gpu || (rpm?.Value ?? 0) > 0;
+            bool connected = gpu || (rpm?.Value ?? 0) > 0 || _s.ShowPorts.Contains(sensor.Control!.Identifier.ToString());
             if (!connected)
             {
+                var (t0, s0, r0, b0, f0) = (top, sensor, rpm, baseName, fans);
+                HiddenPorts.Add(new HiddenPort(sensor.Control!.Identifier.ToString(), FriendlyName(rpm?.Name ?? baseName), top.Name,
+                    sensor.Control!, rpm, () => AddBoardChannel(t0, s0, r0, b0, false, f0)));
                 HiddenCount++;
                 FanNaming.Hidden.Add(sensor.Identifier.ToString());
                 if (rpm != null) FanNaming.Hidden.Add(rpm.Identifier.ToString());
                 continue;
             }
 
-            string id = sensor.Control.Identifier.ToString();
-            var cfg = _s.For(id);
-
-            string defName = gpu
-                ? (fans.Count > 1 && rpm != null ? $"Grafikkarte · {rpm.Name}" : "Grafikkarten-Lüfter")
-                : FriendlyName(rpm?.Name ?? baseName);
-
-            // AMD-Grafikkarten ab RX 6000: eigener Weg über Overdrive 8
-            AmdOd8Fan? od8 = null;
-            string? od8Note = null;
-            if (top.HardwareType == HardwareType.GpuAmd && !Channels.Any(c => c.Od8 != null && c.HardwareName == top.Name))
-            {
-                try { od8 = AmdOd8Fan.TryCreate(top); } catch { od8 = null; }
-                od8Note = AmdOd8Fan.LastInitInfo;
-            }
-
-            var ch = new FanChannel
-            {
-                PumpHeader = !gpu && IsPumpHeader(top, rpm?.Name ?? baseName),
-                Od8 = od8,
-                Od8Note = od8 == null ? od8Note : null,
-                Control = sensor.Control,
-                ControlSensor = sensor,
-                Rpm = rpm,
-                Id = id,
-                DefaultName = defName,
-                HardwareName = top.Name,
-                IsGpu = gpu,
-                Cfg = cfg,
-            };
-
-            // Lüfter der Grafikkarte kühlen nur die Grafikkarte
-            if (gpu)
-            {
-                cfg.UseGpu = true;
-                cfg.UseCpu = cfg.UseBoard = false;
-                cfg.SourcesInitialized = true;
-            }
-            if (!cfg.SourcesInitialized)
-            {
-                if (gpu) cfg.UseGpu = true;
-                else if (ch.Kind == FanKind.Pump || defName.Contains("CPU", StringComparison.OrdinalIgnoreCase)) cfg.UseCpu = true;
-                else cfg.UseCpu = cfg.UseGpu = true;   // Gehäuselüfter: CPU + GPU (Mainboard nur als Grenze)
-                cfg.SourcesInitialized = true;
-            }
-
-            Channels.Add(ch);
-            FanNaming.BySensor[sensor.Identifier.ToString()] = ch;
-            if (rpm != null) FanNaming.BySensor[rpm.Identifier.ToString()] = ch;
+            AddBoardChannel(top, sensor, rpm, baseName, gpu, fans);
         }
 
         // Drehzahl ohne Steuerung (z. B. Pumpe an einem festen Anschluss, AIO-Pumpe über USB):
@@ -662,6 +628,105 @@ sealed class FanController
             }
         }
         foreach (var sub in hw.SubHardware) AddChannels(top, sub);
+    }
+
+    void AddBoardChannel(IHardware top, ISensor sensor, ISensor? rpm, string baseName, bool gpu, List<ISensor> fans)
+    {
+        string id = sensor.Control.Identifier.ToString();
+        var cfg = _s.For(id);
+
+        string defName = gpu
+            ? (fans.Count > 1 && rpm != null ? $"Grafikkarte · {rpm.Name}" : "Grafikkarten-Lüfter")
+            : FriendlyName(rpm?.Name ?? baseName);
+
+        // AMD-Grafikkarten ab RX 6000: eigener Weg über Overdrive 8
+        AmdOd8Fan? od8 = null;
+        string? od8Note = null;
+        if (top.HardwareType == HardwareType.GpuAmd && !Channels.Any(c => c.Od8 != null && c.HardwareName == top.Name))
+        {
+            try { od8 = AmdOd8Fan.TryCreate(top); } catch { od8 = null; }
+            od8Note = AmdOd8Fan.LastInitInfo;
+        }
+
+        var ch = new FanChannel
+        {
+            PumpHeader = !gpu && IsPumpHeader(top, rpm?.Name ?? baseName),
+            Od8 = od8,
+            Od8Note = od8 == null ? od8Note : null,
+            Control = sensor.Control,
+            ControlSensor = sensor,
+            Rpm = rpm,
+            Id = id,
+            DefaultName = defName,
+            HardwareName = top.Name,
+            IsGpu = gpu,
+            Cfg = cfg,
+        };
+
+        // Lüfter der Grafikkarte kühlen nur die Grafikkarte
+        if (gpu)
+        {
+            cfg.UseGpu = true;
+            cfg.UseCpu = cfg.UseBoard = false;
+            cfg.SourcesInitialized = true;
+        }
+        if (!cfg.SourcesInitialized)
+        {
+            if (gpu) cfg.UseGpu = true;
+            else if (ch.Kind == FanKind.Pump || defName.Contains("CPU", StringComparison.OrdinalIgnoreCase)) cfg.UseCpu = true;
+            else cfg.UseCpu = cfg.UseGpu = true;   // Gehäuselüfter: CPU + GPU (Mainboard nur als Grenze)
+            cfg.SourcesInitialized = true;
+        }
+        if (!gpu && ch.Kind == FanKind.Pump) PumpSources(cfg);
+
+        Channels.Add(ch);
+        FanNaming.BySensor[sensor.Identifier.ToString()] = ch;
+        if (rpm != null) FanNaming.BySensor[rpm.Identifier.ToString()] = ch;
+    }
+
+    /// Leerer bzw. ausgeblendeter Anschluss (keine Drehzahl beim Start)
+    public sealed record HiddenPort(string Id, string Name, string HardwareName, IControl Control, ISensor? Rpm, Action Add);
+    public List<HiddenPort> HiddenPorts { get; } = new();
+
+    /// Ausgeblendeten Anschluss dauerhaft anzeigen und steuern
+    /// Pumpe (Wasserkühlung am Prozessor): regelt nur nach der CPU, außer der Nutzer hat es anders gewählt
+    static void PumpSources(FanChannelSettings cfg)
+    {
+        if (cfg.SourcesUserSet) return;
+        cfg.UseCpu = true;
+        cfg.UseGpu = false;
+        cfg.UseBoard = false;
+    }
+
+    public void ShowPort(HiddenPort p)
+    {
+        lock (_lock)
+        {
+            if (!HiddenPorts.Remove(p)) return;
+            if (!_s.ShowPorts.Contains(p.Id)) _s.ShowPorts.Add(p.Id);
+            HiddenCount = Math.Max(0, HiddenCount - 1);
+            p.Add();
+            _s.Save();
+        }
+    }
+
+    /// Ausgeblendete Anschlüsse prüfen: kurz auf 100 % – wo sich danach etwas dreht, hängt ein Lüfter
+    /// (z. B. Lüfter ohne Drehzahlsignal im Stillstand, oder im Leerlauf stehende Lüfter)
+    public async Task<List<HiddenPort>> ProbeHiddenAsync()
+    {
+        List<HiddenPort> ports;
+        lock (_lock) ports = HiddenPorts.ToList();
+        var found = new List<HiddenPort>();
+        foreach (var p in ports) { try { p.Control.SetSoftware(100); } catch { } }
+        await Task.Delay(7000);
+        foreach (var p in ports)
+        {
+            try { p.Rpm?.Hardware.Update(); } catch { }
+            if ((p.Rpm?.Value ?? 0) > 100) found.Add(p);
+            try { p.Control.SetDefault(); } catch { }
+        }
+        foreach (var p in found) ShowPort(p);
+        return found;
     }
 
     /// Board-Beschriftung des Anschlusses: Pumpe? (W_PUMP, AIO_PUMP, PUMP_FAN, ASRock CPU_FAN2/WP …)
@@ -696,7 +761,7 @@ sealed class FanController
         if (reason == null) return;
         ch.Cfg.DetectedPump = true;
         ch.Cfg.PumpReason = reason;
-        if (!ch.Cfg.UseGpu && !ch.Cfg.UseBoard) ch.Cfg.UseCpu = true;
+        PumpSources(ch.Cfg);
         _s.Save();
     }
 
@@ -1124,8 +1189,16 @@ sealed class FanController
     {
         lock (_lock)
         {
-            ch.IdentifyUntil = DateTime.Now.AddSeconds(8);
-            ch.IdentifyStartRpm = ch.Rpm?.Value ?? -1;
+            float rpm = ch.Rpm?.Value ?? -1;
+            // Drehender Lüfter: anhalten – Stillstand sieht und hört man sofort. Steht er gerade: hochdrehen.
+            ch.IdentifyStop = rpm < 0 || rpm >= 300;
+            // Pumpen nur kurz anhalten (Wasser puffert die Wärme), Lüfter etwas länger
+            ch.IdentifyUntil = DateTime.Now.AddSeconds(ch.IdentifyStop && ch.Kind == FanKind.Pump ? 5 : 7);
+            ch.IdentifyStartRpm = rpm;
+            ch.IdentifyMinRpm = float.MaxValue;
+            ch.IdentifyMaxRpm = 0;
+            ch.IdentifyResult = null;
+            ch.IdentifyFinished = false;
             ch.NotControllable = false;
             ch.TestFailures = 0;
             ch.TestStart = null;
@@ -1244,29 +1317,56 @@ sealed class FanController
             return true;
         }
 
-        // ----- Erkennen: 5 Sekunden volle Drehzahl -----
+        // ----- Erkennen: einige Sekunden anhalten (oder hochdrehen, wenn er steht) -----
         if (DateTime.Now < ch.IdentifyUntil)
         {
+            // Sicherheit: bei heißer CPU/GPU nicht anhalten
+            if (ch.IdentifyStop && (Temp(Component.Cpu) >= 85 || Temp(Component.Hotspot) >= 100)) ch.IdentifyStop = false;
             ch.Identifying = true;
-            ch.Output = 100;
-            Write(ch, 100);
-            ch.Status = "Erkennen: dieser Lüfter läuft gerade auf 100 % …";
+            float pct = ch.IdentifyStop ? 0 : 100;
+            ch.Output = pct;
+            Write(ch, pct);
+            if (ch.Rpm?.Value is float r)
+            {
+                ch.IdentifyMinRpm = Math.Min(ch.IdentifyMinRpm, r);
+                ch.IdentifyMaxRpm = Math.Max(ch.IdentifyMaxRpm, r);
+            }
+            ch.Status = ch.IdentifyStop
+                ? $"Erkennen: {(ch.Kind == FanKind.Pump ? "diese Pumpe" : "dieser Lüfter")} wird gerade angehalten – welcher steht still? …"
+                : "Erkennen: dieser Lüfter dreht gerade voll hoch …";
             return true;
         }
         if (ch.Identifying)
         {
             ch.Identifying = false;
-            // Hat der Lüfter auf 100 % reagiert?
-            if (ch.IdentifyStartRpm >= 0 && ch.Rpm?.Value is float after)
+            float before = ch.IdentifyStartRpm;
+            bool hasRpm = before >= 0 && ch.IdentifyMaxRpm > 0 || ch.IdentifyMinRpm < float.MaxValue;
+            bool reacted;
+            if (!hasRpm) { reacted = true; ch.IdentifyResult = "Dieser Anschluss meldet keine Drehzahl – bitte selbst schauen, was sich bewegt hat."; }
+            else if (ch.IdentifyStop)
             {
-                float before = ch.IdentifyStartRpm;
-                bool reacted = after - before >= Math.Max(80f, before * 0.10f) || after > 2500;
-                if (!reacted && before < 2000)
-                {
-                    ch.NotControllable = true;
-                    SafeDefault(ch);
-                }
+                float min = ch.IdentifyMinRpm;
+                reacted = min <= before * 0.6f || min < 300;
+                ch.IdentifyResult = reacted
+                    ? $"Drehzahl fiel von {before:N0} auf {min:N0} U/min – an diesem Anschluss hängt, was eben stehen geblieben ist."
+                    : $"Die Drehzahl blieb bei ca. {min:N0} U/min – dieser Anschluss lässt sich nicht anhalten (z. B. Pumpe mit fester Drehzahl oder BIOS auf „Full Speed“).";
             }
+            else
+            {
+                float max = ch.IdentifyMaxRpm;
+                reacted = max >= Math.Max(before, 0) + 300 || max > 600;
+                ch.IdentifyResult = reacted
+                    ? $"Drehzahl stieg von {Math.Max(before, 0):N0} auf {max:N0} U/min – an diesem Anschluss hängt, was eben hochgedreht hat."
+                    : "Keine Reaktion – hier hängt vermutlich nichts, oder der Lüfter meldet keine Drehzahl.";
+            }
+            // Gar keine Reaktion bei sonst drehendem Lüfter: wird nur überwacht
+            if (!reacted && before >= 300)
+            {
+                ch.NotControllable = true;
+                SafeDefault(ch);
+            }
+            ch.IdentifyFinished = true;
+            ch.KickUntil = DateTime.Now.AddSeconds(3);   // nach dem Anhalten kräftig wieder anlaufen
             if (prof.Profile == FanProfile.Bios) SafeDefault(ch);
         }
 

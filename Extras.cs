@@ -594,6 +594,8 @@ sealed class SettingsView : FlowLayoutPanel
         a.Numbers(("Abstand zwischen zwei Messungen", (float)s.LogIntervalSeconds, 1, 60, "Sekunden", (Action<float>)(v => { s.LogIntervalSeconds = (int)v; Save(); })));
         a.Check("Sparmodus: Laufwerke & Netzwerk seltener abfragen, im Hintergrund ohne Lüftersteuerung nur alle 2 Sekunden messen",
             s.PowerSave, v => { s.PowerSave = v; Save(); });
+        a.Check("Automatisch nach Updates suchen (jede Minute; aus = nur beim Start und per Knopf)", s.AutoUpdateCheck,
+            v => { s.AutoUpdateCheck = v; Save(); });
         bool auto = Autostart.IsEnabled;
         a.Check("Mit Windows starten (unsichtbar im Hintergrund)", auto, v =>
         {

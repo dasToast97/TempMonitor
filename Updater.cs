@@ -35,11 +35,25 @@ static class Updater
 
     public record ReleaseInfo(Version Version, string Tag, string Notes, string DownloadUrl, string PageUrl);
 
+    static string? _etag, _lastJson;
+
     static async Task<ReleaseInfo?> GetLatestAsync()
     {
         if (Repo is null) return null;
         using var http = CreateClient();
-        var json = await http.GetStringAsync($"https://api.github.com/repos/{Repo}/releases/latest");
+        // Bedingte Abfrage: „nicht geändert“ (304) zählt nicht gegen GitHubs Grenze von 60 Abfragen pro Stunde
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"https://api.github.com/repos/{Repo}/releases/latest");
+        if (_etag != null && _lastJson != null) req.Headers.TryAddWithoutValidation("If-None-Match", _etag);
+        using var resp = await http.SendAsync(req);
+        string json;
+        if (resp.StatusCode == System.Net.HttpStatusCode.NotModified && _lastJson != null) json = _lastJson;
+        else
+        {
+            resp.EnsureSuccessStatusCode();
+            json = await resp.Content.ReadAsStringAsync();
+            _lastJson = json;
+            _etag = resp.Headers.ETag?.ToString();
+        }
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 

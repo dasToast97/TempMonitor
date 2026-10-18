@@ -119,6 +119,35 @@ sealed class FanView : FlowLayoutPanel
             if (lastCard != null) SetFlowBreak(lastCard, true);
         }
 
+        // ----- Leere / ausgeblendete Anschlüsse -----
+        List<FanController.HiddenPort> hidden;
+        lock (_ctl.HiddenPorts) hidden = _ctl.HiddenPorts.ToList();
+        if (hidden.Count > 0)
+        {
+            var hc = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+            hc.Note($"Ausgeblendet, weil beim Start keine Drehzahl kam: {string.Join(", ", hidden.Select(h => h.Name))}. " +
+                    "Fehlt ein Lüfter (z. B. die Radiator-Lüfter am CPU-Anschluss)? „Prüfen“ dreht alle leeren Anschlüsse kurz hoch " +
+                    "und zeigt die, an denen sich etwas dreht. Lüfter ohne Drehzahlsignal kannst du auch direkt einblenden.");
+            Button? probeBtn = null;
+            hc.Buttons(("Leere Anschlüsse prüfen", async () =>
+            {
+                if (probeBtn != null) { probeBtn.Enabled = false; probeBtn.Text = "Prüfe … (7 s)"; }
+                var found = await _ctl.ProbeHiddenAsync();
+                MessageBox.Show(FindForm(), found.Count > 0
+                        ? "Gefunden und eingeblendet: " + string.Join(", ", found.Select(f => f.Name)) + "\n\nMit „Erkennen“ auf der neuen Karte siehst du, welcher Lüfter es ist."
+                        : "An keinem leeren Anschluss hat sich etwas gedreht (oder die Lüfter melden keine Drehzahl). Du kannst einen Anschluss trotzdem einblenden.",
+                    "Leere Anschlüsse", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Rebuild();
+            }));
+            probeBtn = hc.Controls.OfType<Button>().LastOrDefault();
+            foreach (var h in hidden)
+            {
+                var hh = h;
+                hc.Buttons(($"{h.Name} einblenden", () => { _ctl.ShowPort(hh); Rebuild(); }));
+            }
+            AddFull(hc);
+        }
+
         // ----- Laptop (Tongfang) -----
         _laptopState = null;
         if (_ctl.Laptop is TongfangLaptop lap)
@@ -753,6 +782,7 @@ sealed class FanCard : Control
             cb.CheckedChanged += (_, _) =>
             {
                 ch.Cfg.SetUse(comp, cb.Checked);
+                ch.Cfg.SourcesUserSet = true;
                 ctl.Save();
             };
             _sources[c] = cb;
@@ -812,6 +842,49 @@ sealed class FanCard : Control
         foreach (var cb in _sources.Values) Controls.Add(cb);
         Controls.Add(_curve);
         UpdateSourceTexts();
+    }
+
+    /// Nach „Erkennen“: Was hat sich bewegt? -> Name, Art und Temperaturquellen passend setzen
+    void AskIdentified()
+    {
+        var bCpu = new TaskDialogButton("CPU-Kühler / Radiator-Lüfter");
+        var bCase = new TaskDialogButton("Gehäuse-Lüfter");
+        var bPump = new TaskDialogButton("Pumpe (Wasserkühlung)");
+        var bNone = new TaskDialogButton("Nichts gesehen / weiß nicht");
+        var page = new TaskDialogPage
+        {
+            Caption = "Erkennen",
+            Heading = $"„{_ch.DisplayName}“ – was ist eben stehen geblieben bzw. hochgedreht?",
+            Text = (_ch.IdentifyResult ?? "") + "\n\nDeine Auswahl setzt Namen, Art und Temperaturquellen passend (später jederzeit änderbar).",
+            Icon = TaskDialogIcon.Information,
+            Buttons = { bCpu, bCase, bPump, bNone },
+            AllowCancel = true,
+        };
+        var r = TaskDialog.ShowDialog(FindForm()!, page);
+        var cfg = _ch.Cfg;
+        if (r == bCpu)
+        {
+            cfg.Kind = FanKind.Fan;
+            cfg.CustomName = "CPU-Kühler";
+            cfg.UseCpu = true; cfg.UseGpu = false; cfg.UseBoard = false;
+        }
+        else if (r == bCase)
+        {
+            cfg.Kind = FanKind.Fan;
+            cfg.CustomName = "Gehäuse-Lüfter";
+            cfg.UseCpu = true; cfg.UseGpu = true; cfg.UseBoard = false;
+        }
+        else if (r == bPump)
+        {
+            cfg.Kind = FanKind.Pump;
+            cfg.CustomName = "Pumpe";
+            cfg.UseCpu = true; cfg.UseGpu = false; cfg.UseBoard = false;
+        }
+        else return;
+        cfg.SourcesUserSet = true;
+        cfg.SourcesInitialized = true;
+        _ctl.Save();
+        _rebuild();
     }
 
     void SaveName()
@@ -894,6 +967,11 @@ sealed class FanCard : Control
 
     public void RefreshValues()
     {
+        if (_ch.IdentifyFinished)
+        {
+            _ch.IdentifyFinished = false;
+            BeginInvoke(AskIdentified);
+        }
         UpdateSourceTexts();
         _curve.CurrentTemp = _ch.DriverTemp;
         _curve.CurrentOutput = _ch.Output >= 0 ? _ch.Output : null;

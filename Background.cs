@@ -15,6 +15,8 @@ sealed class AppSettings
     public bool CloseHintShown { get; set; }
     /// Sparmodus: Laufwerke/Netzwerk seltener abfragen, im Hintergrund weniger oft messen
     public bool PowerSave { get; set; } = true;
+    /// Jede Minute nach Updates suchen (beim Start wird immer gesucht)
+    public bool AutoUpdateCheck { get; set; } = true;
 
     // ----- Warnungen (Windows-Benachrichtigung) -----
     public bool WarnEnabled { get; set; } = true;
