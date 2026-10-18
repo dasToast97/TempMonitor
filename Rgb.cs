@@ -536,7 +536,26 @@ sealed class RgbService
         }
     }
 
-    public bool IsEnabled(IRgbTarget t) => !Settings.DisabledTargets.Contains(t.Id);
+    public bool IsEnabled(IRgbTarget t)
+    {
+        if (Settings.DisabledTargets.Contains(t.Id)) return false;
+        // Steuert OpenRGB das ASRock-Mainboard schon, nicht doppelt senden (sonst Flackern)
+        if (t is PolychromeTarget && OpenRgbHasBoard) return false;
+        return true;
+    }
+
+    /// OpenRGB kennt das ASRock-Mainboard (dann läuft der Effekt dort über OpenRGB)
+    public bool OpenRgbHasBoard
+    {
+        get
+        {
+            lock (Targets)
+                return Targets.Any(x => x is OpenRgbTarget o && IsEnabledRaw(o)
+                    && (o.Name.Contains("ASRock", StringComparison.OrdinalIgnoreCase) || o.Name.Contains("Polychrome", StringComparison.OrdinalIgnoreCase)));
+        }
+    }
+
+    bool IsEnabledRaw(IRgbTarget t) => !Settings.DisabledTargets.Contains(t.Id);
 
     public float? Temperature() => _keys()?.Value(Settings.TempSource);
 
@@ -683,7 +702,8 @@ sealed class RgbView : FlowLayoutPanel
         {
             var tt = t;
             int leds = t.Segments.Sum();
-            top.Check($"{t.Name}   ·   {t.Kind}, {leds} LED{(leds == 1 ? "" : "s")}", _svc.IsEnabled(t), v =>
+            string extra = t is PolychromeTarget && _svc.OpenRgbHasBoard ? "   ·   läuft gerade über OpenRGB" : "";
+            top.Check($"{t.Name}   ·   {t.Kind}, {leds} LED{(leds == 1 ? "" : "s")}{extra}", !st.DisabledTargets.Contains(t.Id), v =>
             {
                 if (v) st.DisabledTargets.Remove(tt.Id); else if (!st.DisabledTargets.Contains(tt.Id)) st.DisabledTargets.Add(tt.Id);
                 st.Save();
