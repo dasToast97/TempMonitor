@@ -575,9 +575,9 @@ sealed class RgbService
     public bool IsEnabled(IRgbTarget t)
     {
         if (Settings.DisabledTargets.Contains(t.Id)) return false;
-        if (Settings.BoardHardware && Device != null && (t is PolychromeTarget || IsBoardViaOpenRgb(t))) return false;
-        // Steuert OpenRGB das ASRock-Mainboard schon, nicht doppelt senden (sonst Flackern)
-        if (t is PolychromeTarget && OpenRgbHasBoard) return false;
+        // ASRock-Mainboard nie über OpenRGB (dessen Direktmodus flackert dort) – Toast Temperatur steuert es selbst
+        if (Device != null && IsBoardViaOpenRgb(t)) return false;
+        if (Settings.BoardHardware && Device != null && t is PolychromeTarget) return false;
         return true;
     }
 
@@ -841,7 +841,8 @@ sealed class RgbView : FlowLayoutPanel
         {
             var tt = t;
             int leds = t.Segments.Sum();
-            string extra = t is PolychromeTarget && _svc.OpenRgbHasBoard ? "   ·   läuft gerade über OpenRGB" : "";
+            string extra = _svc.Device != null && t is OpenRgbTarget o && (o.Name.Contains("ASRock") || o.Name.Contains("Polychrome"))
+                ? "   ·   wird von Toast Temperatur direkt gesteuert" : "";
             top.Check($"{t.Name}   ·   {t.Kind}, {leds} LED{(leds == 1 ? "" : "s")}{extra}", !st.DisabledTargets.Contains(t.Id), v =>
             {
                 if (v) st.DisabledTargets.Remove(tt.Id); else if (!st.DisabledTargets.Contains(tt.Id)) st.DisabledTargets.Add(tt.Id);
@@ -900,7 +901,8 @@ sealed class RgbView : FlowLayoutPanel
             bh.Note(st.BoardHardware
                 ? "Das Mainboard folgt automatisch deinem Effekt so gut es kann: " + _svc.BoardFollowText() +
                   ". Helligkeit wirkt über die Farbe; „nicht ganz aus“ und die Atmen-Zeiten kann nur die Software (Maus, Tastatur …)."
-                : "Ohne Haken bekommt auch das Mainboard die eigenen Effekte – bei manchen Hubs/Lüftern flackert das wild.");
+                : "Ohne Haken bekommt auch das Mainboard die eigenen Effekte mit allen Einstellungen (eine Farbe je Anschluss, " +
+                  "ca. 7× pro Sekunde). Bei manchen Hubs blitzt es dabei gelegentlich kurz auf.");
             Add(bh);
         }
         if (st.Custom || _svc.Device == null) BuildCustom();
