@@ -96,6 +96,9 @@ sealed class FanChannelSettings
 {
     public string? CustomName { get; set; }
     public FanKind? Kind { get; set; }           // null = automatisch erkennen
+    /// Automatisch als Pumpe erkannt (Drehzahlverhalten), gilt solange Kind == null
+    public bool DetectedPump { get; set; }
+    public string? PumpReason { get; set; }
     public bool SourcesInitialized { get; set; }
     public bool UseCpu { get; set; }
     public bool UseGpu { get; set; }
@@ -352,6 +355,18 @@ sealed class SourceState
     public int SnapBucket = -1;
 }
 
+/// Nur Drehzahlanzeige, keine Steuerung
+sealed class MonitorOnlyFan : IExternalFan
+{
+    public void SetPercent(float pct) { }
+    public void Release() { }
+    public bool Ready => false;
+    public float? LastPercent => null;
+    public string? Problem => "Nur Anzeige";
+    public string? Alarm => null;
+    public string? Note => null;
+}
+
 sealed class FanChannel
 {
     /// Mainboard/GPU-Steuerung über LibreHardwareMonitor (null bei externen Geräten wie der XMG Oasis)
@@ -374,9 +389,20 @@ sealed class FanChannel
 
     public string DisplayName => string.IsNullOrWhiteSpace(Cfg.CustomName) ? DefaultName : Cfg.CustomName!;
 
+    /// Nur Drehzahl, keine Steuerung (z. B. Pumpe an festem Anschluss)
+    public bool MonitorOnly { get; init; }
+    /// Anschlussname deutet auf eine Pumpe (Board-Beschriftung)
+    public bool PumpHeader { get; init; }
+    public int PumpTicks;
+
+    static readonly System.Text.RegularExpressions.Regex PumpWords = new(
+        @"pump|pumpe|\baio\b|aio[\s_]|water|wasser|\bw[_ ]?p\b|/wp|w_pump|kraken|liquid|coolant",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    public static bool LooksLikePump(string name) => PumpWords.IsMatch(name);
+
     public FanKind AutoKind =>
-        DefaultName.Contains("pump", StringComparison.OrdinalIgnoreCase)
-        || DefaultName.Contains("aio", StringComparison.OrdinalIgnoreCase)
+        PumpHeader || Cfg.DetectedPump || LooksLikePump(DefaultName) || LooksLikePump(HardwareName)
             ? FanKind.Pump : FanKind.Fan;
 
     public FanKind Kind => Cfg.Kind ?? AutoKind;
@@ -576,6 +602,7 @@ sealed class FanController
 
             var ch = new FanChannel
             {
+                PumpHeader = !gpu && IsPumpHeader(top, rpm?.Name ?? baseName),
                 Od8 = od8,
                 Od8Note = od8 == null ? od8Note : null,
                 Control = sensor.Control,
@@ -607,7 +634,70 @@ sealed class FanController
             FanNaming.BySensor[sensor.Identifier.ToString()] = ch;
             if (rpm != null) FanNaming.BySensor[rpm.Identifier.ToString()] = ch;
         }
+
+        // Drehzahl ohne Steuerung (z. B. Pumpe an einem festen Anschluss, AIO-Pumpe über USB):
+        // trotzdem anzeigen, damit man sie sieht und ein Ausfall auffällt
+        if (!gpu)
+        {
+            foreach (var f in fans)
+            {
+                string fid = f.Identifier.ToString();
+                if (FanNaming.BySensor.ContainsKey(fid) || (f.Value ?? 0) <= 0) continue;
+                var cfg = _s.For(fid);
+                var ch = new FanChannel
+                {
+                    MonitorOnly = true,
+                    PumpHeader = IsPumpHeader(top, f.Name),
+                    Ext = new MonitorOnlyFan(),
+                    Rpm = f,
+                    Id = fid,
+                    DefaultName = top.HardwareType == HardwareType.Cooler ? $"{top.Name} · {f.Name}" : FriendlyName(f.Name),
+                    HardwareName = top.Name,
+                    Cfg = cfg,
+                    NotControllable = true,
+                };
+                if (!cfg.SourcesInitialized) { cfg.UseCpu = true; cfg.SourcesInitialized = true; }
+                Channels.Add(ch);
+                FanNaming.BySensor[fid] = ch;
+            }
+        }
         foreach (var sub in hw.SubHardware) AddChannels(top, sub);
+    }
+
+    /// Board-Beschriftung des Anschlusses: Pumpe? (W_PUMP, AIO_PUMP, PUMP_FAN, ASRock CPU_FAN2/WP …)
+    static bool IsPumpHeader(IHardware top, string name)
+    {
+        if (FanChannel.LooksLikePump(name)) return true;
+        if (top.HardwareType == HardwareType.Cooler && name.Contains("Pump", StringComparison.OrdinalIgnoreCase)) return true;
+        // ASRock: der zweite CPU-Lüfteranschluss heißt CPU_FAN2/WP und ist für Pumpen gedacht
+        if (top.Name.Contains("ASRock", StringComparison.OrdinalIgnoreCase)
+            && System.Text.RegularExpressions.Regex.IsMatch(name, @"cpu[\s_]*fan[\s_#]*2", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+            return true;
+        return false;
+    }
+
+    /// Pumpe am Drehzahlverhalten erkennen: dreht sehr hoch bei wenig Leistung,
+    /// oder lässt sich nicht regeln und dreht trotzdem hoch (3-Pin-Pumpe mit fester Drehzahl)
+    void DetectPump(FanChannel ch)
+    {
+        if (ch.IsGpu || ch.Cfg.Kind != null || ch.Cfg.DetectedPump || ch.Ext is OasisFan or UniwillFan) return;
+        if (ch.Rpm?.Value is not float rpm || rpm <= 0) return;
+        string? reason = null;
+        float? duty = ch.MonitorOnly ? null : ch.ControlSensor?.Value;
+        if (duty is float d && d > 0 && d <= 55 && rpm >= 2300)
+        {
+            if (++ch.PumpTicks >= 30) reason = $"dreht {rpm:N0} U/min bei nur {d:0} % – typisch für eine Pumpe";
+        }
+        else if ((ch.NotControllable || ch.MonitorOnly) && rpm >= 1600)
+        {
+            if (++ch.PumpTicks >= 30) reason = $"feste Drehzahl {rpm:N0} U/min – typisch für eine Pumpe";
+        }
+        else ch.PumpTicks = 0;
+        if (reason == null) return;
+        ch.Cfg.DetectedPump = true;
+        ch.Cfg.PumpReason = reason;
+        if (!ch.Cfg.UseGpu && !ch.Cfg.UseBoard) ch.Cfg.UseCpu = true;
+        _s.Save();
     }
 
     /// "Fan #2" -> "Mainboard-Anschluss 2"; vom Mainboard benannte Anschlüsse (z. B. "CPU Fan") bleiben
@@ -1127,9 +1217,21 @@ sealed class FanController
     /// Gemeinsamer Anfang: Kalibrierung, Erkennen, nicht steuerbar, BIOS. true = Lüfter ist damit fertig.
     bool Prelude(FanChannel ch, ProfileInfo prof)
     {
+        try { DetectPump(ch); } catch { }
+
         if (ch.CalPhase > 0)
         {
             CalibrateStep(ch);
+            return true;
+        }
+
+        if (ch.MonitorOnly)
+        {
+            ch.Output = -1;
+            ch.Driver = null;
+            ch.Status = (ch.Kind == FanKind.Pump ? "Pumpe" : "Lüfter") + " – nur Anzeige: dieser Anschluss lässt sich nicht steuern " +
+                        "(läuft mit fester Drehzahl bzw. nach BIOS). Fällt die Drehzahl aus, warnt Toast Temperatur.";
+            if (ch.Kind == FanKind.Pump && ch.Rpm?.Value is float pr && pr < 300) ch.Status = "⚠ Pumpe steht oder dreht kaum – Kabel/Pumpe prüfen!";
             return true;
         }
 
@@ -1176,6 +1278,8 @@ sealed class FanController
                 ? $"Lässt sich nicht steuern – AMD Overdrive 8: {ch.Od8Note}. Details: %AppData%\\TempMonitor\\amd-od8.log"
                 : ch.IsGpu
                 ? "Lässt sich nicht steuern – der Grafiktreiber regelt diesen Lüfter selbst. „Erkennen“ testet erneut."
+                : ch.Kind == FanKind.Pump
+                ? "Pumpe läuft mit fester Drehzahl (z. B. 3-Pin-Pumpe) – wird nur überwacht. Im BIOS kann der Anschluss auf „DC“ bzw. „Water Pump“ gestellt werden."
                 : "Lässt sich nicht steuern – der Lüfter reagiert nicht auf Befehle. „Erkennen“ testet erneut.";
             return true;
         }
@@ -1435,6 +1539,7 @@ sealed class FanController
         Write(ch, next);
         if (ch.Od8?.LastError is string err)
             ch.Status += $" · {err}";
+        if (ch.Cfg.Kind == null && (ch.Cfg.DetectedPump || ch.PumpHeader)) ch.Status += " · automatisch als Pumpe erkannt";
         if (ch.Ext?.Alarm is string alarm) ch.Status = "⚠ " + alarm;
         else if (ch.Ext?.Note is string note) ch.Status += $" · {note}";
         if (GroupOf(ch) is FanGroup grp && MembersOf(grp).Count() > 1)

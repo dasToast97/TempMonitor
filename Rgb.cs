@@ -420,8 +420,8 @@ sealed class RgbService
         Engine = new EffectEngine(this);
         if (dev == null) Settings.Custom = true;   // ohne Mainboard-Controller gibt es nur eigene Effekte
         if (Settings.Custom) Engine.Start();
-        new Thread(Discover) { IsBackground = true, Name = "RGB-Suche" }.Start();
         else if (Settings.ApplyOnStart) Task.Run(ApplyAll);
+        new Thread(Discover) { IsBackground = true, Name = "RGB-Suche" }.Start();
     }
 
     public EffectEngine Engine { get; }
