@@ -397,7 +397,7 @@ sealed class RgbSettings
     public List<string> DisabledTargets { get; set; } = new();
 
     /// true = eigene Effekte von Toast Temperatur (jede LED einzeln), false = Effekte des Mainboards
-    public bool Custom { get; set; }
+    public bool Custom { get; set; } = true;
     public CustomEffect Effect { get; set; } = CustomEffect.Presets[0].Effect.Clone();
 
     static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor");
@@ -668,7 +668,7 @@ sealed class RgbView : FlowLayoutPanel
         var top = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
         if (_svc.Device != null)
         {
-            top.Combo("Steuerung:", new[] { "Effekte vom Mainboard (laufen auch ohne Toast Temperatur)", "Eigene Effekte (jede LED einzeln, frei einstellbar)" },
+            top.Combo("Steuerung:", new[] { "Einfache Mainboard-Effekte (nur Farbe + Tempo, laufen auch ohne Toast Temperatur)", "Eigene Effekte (alle Einstellungen: Helligkeit, nicht ganz aus, Zeiten …)" },
                 st.Custom ? 1 : 0, i => { _svc.SetCustom(i == 1); RebuildSoon(); });
             if (top.Controls.OfType<ComboBox>().LastOrDefault() is ComboBox modeBox) modeBox.Width = S(420);
         }
@@ -848,9 +848,39 @@ sealed class RgbView : FlowLayoutPanel
         colorBtn = card.Controls.OfType<Button>().LastOrDefault();
         if (colorBtn != null) { colorBtn.BackColor = Color.FromArgb(s.Color); colorBtn.ForeColor = Color.FromArgb(s.Color).GetBrightness() > 0.55f ? Color.Black : Color.White; }
         card.Numbers(("Geschwindigkeit", (float)s.Speed, 0, 100, "%", (Action<float>)(v => { s.Speed = (int)v; Changed(); })));
+        card.Note("Mainboard-Effekte kann das Mainboard nur mit Farbe und Tempo. Helligkeit, „nicht ganz aus“, " +
+                  "Weichheit und die Atmen-Zeiten gibt es bei den eigenen Effekten – deine Auswahl wird übernommen:");
+        card.Buttons(("Mit allen Einstellungen weiter →", () => ToCustom(s)));
         if (!all && z.Kind == RgbZoneKind.Addressable)
             card.Numbers(("Anzahl LEDs", (float)z.LedCount, 1, 100, "", (Action<float>)(v => Debounce(() => _svc.Device!.SetLedCount(z, (int)v)))));
         return card;
+    }
+
+    /// Mainboard-Effekt in einen gleichwertigen eigenen Effekt übernehmen und umschalten
+    void ToCustom(RgbZoneSettings z)
+    {
+        var fx = _svc.Settings.Effect;
+        var c = Color.FromArgb(z.Color);
+        (EffectType type, int softness) = z.Mode switch
+        {
+            0x02 => (EffectType.Breathing, 80),
+            0x03 => (EffectType.Breathing, 0),
+            0x04 => (EffectType.ColorCycle, 80),
+            0x05 => (EffectType.Sparkle, 60),
+            0x07 or 0x0E => (EffectType.RainbowWave, 80),
+            0x08 or 0x0B or 0x0C => (EffectType.Comet, 70),
+            0x0D => (EffectType.Wave, 80),
+            RgbSettings.TempMode => (EffectType.TempWave, 80),
+            _ => (EffectType.Gradient, 80),
+        };
+        fx.Type = type;
+        fx.Softness = softness;
+        fx.Speed = Math.Clamp(z.Speed, 1, 100);
+        fx.Brightness = z.Mode == 0x00 ? 5 : Math.Max(fx.Brightness, 5);
+        if (type is EffectType.Breathing or EffectType.Gradient or EffectType.Comet or EffectType.Wave or EffectType.Sparkle)
+            fx.Colors = new List<int> { c.ToArgb() };
+        _svc.SetCustom(true);
+        RebuildSoon();
     }
 
     System.Windows.Forms.Timer? _debounce;
