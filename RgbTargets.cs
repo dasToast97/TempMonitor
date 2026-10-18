@@ -27,14 +27,51 @@ interface IRgbTarget
 sealed class PolychromeTarget : IRgbTarget
 {
     readonly PolychromeUsb _dev;
-    public PolychromeTarget(PolychromeUsb dev) => _dev = dev;
+    readonly Func<bool> _perLed;
+    bool _direct;
+    readonly Dictionary<int, Color> _last = new();
+    DateTime _lastSend;
+
+    public PolychromeTarget(PolychromeUsb dev, Func<bool> perLed) { _dev = dev; _perLed = perLed; }
     public string Id => "polychrome";
     public string Name => "Mainboard (ASRock Polychrome)";
     public string Kind => "Mainboard";
     public int[] Segments => _dev.Zones.Select(z => Math.Max(1, z.LedCount)).ToArray();
-    public void Begin() => _dev.EnterDirect();
-    public bool Write(IReadOnlyList<Color[]> s) => _dev.WriteFrame(s);
-    public void End() => _dev.ExitDirect();
+
+    public void Begin()
+    {
+        _direct = _perLed();
+        _last.Clear();
+        if (_direct) _dev.EnterDirect();
+    }
+
+    public bool Write(IReadOnlyList<Color[]> s)
+    {
+        if (_perLed() != _direct) { End(); Begin(); }
+        if (_direct) return _dev.WriteFrame(s);
+
+        // Standard: jede Zone bekommt eine Farbe über den normalen Statisch-Befehl.
+        // Funktioniert mit jedem Controller und jedem Hub, Wellen laufen dann von Zone zu Zone.
+        if ((DateTime.Now - _lastSend).TotalMilliseconds < 50) return true;
+        _lastSend = DateTime.Now;
+        for (int i = 0; i < _dev.Zones.Count && i < s.Count; i++)
+        {
+            var z = _dev.Zones[i];
+            var seg = s[i];
+            if (seg.Length == 0) continue;
+            var c = seg[seg.Length / 2];
+            if (_last.TryGetValue(z.Index, out var l) && Math.Abs(l.R - c.R) + Math.Abs(l.G - c.G) + Math.Abs(l.B - c.B) < 4) continue;
+            if (!_dev.SetZone(z, 0x01, c, 50)) return false;
+            _last[z.Index] = c;
+        }
+        return true;
+    }
+
+    public void End()
+    {
+        if (_direct) _dev.ExitDirect();
+        _direct = false;
+    }
 }
 
 // ---------------------------------------------------------------------------

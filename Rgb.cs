@@ -395,6 +395,8 @@ sealed class RgbSettings
     public bool ApplyOnStart { get; set; }
     /// Geräte, auf denen die eigenen Effekte NICHT laufen sollen
     public List<string> DisabledTargets { get; set; } = new();
+    /// Mainboard: jede LED einzeln (Direktmodus, experimentell) statt einer Farbe je Zone
+    public bool BoardPerLed { get; set; }
 
     /// true = eigene Effekte von Toast Temperatur (jede LED einzeln), false = Effekte des Mainboards
     public bool Custom { get; set; } = true;
@@ -455,7 +457,7 @@ sealed class RgbService
     public RgbService(PolychromeUsb? dev, Func<KeySensors?> keys)
     {
         Device = dev;
-        if (dev != null) Targets.Add(new PolychromeTarget(dev));
+        if (dev != null) Targets.Add(new PolychromeTarget(dev, () => Settings?.BoardPerLed == true));
         _keyboard = IteKeyboardTarget.Probe();
         Task.Run(Diagnose);
         if (_keyboard != null) Targets.Add(_keyboard);
@@ -690,6 +692,9 @@ sealed class RgbView : FlowLayoutPanel
         top.Note("OpenRGB: " + _svc.OpenRgb.Status + ". Für Tastaturen, Mäuse, RAM, Grafikkarten u. v. m.: OpenRGB (openrgb.org) starten, " +
                  "im Reiter „SDK Server“ auf „Start Server“ klicken (Port 6742) – Toast Temperatur findet die Geräte dann automatisch " +
                  "und spielt seine Effekte auch dort ab.");
+        if (_svc.Device != null)
+            top.Check("Mainboard: jede LED einzeln ansteuern (experimentell – bei Flackern/wilden Farben aus lassen)", st.BoardPerLed,
+                v => { st.BoardPerLed = v; st.Save(); });
         top.Buttons(("Geräte neu suchen", () => _svc.RescanNow()));
         if (_svc.Device != null)
             top.Note("Mit Hub am ARGB-Anschluss: Ein Verteiler-Hub schickt allen Geräten dasselbe Signal – als LED-Anzahl die des längsten Geräts " +
