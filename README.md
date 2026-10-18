@@ -10,6 +10,8 @@ für jeden Sensor einen Verlaufsgraphen der letzten 5 Minuten zeigt.
 - „Immer im Vordergrund“ zum Mitlaufen beim Spielen/Rendern
 - **Eingebauter Updater**: sucht beim Start nach neuen GitHub Releases, fragt nach
   („Jetzt aktualisieren“ / „Später“ / „Diese Version überspringen“) und installiert sich selbst neu
+- Sucht außerdem **alle 5 Minuten** nach Updates: bei offenem Fenster mit Nachfrage, im Hintergrund dezent als
+  Hinweis im Infobereich (Klick darauf installiert). „Später“ fragt erst nach 2 Stunden wieder.
 
 ### Lüftersteuerung (Reiter „Lüfter“)
 

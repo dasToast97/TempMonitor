@@ -454,6 +454,44 @@ sealed class MainForm : Form
 
         // Beim Start still nach Updates suchen (fragt nur, wenn es eine neue Version gibt)
         await Updater.CheckAsync(this, manual: false);
+
+        // Danach alle 5 Minuten erneut nachsehen
+        _updateTimer.Tick += async (_, _) => await PeriodicUpdateCheck();
+        _updateTimer.Start();
+        _tray.BalloonTipClicked += async (_, _) =>
+        {
+            if (_pendingUpdate is not Updater.ReleaseInfo rel) return;
+            _pendingUpdate = null;
+            RestoreFromTray();
+            await Updater.OfferAsync(this, rel);
+        };
+    }
+
+    readonly System.Windows.Forms.Timer _updateTimer = new() { Interval = 5 * 60 * 1000 };
+    Updater.ReleaseInfo? _pendingUpdate;
+    string? _notifiedTag;
+
+    async Task PeriodicUpdateCheck()
+    {
+        try
+        {
+            if (_exiting) return;
+            var rel = await Updater.PeekAsync();
+            if (rel == null) return;
+            if (Visible && WindowState != FormWindowState.Minimized)
+            {
+                await Updater.OfferAsync(this, rel);
+            }
+            else if (_notifiedTag != rel.Tag)
+            {
+                // Fenster versteckt (z. B. beim Spielen): nur dezent im Infobereich melden
+                _notifiedTag = rel.Tag;
+                _pendingUpdate = rel;
+                _tray.ShowBalloonTip(10000, "Update verfügbar",
+                    $"Toast Temperatur {rel.Version.ToString(3)} ist da – zum Installieren hier klicken.", ToolTipIcon.Info);
+            }
+        }
+        catch (Exception ex) { ErrorLog.Write("Update-Prüfung", ex); }
     }
 
     // ---------------------------------------------------------------------

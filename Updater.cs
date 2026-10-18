@@ -33,7 +33,7 @@ static class Updater
         return http;
     }
 
-    record ReleaseInfo(Version Version, string Tag, string Notes, string DownloadUrl, string PageUrl);
+    public record ReleaseInfo(Version Version, string Tag, string Notes, string DownloadUrl, string PageUrl);
 
     static async Task<ReleaseInfo?> GetLatestAsync()
     {
@@ -61,9 +61,29 @@ static class Updater
         new Version(remote.Major, remote.Minor, Math.Max(remote.Build, 0)) >
         new Version(CurrentVersion.Major, CurrentVersion.Minor, Math.Max(CurrentVersion.Build, 0));
 
+    static bool _dialogOpen;
+    static string? _laterTag;
+    static DateTime _laterUntil;
+
+    /// Regelmäßige Prüfung im Hintergrund: Gibt es eine Version, die jetzt angeboten werden soll?
+    /// (nicht übersprungen, nicht gerade mit „Später“ zurückgestellt, kein Dialog offen)
+    public static async Task<ReleaseInfo?> PeekAsync()
+    {
+        if (Repo is null || _dialogOpen) return null;
+        ReleaseInfo? rel;
+        try { rel = await GetLatestAsync(); } catch { return null; }
+        if (rel is null || !IsNewer(rel.Version) || ReadSkipped() == rel.Tag) return null;
+        if (_laterTag == rel.Tag && DateTime.Now < _laterUntil) return null;
+        return rel;
+    }
+
+    /// Bekannte neue Version anbieten (z. B. nach Klick auf die Benachrichtigung)
+    public static Task OfferAsync(IWin32Window owner, ReleaseInfo rel) => AskAsync(owner, rel, manual: false);
+
     /// <param name="manual">true = vom Nutzer per Knopf ausgelöst (zeigt auch "kein Update" / Fehler an)</param>
     public static async Task CheckAsync(IWin32Window owner, bool manual)
     {
+        if (_dialogOpen) return;
         if (Repo is null)
         {
             if (manual)
@@ -93,6 +113,12 @@ static class Updater
 
         // Automatische Prüfung: übersprungene Version nicht erneut anbieten
         if (!manual && ReadSkipped() == rel.Tag) return;
+        await AskAsync(owner, rel, manual);
+    }
+
+    static async Task AskAsync(IWin32Window owner, ReleaseInfo rel, bool manual)
+    {
+        if (_dialogOpen) return;
 
         var notes = string.IsNullOrWhiteSpace(rel.Notes) ? "" :
             (rel.Notes.Length > 800 ? rel.Notes[..800] + " …" : rel.Notes);
@@ -112,9 +138,18 @@ static class Updater
             AllowCancel = true,
         };
 
-        var result = TaskDialog.ShowDialog(owner, page);
+        TaskDialogButton result;
+        _dialogOpen = true;
+        try { result = TaskDialog.ShowDialog(owner, page); }
+        finally { _dialogOpen = false; }
         if (result == btnSkip) { WriteSkipped(rel.Tag); return; }
-        if (result != btnInstall) return;
+        if (result != btnInstall)
+        {
+            // „Später“: dieselbe Version erst in 2 Stunden wieder anbieten
+            _laterTag = rel.Tag;
+            _laterUntil = DateTime.Now.AddHours(2);
+            return;
+        }
 
         await InstallAsync(owner, rel);
     }
