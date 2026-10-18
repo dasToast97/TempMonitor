@@ -501,7 +501,7 @@ sealed class RgbService
         Engine = new EffectEngine(this);
         if (dev == null) Settings.Custom = true;   // ohne Mainboard-Controller gibt es nur eigene Effekte
         if (Settings.Custom) Engine.Start();
-        if (!Settings.Custom ? Settings.ApplyOnStart : Settings.BoardHardware) Task.Run(() => { if (Settings.Custom) ApplyBoardFromCustom(); else ApplyAll(); });
+        if (!Settings.Custom ? Settings.ApplyOnStart : BoardNative) Task.Run(() => { if (Settings.Custom) ApplyBoardFromCustom(); else ApplyAll(); });
         new Thread(Discover) { IsBackground = true, Name = "RGB-Suche" }.Start();
         if (Settings.OpenRgbAuto == true && Settings.Custom) StartOpenRgb();
     }
@@ -577,7 +577,7 @@ sealed class RgbService
         if (Settings.DisabledTargets.Contains(t.Id)) return false;
         // ASRock-Mainboard nie über OpenRGB (dessen Direktmodus flackert dort) – Toast Temperatur steuert es selbst
         if (Device != null && IsBoardViaOpenRgb(t)) return false;
-        if (Settings.BoardHardware && Device != null && t is PolychromeTarget) return false;
+        if (BoardNative && Device != null && t is PolychromeTarget) return false;
         return true;
     }
 
@@ -609,7 +609,7 @@ sealed class RgbService
         {
             Engine.Start();
             if (Settings.OpenRgbAuto == true) StartOpenRgb();
-            if (Settings.BoardHardware && Device != null) Task.Run(ApplyBoardFromCustom);
+            if (BoardNative && Device != null) Task.Run(ApplyBoardFromCustom);
         }
         else Task.Run(() =>
         {
@@ -635,7 +635,7 @@ sealed class RgbService
                 DiscoverOnce();
                 if (OpenRgb.Connected)
                 {
-                    if (Device != null && (!Settings.Custom || Settings.BoardHardware))
+                    if (Device != null && (!Settings.Custom || BoardNative))
                     {
                         await Task.Delay(1500);
                         try { Device.RefreshConfig(); if (Settings.Custom) ApplyBoardFromCustom(); else ApplyAll(); } catch { }
@@ -676,6 +676,23 @@ sealed class RgbService
             RgbSettings.Log($"{z.Name}: Senden fehlgeschlagen ({Device.LastError})");
     }
 
+    /// Mainboard läuft mit seinem eingebauten Effekt: im Mischbetrieb immer – sonst automatisch, wenn der eigene
+    /// Effekt genau dem eingebauten entspricht (dann butterweich, ohne die Blitze beim Farbwechsel per Software)
+    public bool BoardNative => Settings.BoardHardware || EffectFitsBoard();
+
+    bool EffectFitsBoard()
+    {
+        var fx = Settings.Effect;
+        bool one = fx.Colors.Count <= 1;
+        return fx.Type switch
+        {
+            EffectType.Breathing => one && fx.MinLevel == 0 && fx.FadeInMs == 0 && fx.HoldOnMs == 0 && fx.FadeOutMs == 0 && fx.HoldOffMs == 0,
+            EffectType.RainbowWave or EffectType.ColorCycle => true,
+            EffectType.Gradient => one,
+            _ => false,
+        };
+    }
+
     (byte Mode, string Name) BoardMode() => Settings.Effect.Type switch
     {
         EffectType.Breathing => (0x02, "Atmen"),
@@ -698,7 +715,7 @@ sealed class RgbService
     /// Mischbetrieb: Mainboard-Effekt aus dem eigenen Effekt ableiten (Typ, erste Farbe × Helligkeit, Tempo)
     public void ApplyBoardFromCustom()
     {
-        if (Device == null || !Settings.BoardHardware) return;
+        if (Device == null || !BoardNative) return;
         var fx = Settings.Effect;
         var c = fx.Colors.Count > 0 ? Color.FromArgb(fx.Colors[0]) : Color.FromArgb(0, 120, 255);
         float b = Math.Clamp(fx.Brightness, 5, 100) / 100f;
@@ -741,7 +758,7 @@ sealed class RgbService
     /// Jede Sekunde: Zonen im Temperatur-Modus nachführen (nur bei spürbarer Änderung senden)
     public void TickTemperature(bool force = false)
     {
-        if ((Settings.Custom && !Settings.BoardHardware) || Device == null) return;
+        if ((Settings.Custom && !BoardNative) || Device == null) return;
         if (_keys()?.Value(Settings.TempSource) is not float t) return;
         var col = TempColor(t);
         foreach (var z in Device!.Zones)
@@ -902,7 +919,9 @@ sealed class RgbView : FlowLayoutPanel
                 ? "Das Mainboard folgt automatisch deinem Effekt so gut es kann: " + _svc.BoardFollowText() +
                   ". Helligkeit wirkt über die Farbe; „nicht ganz aus“ und die Atmen-Zeiten kann nur die Software (Maus, Tastatur …)."
                 : "Ohne Haken bekommt auch das Mainboard die eigenen Effekte mit allen Einstellungen (eine Farbe je Anschluss, " +
-                  "ca. 7× pro Sekunde). Bei manchen Hubs blitzt es dabei gelegentlich kurz auf.");
+                  "ca. 10× pro Sekunde). Bei manchen Hubs blitzt es dabei, wenn sich die Farbe ändert. Entspricht dein Effekt " +
+                  "genau einem eingebauten (z. B. Atmen mit einer Farbe, ohne „nicht ganz aus“ und ohne eigene Zeiten), " +
+                  "nimmt Toast Temperatur automatisch den eingebauten – der läuft ohne Blitze.");
             Add(bh);
         }
         if (st.Custom || _svc.Device == null) BuildCustom();
@@ -955,7 +974,7 @@ sealed class RgbView : FlowLayoutPanel
         void Save()
         {
             st.Save();
-            if (st.BoardHardware && _svc.Device != null) Debounce(() => Task.Run(_svc.ApplyBoardFromCustom));
+            if (_svc.BoardNative && _svc.Device != null) Debounce(() => Task.Run(_svc.ApplyBoardFromCustom));
         }
 
         Add(new SectionHeader("Eigener Effekt", Theme.Muted) { Height = S(34), Margin = new Padding(S(6), S(10), S(6), S(2)) });
