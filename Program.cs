@@ -1014,12 +1014,17 @@ sealed class MainForm : Form
             if (_keys != null)
             {
                 try { _warn.Check(_keys, fans, _tray); } catch (Exception wex) { ErrorLog.Write("Warnungen", wex); }
-                if (AppSettings.Instance.TrayShowTemp)
+                // Symbol im Infobereich: kann kurz fehlschlagen (z. B. Explorer startet neu) – dann beim nächsten Mal
+                try
                 {
-                    var ic = TrayIconPainter.Render(_keys.Value(AppSettings.Instance.TrayTempSource), Icon ?? SystemIcons.Application);
-                    if (ic != null) _tray.Icon = ic;
+                    if (AppSettings.Instance.TrayShowTemp)
+                    {
+                        var ic = TrayIconPainter.Render(_keys.Value(AppSettings.Instance.TrayTempSource), Icon ?? SystemIcons.Application);
+                        if (ic != null) _tray.Icon = ic;
+                    }
+                    else if (_tray.Icon != Icon) _tray.Icon = Icon ?? SystemIcons.Application;
                 }
-                else if (_tray.Icon != Icon) _tray.Icon = Icon ?? SystemIcons.Application;
+                catch { }
             }
             if (_overlay is { IsDisposed: false }) _overlay.Invalidate();
             try { _rgb?.TickTemperature(); } catch (Exception rex) { ErrorLog.Write("RGB", rex); }
@@ -1029,7 +1034,7 @@ sealed class MainForm : Form
             // Tooltip im Infobereich: wichtigste Temperaturen
             string tip = string.Join("  ", _heroes.Select(h => $"{h.Short} {h.Sensor.Value:0}°"));
             tip = string.IsNullOrEmpty(tip) ? "Toast Temperatur" : tip;
-            _tray.Text = tip.Length > 63 ? tip[..63] : tip;
+            try { _tray.Text = tip.Length > 63 ? tip[..63] : tip; } catch { }
         }
         catch (Exception ex)
         {
