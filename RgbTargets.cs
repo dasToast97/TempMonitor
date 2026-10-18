@@ -338,3 +338,155 @@ sealed class IteKeyboardTarget : IRgbTarget, IDisposable
     public void End() { }
     public void Dispose() => _h.Dispose();
 }
+
+// ---------------------------------------------------------------------------
+// ITE 8291 (048d:600b u. a.): Einzeltasten-RGB vieler Tongfang/Uniwill-Laptops (XMG, MIFCOM, TUXEDO …)
+// Feature-Bericht (8 Byte): 08 02 33 00 <Helligkeit 0–50> 00 00 00 = Benutzermodus,
+// 16 00 <Zeile> … = Zeile wählen, danach Ausgabebericht 00 00 B×21 G×21 R×21. 6 Zeilen × 21 Spalten.
+// ---------------------------------------------------------------------------
+sealed class Ite8291Keyboard : IRgbTarget, IDisposable
+{
+    const int Rows = 6, Cols = 21;
+    readonly SafeFileHandle _h;
+    readonly int _feat, _out;
+    readonly byte[][] _lastRows = new byte[Rows][];
+    bool _first = true;
+    int _fails;
+
+    [DllImport("hid.dll", SetLastError = true)] static extern bool HidD_SetFeature(SafeFileHandle h, byte[] buf, int len);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool WriteFile(SafeFileHandle h, byte[] buf, int len, out int written, IntPtr ov);
+
+    Ite8291Keyboard(SafeFileHandle h, int feat, int outLen) { _h = h; _feat = feat; _out = outLen; }
+
+    public static Ite8291Keyboard? Probe()
+    {
+        try
+        {
+            foreach (ushort pid in new ushort[] { 0x600B, 0x6004, 0x6006, 0xCE00 })
+            {
+                var r = Hid.OpenUsage(0x048D, pid, 0xFF03);
+                if (r == null) continue;
+                if (r.Value.FeatureLength < 9 || r.Value.OutLength < 65) { r.Value.Handle.Dispose(); continue; }
+                RgbSettings.Log($"Tastatur ITE 8291 gefunden (048D:{pid:X4}, Feature {r.Value.FeatureLength}, Out {r.Value.OutLength})");
+                return new Ite8291Keyboard(r.Value.Handle, r.Value.FeatureLength, r.Value.OutLength);
+            }
+        }
+        catch (Exception ex) { RgbSettings.Log("ITE 8291: " + ex.Message); }
+        return null;
+    }
+
+    bool Feature(params byte[] cmd)
+    {
+        var b = new byte[_feat];               // b[0] = Berichtsnummer 0
+        Array.Copy(cmd, 0, b, 1, Math.Min(cmd.Length, _feat - 1));
+        return HidD_SetFeature(_h, b, b.Length);
+    }
+
+    public string Id => "ite8291";
+    public string Name => "Laptop-Tastatur (Einzeltasten-RGB)";
+    public string Kind => "Tastatur";
+    public int[] Segments => new[] { Rows * Cols };
+
+    public void Begin()
+    {
+        bool ok = Feature(0x08, 0x02, 0x33, 0x00, 50, 0x00, 0x00, 0x00);
+        if (!ok) RgbSettings.Log($"ITE 8291: Benutzermodus abgelehnt (Fehler {Marshal.GetLastWin32Error()})");
+        _first = true;
+        Array.Clear(_lastRows);
+    }
+
+    public bool Write(IReadOnlyList<Color[]> s)
+    {
+        var cols = s.Count > 0 ? s[0] : Array.Empty<Color>();
+        for (int row = 0; row < Rows; row++)
+        {
+            var buf = new byte[_out];
+            for (int c = 0; c < Cols; c++)
+            {
+                int i = row * Cols + c;
+                if (i >= cols.Length) break;
+                var col = cols[i];
+                buf[2 + c] = col.B;
+                buf[2 + Cols + c] = col.G;
+                buf[2 + 2 * Cols + c] = col.R;
+            }
+            if (!_first && _lastRows[row] is byte[] last && Same(last, buf)) continue;
+            if (!Feature(0x16, 0x00, (byte)row, 0, 0, 0, 0, 0) || !WriteFile(_h, buf, buf.Length, out _, IntPtr.Zero))
+            {
+                if (++_fails == 1) RgbSettings.Log($"ITE 8291: Schreiben fehlgeschlagen (Fehler {Marshal.GetLastWin32Error()})");
+                return _fails < 50;
+            }
+            _lastRows[row] = buf;
+        }
+        _first = false;
+        return true;
+    }
+
+    static bool Same(byte[] a, byte[] b)
+    {
+        for (int i = 0; i < a.Length; i++) if (Math.Abs(a[i] - b[i]) > 2) return false;
+        return true;
+    }
+
+    public void End() { }
+    public void Dispose() => _h.Dispose();
+}
+
+// ---------------------------------------------------------------------------
+// ITE 8291 Lichtleiste (048d:7001, z. B. vorne/hinten am Laptop): eine Farbe für die ganze Leiste.
+// Farbe 1 setzen: 14 00 01 R G B 00 00, dann einfarbig: 08 02 01 05 <Helligkeit 0–100> 01 00 00
+// ---------------------------------------------------------------------------
+sealed class Ite8291Lightbar : IRgbTarget, IDisposable
+{
+    readonly SafeFileHandle _h;
+    readonly int _feat;
+    Color? _last;
+    DateTime _lastSend;
+    bool _logged;
+
+    [DllImport("hid.dll", SetLastError = true)] static extern bool HidD_SetFeature(SafeFileHandle h, byte[] buf, int len);
+
+    Ite8291Lightbar(SafeFileHandle h, int feat) { _h = h; _feat = feat; }
+
+    public static Ite8291Lightbar? Probe()
+    {
+        try
+        {
+            var r = Hid.OpenUsage(0x048D, 0x7001, 0xFF03);
+            if (r == null) return null;
+            if (r.Value.FeatureLength < 9) { r.Value.Handle.Dispose(); return null; }
+            RgbSettings.Log("Lichtleiste ITE 8291 gefunden (048D:7001)");
+            return new Ite8291Lightbar(r.Value.Handle, r.Value.FeatureLength);
+        }
+        catch (Exception ex) { RgbSettings.Log("Lichtleiste: " + ex.Message); return null; }
+    }
+
+    bool Feature(params byte[] cmd)
+    {
+        var b = new byte[_feat];
+        Array.Copy(cmd, 0, b, 1, Math.Min(cmd.Length, _feat - 1));
+        return HidD_SetFeature(_h, b, b.Length);
+    }
+
+    public string Id => "ite8291-lightbar";
+    public string Name => "Laptop-Lichtleiste";
+    public string Kind => "Lichtleiste";
+    public int[] Segments => new[] { 1 };
+    public void Begin() { _last = null; }
+
+    public bool Write(IReadOnlyList<Color[]> s)
+    {
+        if (s.Count == 0 || s[0].Length == 0) return true;
+        var c = s[0][0];
+        if (_last is Color l && Math.Abs(l.R - c.R) + Math.Abs(l.G - c.G) + Math.Abs(l.B - c.B) < 6) return true;
+        if ((DateTime.Now - _lastSend).TotalMilliseconds < 60) return true;
+        bool ok = Feature(0x14, 0x00, 0x01, c.R, c.G, c.B, 0, 0) && Feature(0x08, 0x02, 0x01, 0x05, 100, 0x01, 0x00, 0x00);
+        if (!ok && !_logged) { _logged = true; RgbSettings.Log($"Lichtleiste: Befehl abgelehnt (Fehler {Marshal.GetLastWin32Error()})"); }
+        _last = c;
+        _lastSend = DateTime.Now;
+        return true;
+    }
+
+    public void End() { }
+    public void Dispose() => _h.Dispose();
+}

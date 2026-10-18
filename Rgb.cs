@@ -73,6 +73,23 @@ static class Hid
         return null;
     }
 
+    /// HID-Gerät nach Kennung und Usage-Page öffnen (für Geräte mit mehreren Schnittstellen)
+    public static (SafeFileHandle Handle, int FeatureLength, int OutLength, string Path)? OpenUsage(ushort vid, ushort pid, ushort usagePage)
+    {
+        foreach (var path in Paths(vid))
+        {
+            var h = CreateFile(path, 0xC0000000, 0x3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+            if (h.IsInvalid) continue;
+            var attr = new HiddAttributes { Size = Marshal.SizeOf<HiddAttributes>() };
+            if (!HidD_GetAttributes(h, ref attr) || attr.ProductID != pid || !HidD_GetPreparsedData(h, out var pre)) { h.Dispose(); continue; }
+            HidP_GetCaps(pre, out var caps);
+            HidD_FreePreparsedData(pre);
+            if (caps.UsagePage != usagePage) { h.Dispose(); continue; }
+            return (h, caps.FeatureReportByteLength, caps.OutputReportByteLength, path);
+        }
+        return null;
+    }
+
     /// Diagnose: alle HID-Geräte mit Kennung und Berichtsgrößen (nur lesen, ohne Zugriffsrechte)
     public static List<string> DescribeAll()
     {
@@ -442,6 +459,8 @@ sealed class RgbService
         _keyboard = IteKeyboardTarget.Probe();
         Task.Run(Diagnose);
         if (_keyboard != null) Targets.Add(_keyboard);
+        if (Ite8291Keyboard.Probe() is Ite8291Keyboard k8291) Targets.Add(k8291);
+        if (Ite8291Lightbar.Probe() is Ite8291Lightbar lb) Targets.Add(lb);
         _keys = keys;
         Settings = RgbSettings.Load();
         Engine = new EffectEngine(this);
@@ -504,7 +523,7 @@ sealed class RgbService
                     lock (Targets) Targets.RemoveAll(t => t is OpenRgbTarget);
                     changed = true;
                 }
-                if (OasisLink.Instance is OasisLink ol && ol.Connected && !Targets.Any(t => t is OasisLedTarget))
+                if (false && OasisLink.Instance is OasisLink ol && ol.Connected && !Targets.Any(t => t is OasisLedTarget))
                 {
                     lock (Targets) Targets.Add(new OasisLedTarget(ol));
                     changed = true;
