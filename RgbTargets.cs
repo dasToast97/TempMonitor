@@ -52,7 +52,8 @@ sealed class PolychromeTarget : IRgbTarget
 
         // Standard: jede Zone bekommt eine Farbe über den normalen Statisch-Befehl.
         // Funktioniert mit jedem Controller und jedem Hub, Wellen laufen dann von Zone zu Zone.
-        if ((DateTime.Now - _lastSend).TotalMilliseconds < 50) return true;
+        // Der Controller ist langsam: höchstens 12 Updates pro Sekunde, sonst verschluckt er sich (Fehlfarben)
+        if ((DateTime.Now - _lastSend).TotalMilliseconds < 80) return true;
         _lastSend = DateTime.Now;
         for (int i = 0; i < _dev.Zones.Count && i < s.Count; i++)
         {
@@ -60,7 +61,7 @@ sealed class PolychromeTarget : IRgbTarget
             var seg = s[i];
             if (seg.Length == 0) continue;
             var c = seg[seg.Length / 2];
-            if (_last.TryGetValue(z.Index, out var l) && Math.Abs(l.R - c.R) + Math.Abs(l.G - c.G) + Math.Abs(l.B - c.B) < 4) continue;
+            if (_last.TryGetValue(z.Index, out var l) && Math.Abs(l.R - c.R) + Math.Abs(l.G - c.G) + Math.Abs(l.B - c.B) < 6) continue;
             if (!_dev.SetZone(z, 0x01, c, 50)) return false;
             _last[z.Index] = c;
         }

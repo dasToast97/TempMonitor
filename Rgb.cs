@@ -1073,7 +1073,15 @@ static class EffectRenderer
                     else level = 0;
                     // Weichheit: weich = sanfte Kurve, hart = lineares/abruptes Ein- und Ausblenden
                     level = _soft >= 0.5f ? (1 - MathF.Cos(level * MathF.PI)) / 2 : (_soft < 0.1f ? (level > 0.5f ? 1 : 0) : level);
-                    c = Scale(pal[((k % pal.Count) + pal.Count) % pal.Count], Level(level));
+                    var cur = pal[((k % pal.Count) + pal.Count) % pal.Count];
+                    // Mehrere Farben und „nicht ganz aus“: beim Ausblenden weich zur nächsten Farbe überblenden statt zu springen
+                    if (pal.Count > 1 && min > 0 && x >= fin + hon)
+                    {
+                        var next = pal[(((k + 1) % pal.Count) + pal.Count) % pal.Count];
+                        float f = Math.Clamp((x - fin - hon) / Math.Max(0.001f, fout + hoff), 0, 1);
+                        cur = Lerp(cur, next, (1 - MathF.Cos(f * MathF.PI)) / 2);
+                    }
+                    c = Scale(cur, Level(level));
                     break;
                 }
                 case EffectType.Wave:
