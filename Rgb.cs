@@ -1284,6 +1284,8 @@ static class EffectRenderer
                     else level = 0;
                     // Weichheit: weich = sanfte Kurve, hart = lineares/abruptes Ein- und Ausblenden
                     level = _soft >= 0.5f ? (1 - MathF.Cos(level * MathF.PI)) / 2 : (_soft < 0.1f ? (level > 0.5f ? 1 : 0) : level);
+                    // Wahrnehmung: das Auge sieht dunkle Stufen viel stärker -> quadratisch, damit das Ein-/Ausblenden gleichmäßig wirkt
+                    level *= level;
                     var cur = pal[((k % pal.Count) + pal.Count) % pal.Count];
                     // Mehrere Farben und „nicht ganz aus“: beim Ausblenden weich zur nächsten Farbe überblenden statt zu springen
                     if (pal.Count > 1 && min > 0 && x >= fin + hon)

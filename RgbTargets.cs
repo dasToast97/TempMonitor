@@ -54,7 +54,7 @@ sealed class PolychromeTarget : IRgbTarget
         // Standard: jede Zone bekommt eine Farbe über den normalen Statisch-Befehl.
         // Funktioniert mit jedem Controller und jedem Hub, Wellen laufen dann von Zone zu Zone.
         // Der Controller ist langsam: höchstens 12 Updates pro Sekunde, sonst verschluckt er sich (Fehlfarben)
-        if ((DateTime.Now - _lastSend).TotalMilliseconds < 150) return true;
+        if ((DateTime.Now - _lastSend).TotalMilliseconds < 100) return true;
         _lastSend = DateTime.Now;
         for (int i = 0; i < _dev.Zones.Count && i < s.Count; i++)
         {
@@ -62,7 +62,13 @@ sealed class PolychromeTarget : IRgbTarget
             var seg = s[i];
             if (seg.Length == 0) continue;
             var c = seg[seg.Length / 2];
-            if (_last.TryGetValue(z.Index, out var l) && Math.Abs(l.R - c.R) + Math.Abs(l.G - c.G) + Math.Abs(l.B - c.B) < 10) continue;
+            // Nur sichtbare Änderungen senden – im Dunkeln feiner (kleine Stufen fallen dort auf), im Hellen gröber
+            if (_last.TryGetValue(z.Index, out var l))
+            {
+                int diff = Math.Max(Math.Abs(l.R - c.R), Math.Max(Math.Abs(l.G - c.G), Math.Abs(l.B - c.B)));
+                int peak = Math.Max(c.R, Math.Max(c.G, c.B));
+                if (diff < Math.Max(1, peak / 25)) continue;
+            }
             if (!_dev.SetZone(z, 0x01, c, 50))
             {
                 if (++_errors <= 20) RgbSettings.Log($"Mainboard {z.Name}: Senden fehlgeschlagen ({_dev.LastError})");
