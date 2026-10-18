@@ -154,7 +154,7 @@ Jedes Release wird automatisch aus diesem Repository von GitHub Actions gebaut u
 
 Dieses Programm überträgt keine Informationen an andere Systeme, außer wenn der Nutzer oder die Person, die es installiert,
 dies ausdrücklich anfordert. Einzige Netzwerkverbindung: die Suche nach Updates auf GitHub (Releases dieses Repositorys)
-und – nur auf Wunsch im Installer – der Download des Treibers PawnIO. Messwerte, Einstellungen und Protokolle bleiben auf dem
+und – nur auf Wunsch im Installer – der Download des Treibers PawnIO sowie – nur auf Klick im Reiter RGB – der einmalige Download von OpenRGB (codeberg.org/OpenRGB). Messwerte, Einstellungen und Protokolle bleiben auf dem
 eigenen PC (`%AppData%\TempMonitor`, `Dokumente\Toast Temperatur`).
 
 *This program will not transfer any information to other networked systems unless specifically requested by the user or the

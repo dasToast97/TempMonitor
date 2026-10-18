@@ -395,6 +395,8 @@ sealed class RgbSettings
     public bool ApplyOnStart { get; set; }
     /// Geräte, auf denen die eigenen Effekte NICHT laufen sollen
     public List<string> DisabledTargets { get; set; } = new();
+    /// OpenRGB automatisch mitstarten: null = noch nicht gefragt
+    public bool? OpenRgbAuto { get; set; }
     /// Mainboard: jede LED einzeln (Direktmodus, experimentell) statt einer Farbe je Zone
     public bool BoardPerLed { get; set; }
 
@@ -470,6 +472,7 @@ sealed class RgbService
         if (Settings.Custom) Engine.Start();
         else if (Settings.ApplyOnStart) Task.Run(ApplyAll);
         new Thread(Discover) { IsBackground = true, Name = "RGB-Suche" }.Start();
+        if (Settings.OpenRgbAuto == true) StartOpenRgb();
     }
 
     public EffectEngine Engine { get; }
@@ -570,8 +573,24 @@ sealed class RgbService
     }
 
     /// Beim Beenden: eigene Effekte stoppen, das Mainboard übernimmt mit seinen Effekten
+    /// OpenRGB starten und danach mehrmals nachsehen, bis sein SDK-Server bereit ist
+    public void StartOpenRgb()
+    {
+        Task.Run(async () =>
+        {
+            OpenRgbManager.Start();
+            foreach (int s in new[] { 4, 8, 15, 30 })
+            {
+                await Task.Delay(s * 1000);
+                DiscoverOnce();
+                if (OpenRgb.Connected) break;
+            }
+        });
+    }
+
     public void Shutdown()
     {
+        try { OpenRgbManager.Stop(); } catch { }
         if (!Engine.Running) return;
         Engine.Stop();
         try { ApplyAll(); } catch { }
@@ -663,6 +682,35 @@ sealed class RgbView : FlowLayoutPanel
         Build();
     }
 
+    async void SetupOpenRgb()
+    {
+        var st = _svc.Settings;
+        if (MessageBox.Show(FindForm(),
+                "OpenRGB jetzt einrichten?
+
+Toast Temperatur lädt OpenRGB (Open Source, GPL-2.0) einmalig von codeberg.org/OpenRGB herunter " +
+                "und startet es künftig automatisch unsichtbar mit. Danach laufen die eigenen Effekte über OpenRGB.",
+                "OpenRGB einrichten", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+        using var progress = new ProgressForm("OpenRGB wird eingerichtet …");
+        progress.Show(FindForm());
+        bool ok = OpenRgbManager.Installed || await OpenRgbManager.InstallAsync(new Progress<string>(m => progress.Text = m));
+        progress.Close();
+        if (!ok)
+        {
+            MessageBox.Show(FindForm(), OpenRgbManager.Status + "
+
+Alternativ: OpenRGB von openrgb.org selbst installieren und den SDK-Server starten.",
+                "OpenRGB", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        st.OpenRgbAuto = true;
+        st.Save();
+        _svc.StartOpenRgb();
+        RebuildSoon();
+        MessageBox.Show(FindForm(), "OpenRGB ist eingerichtet und startet gerade. In ca. 10–30 Sekunden erscheinen die Geräte hier, " +
+            "beim Mainboard steht dann „läuft gerade über OpenRGB“.", "OpenRGB", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
     void OnTargetsChanged()
     {
         try { if (IsHandleCreated && !IsDisposed) RebuildSoon(); } catch { }
@@ -708,6 +756,18 @@ sealed class RgbView : FlowLayoutPanel
                 if (v) st.DisabledTargets.Remove(tt.Id); else if (!st.DisabledTargets.Contains(tt.Id)) st.DisabledTargets.Add(tt.Id);
                 st.Save();
             });
+        }
+        if (_svc.Device != null && st.OpenRgbAuto != true)
+        {
+            top.Note("Empfohlen fürs Mainboard: Mit OpenRGB laufen die eigenen Effekte ohne Flackern und jede LED einzeln. " +
+                     "Toast Temperatur lädt OpenRGB (Open Source, ca. 20 MB) einmalig von der offiziellen Projektseite " +
+                     "codeberg.org/OpenRGB und startet es danach automatisch unsichtbar mit – sonst musst du nichts tun.", muted: false);
+            top.Buttons(("OpenRGB einrichten (empfohlen)", () => SetupOpenRgb()),
+                        ("Nein danke", () => { st.OpenRgbAuto = false; st.Save(); RebuildSoon(); }));
+        }
+        else if (st.OpenRgbAuto == true)
+        {
+            top.Check("OpenRGB automatisch mitstarten", true, v => { st.OpenRgbAuto = v; st.Save(); if (!v) OpenRgbManager.Stop(); else _svc.StartOpenRgb(); });
         }
         top.Note("OpenRGB: " + _svc.OpenRgb.Status + ". Für Tastaturen, Mäuse, RAM, Grafikkarten u. v. m.: OpenRGB (openrgb.org) starten, " +
                  "im Reiter „SDK Server“ auf „Start Server“ klicken (Port 6742) – Toast Temperatur findet die Geräte dann automatisch " +
