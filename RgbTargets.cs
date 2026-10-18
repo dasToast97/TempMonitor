@@ -94,6 +94,10 @@ sealed class OpenRgbClient : IDisposable
     uint _proto;
     public List<OpenRgbDevice> Devices { get; } = new();
     public bool Connected => _tcp?.Connected == true;
+    /// OpenRGB meldet eine geänderte Geräteliste (Nummern können sich verschieben) -> neu einlesen
+    public volatile bool NeedsRefresh;
+    const uint DeviceListUpdated = 100;
+    Thread? _reader;
     public string Status { get; private set; } = "nicht verbunden";
 
     public sealed class OpenRgbDevice
@@ -134,6 +138,11 @@ sealed class OpenRgbClient : IDisposable
                 if (dev != null && dev.TotalLeds > 0) Devices.Add(dev);
             }
             Status = $"verbunden · {Devices.Count} Geräte";
+            NeedsRefresh = false;
+            // Ab jetzt eingehende Meldungen mitlesen (sonst läuft der Puffer voll und Änderungen gehen unter)
+            var myNet = _net;
+            _reader = new Thread(() => ReadLoop(myNet)) { IsBackground = true, Name = "OpenRGB-Lesen" };
+            _reader.Start();
             RgbSettings.Log($"OpenRGB: Protokoll {_proto}, Geräte: " + string.Join(", ", Devices.Select(x => $"{x.Name} ({x.TotalLeds} LEDs)")));
             return true;
         }
@@ -177,6 +186,29 @@ sealed class OpenRgbClient : IDisposable
             if (pid == id) return data;
         }
         return null;
+    }
+
+    void ReadLoop(NetworkStream? net)
+    {
+        if (net == null) return;
+        try
+        {
+            net.ReadTimeout = Timeout.Infinite;
+            while (_net == net)
+            {
+                var h = ReadExact(net, 16);
+                if (h == null) break;
+                uint pid = BitConverter.ToUInt32(h, 8), size = BitConverter.ToUInt32(h, 12);
+                if (size > 0 && ReadExact(net, (int)Math.Min(size, 1 << 24)) == null) break;
+                if (pid == DeviceListUpdated)
+                {
+                    NeedsRefresh = true;
+                    RgbSettings.Log("OpenRGB: Geräteliste geändert – lese neu ein");
+                }
+            }
+        }
+        catch { }
+        if (_net == net) NeedsRefresh = true;   // Verbindung weg -> neu verbinden
     }
 
     static byte[]? ReadExact(NetworkStream s, int n)
@@ -242,6 +274,7 @@ sealed class OpenRgbClient : IDisposable
 
     public bool Write(OpenRgbDevice dev, Color[] colors)
     {
+        if (NeedsRefresh) return true;   // Nummern evtl. verschoben: nichts an falsche Geräte schicken
         try
         {
             int n = dev.TotalLeds;
@@ -261,7 +294,9 @@ sealed class OpenRgbClient : IDisposable
 
     public void Dispose()
     {
-        try { _net?.Dispose(); } catch { }
+        var n = _net;
+        _net = null;
+        try { n?.Dispose(); } catch { }
         try { _tcp?.Dispose(); } catch { }
         _net = null;
         _tcp = null;
@@ -284,8 +319,15 @@ sealed class OpenRgbTarget : IRgbTarget
             return z.Length > 0 ? z : new[] { _dev.TotalLeds };
         }
     }
-    public void Begin() => _client.CustomMode(_dev);
-    public bool Write(IReadOnlyList<Color[]> s) => _client.Connected && _client.Write(_dev, s.SelectMany(x => x).ToArray());
+    DateTime _lastMode = DateTime.MinValue;
+    public void Begin() { _client.CustomMode(_dev); _lastMode = DateTime.Now; }
+    public bool Write(IReadOnlyList<Color[]> s)
+    {
+        if (!_client.Connected) return false;
+        // Manche Geräte fallen nach einem Neustart/Standby aus dem Direktmodus -> alle 10 s erneut setzen
+        if ((DateTime.Now - _lastMode).TotalSeconds >= 10) Begin();
+        return _client.Write(_dev, s.SelectMany(x => x).ToArray());
+    }
     public void End() { }
 }
 

@@ -519,7 +519,8 @@ sealed class RgbService
         while (true)
         {
             DiscoverOnce();
-            Thread.Sleep(30_000);
+            // alle 30 s – oder sofort, wenn OpenRGB eine geänderte Geräteliste meldet
+            for (int i = 0; i < 15 && !OpenRgb.NeedsRefresh; i++) Thread.Sleep(2000);
         }
     }
 
@@ -534,6 +535,7 @@ sealed class RgbService
             try
             {
                 bool changed = false;
+                if (OpenRgb.NeedsRefresh) OpenRgb.Dispose();
                 if (!OpenRgb.Connected && OpenRgb.Connect())
                 {
                     lock (Targets)
