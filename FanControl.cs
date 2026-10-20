@@ -791,7 +791,8 @@ sealed class FanController
         if (ch.Rpm?.Value is not float rpm || rpm <= 0) return;
         string? reason = null;
         float? duty = ch.MonitorOnly ? null : ch.ControlSensor?.Value;
-        if (duty is float d && d > 0 && d <= 55 && rpm >= 2300)
+        // Pumpen drehen auch bei wenig Leistung sehr hoch (Lüfter bei 40 % meist unter 1.200 U/min)
+        if (duty is float d && d > 0 && (d <= 55 && rpm >= 2300 || d <= 40 && rpm >= 1800))
         {
             if (++ch.PumpTicks >= 30) reason = $"dreht {rpm:N0} U/min bei nur {d:0} % – typisch für eine Pumpe";
         }
