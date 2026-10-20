@@ -806,11 +806,15 @@ sealed class MainForm : Form
     // ---------------------------------------------------------------------
     // Sensor-Auswahl
     // ---------------------------------------------------------------------
-    internal static IEnumerable<ISensor> AllSensors(IHardware hw) =>
-        hw.Sensors.Concat(hw.SubHardware.SelectMany(AllSensors));
+    internal static IEnumerable<ISensor> AllSensors(IHardware hw)
+    {
+        var list = hw.Sensors.Concat(hw.SubHardware.SelectMany(AllSensors));
+        return DeltaSensor.For(hw) is ISensor d ? list.Append(d) : list;
+    }
 
     internal static bool IsUsefulTemp(ISensor s) =>
-        s.SensorType == SensorType.Temperature
+        s is not DeltaSensor
+        && s.SensorType == SensorType.Temperature
         && s.Value is float v && v > 1 && v < 125
         && !s.Name.Contains("Distance", StringComparison.OrdinalIgnoreCase)
         && !s.Name.Contains("Limit", StringComparison.OrdinalIgnoreCase)
@@ -993,6 +997,8 @@ sealed class MainForm : Form
                 var sensor = s;
                 Key(sensor, _logger.Add($"{cat} {sensor.Name} [°C]", () => sensor.Value));
             }
+            if (DeltaSensor.For(hw) is DeltaSensor dts)
+                _logger.Add($"{cat} {dts.Name} [°C]", () => dts.Value);
             if (MainLoad(hw) is ISensor load)
                 Key(load, _logger.Add($"{cat} Auslastung [%]", () => load.Value));
             foreach (var s in AllSensors(hw).Where(x => x.SensorType == SensorType.Power && x.Name.Contains("Package", StringComparison.OrdinalIgnoreCase)))

@@ -17,6 +17,20 @@ sealed class HistoryData
 
     public List<float>? Get(string? name) => name != null && Series.TryGetValue(name, out var l) ? l : null;
 
+    /// Nur die Messungen zwischen from und to
+    public HistoryData Slice(DateTime from, DateTime to)
+    {
+        int a = Times.FindIndex(t => t >= from);
+        if (a < 0) a = Times.Count;
+        int b = Times.FindLastIndex(t => t <= to);
+        var d = new HistoryData();
+        if (b < a) { d.Order.AddRange(Order); foreach (var o in Order) d.Series[o] = new(); return d; }
+        d.Times.AddRange(Times.GetRange(a, b - a + 1));
+        d.Order.AddRange(Order);
+        foreach (var (k, l) in Series) d.Series[k] = l.GetRange(a, b - a + 1);
+        return d;
+    }
+
     public static string Unit(string header)
     {
         int a = header.LastIndexOf('['), b = header.LastIndexOf(']');
@@ -258,7 +272,7 @@ sealed class HistoryChart : Control
 
         // Zeitachse
         double span = (End - Start).TotalMinutes;
-        double[] stepsMin = { 1, 2, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440 };
+        double[] stepsMin = { 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440 };
         double st = stepsMin.FirstOrDefault(s => span / s <= Math.Max(3, r.Width / S(90)), 1440);
         var t0 = new DateTime(Start.Year, Start.Month, Start.Day).AddMinutes(Math.Ceiling((Start - Start.Date).TotalMinutes / st) * st);
         bool multiDay = Start.Date != End.Date;
@@ -266,7 +280,7 @@ sealed class HistoryChart : Control
         {
             float x = XOf(t);
             g.DrawLine(grid, x, r.Top, x, r.Bottom);
-            string lbl = multiDay && (t.TimeOfDay == TimeSpan.Zero || st >= 360) ? t.ToString("dd.MM. HH:mm") : t.ToString("HH:mm");
+            string lbl = multiDay && (t.TimeOfDay == TimeSpan.Zero || st >= 360) ? t.ToString("dd.MM. HH:mm") : st < 1 ? t.ToString("HH:mm:ss") : t.ToString("HH:mm");
             TextRenderer.DrawText(g, lbl, SmallFont, new Rectangle((int)x - S(45), r.Bottom + S(4), S(90), S(16)), Theme.Muted, C);
         }
 
@@ -329,10 +343,19 @@ sealed class HistoryChart : Control
             var colr = ColorFor(_data.Order.IndexOf(name));
             string txt = HistoryData.Label(name) + (HistoryData.Unit(name) is var u && u != "°C" && u.Length > 0 ? $" ({u})" : "");
             int w = TextRenderer.MeasureText(txt, SmallFont).Width;
-            if (lx + w + S(20) > Width) break;
+            if (lx + w + S(20) > Width - S(300)) break;
             using (var bb = new SolidBrush(colr)) g.FillEllipse(bb, lx, S(10), S(9), S(9));
             TextRenderer.DrawText(g, txt, SmallFont, new Point(lx + S(12), S(6)), Theme.Text, TextFormatFlags.NoPrefix);
             lx += w + S(26);
+        }
+
+        // Sichtbarer Zeitraum oben rechts
+        {
+            var dur = End - Start;
+            string ds = dur.TotalHours >= 48 ? $"{dur.TotalDays:0.#} Tage" : dur.TotalMinutes >= 120 ? $"{dur.TotalHours:0.#} Std" : $"{Math.Max(1, dur.TotalMinutes):0} Min";
+            string rt = $"{Start:dd.MM. HH:mm:ss} – {(multiDay ? End.ToString("dd.MM. HH:mm:ss") : End.ToString("HH:mm:ss"))}  ({ds})";
+            TextRenderer.DrawText(g, rt, SmallFont, new Rectangle(0, S(22) - S(16), Width - S(10), S(16)), Theme.Muted,
+                TextFormatFlags.NoPrefix | TextFormatFlags.Right);
         }
 
         // Auswahl beim Ziehen
@@ -518,6 +541,15 @@ sealed class HistoryPanel : Panel
     readonly HistoryChart _chart;
     readonly Label _hint;
     readonly Button _reset, _folder;
+    readonly DateTimePicker _fromPick, _toPick;
+    readonly Label _fromLbl, _toLbl;
+    static readonly (string Text, TimeSpan Span)[] Recent =
+    {
+        ("Letzte 15 Minuten", TimeSpan.FromMinutes(15)), ("Letzte Stunde", TimeSpan.FromHours(1)),
+        ("Letzte 6 Stunden", TimeSpan.FromHours(6)), ("Letzte 24 Stunden", TimeSpan.FromHours(24)),
+        ("Letzte 7 Tage", TimeSpan.FromDays(7)),
+    };
+    const string CustomText = "Eigener Zeitraum (von – bis)";
     List<DateTime> _days = new();
     HistoryData? _data;
     CancellationTokenSource? _cts;
@@ -534,6 +566,14 @@ sealed class HistoryPanel : Panel
         _range.SelectedIndexChanged += (_, _) => { if (!_filling) Load(); };
         _reset = PageBar.Button("Ganz anzeigen", K, 130);
         _reset.Click += (_, _) => _chart!.ResetZoom();
+        _fromLbl = new Label { Text = "von", ForeColor = Theme.Muted, AutoSize = true };
+        _toLbl = new Label { Text = "bis", ForeColor = Theme.Muted, AutoSize = true };
+        _fromPick = new DateTimePicker { Format = DateTimePickerFormat.Custom, CustomFormat = "dd.MM.yyyy  HH:mm", Value = DateTime.Now.AddHours(-1) };
+        _toPick = new DateTimePicker { Format = DateTimePickerFormat.Custom, CustomFormat = "dd.MM.yyyy  HH:mm", Value = DateTime.Now };
+        _fromPick.CloseUp += (_, _) => Load();
+        _toPick.CloseUp += (_, _) => Load();
+        _fromPick.Leave += (_, _) => Load();
+        _toPick.Leave += (_, _) => Load();
         _folder = PageBar.Button("Ordner öffnen", K, 130);
         _folder.Click += (_, _) => DataLogger.OpenFolder();
         _hint = new Label
@@ -559,7 +599,7 @@ sealed class HistoryPanel : Panel
             });
         };
         _chart = new HistoryChart();
-        Controls.AddRange(new Control[] { _range, _reset, _folder, _hint, _list, _chart });
+        Controls.AddRange(new Control[] { _range, _fromLbl, _fromPick, _toLbl, _toPick, _reset, _folder, _hint, _list, _chart });
         Resize += (_, _) => DoLayout();
     }
 
@@ -571,8 +611,18 @@ sealed class HistoryPanel : Panel
     void DoLayout()
     {
         int y = S(12);
-        _range.SetBounds(S(14), y + S(2), S(200), S(26));
-        _reset.SetBounds(S(226), y, _reset.Width, S(30));
+        _range.SetBounds(S(14), y + S(2), S(210), S(26));
+        int x = _range.Right + S(12);
+        bool custom = _range.SelectedItem as string == CustomText;
+        foreach (var c in new Control[] { _fromLbl, _fromPick, _toLbl, _toPick }) c.Visible = custom;
+        if (custom)
+        {
+            _fromLbl.Location = new Point(x, y + S(7)); x = _fromLbl.Right + S(4);
+            _fromPick.SetBounds(x, y + S(2), S(150), S(26)); x = _fromPick.Right + S(10);
+            _toLbl.Location = new Point(x, y + S(7)); x = _toLbl.Right + S(4);
+            _toPick.SetBounds(x, y + S(2), S(150), S(26)); x = _toPick.Right + S(12);
+        }
+        _reset.SetBounds(x, y, _reset.Width, S(30));
         _folder.SetBounds(_reset.Right + S(8), y, _folder.Width, S(30));
         _hint.Location = new Point(_folder.Right + S(14), y + S(7));
         _hint.Visible = _hint.Right < Width;
@@ -586,10 +636,11 @@ sealed class HistoryPanel : Panel
         _days = CsvHistory.Days();
         _filling = true;
         _range.Items.Clear();
-        _range.Items.Add("Letzte 7 Tage");
+        foreach (var r in Recent) _range.Items.Add(r.Text);
+        _range.Items.Add(CustomText);
         foreach (var d in _days)
             _range.Items.Add(d == DateTime.Today ? $"Heute ({d:dd.MM.yyyy})" : d == DateTime.Today.AddDays(-1) ? $"Gestern ({d:dd.MM.yyyy})" : d.ToString("dddd, dd.MM.yyyy"));
-        _range.SelectedIndex = _days.Count > 0 ? 1 : 0;
+        _range.SelectedIndex = Math.Clamp(AppSettings.Instance.HistoryRange, 0, _range.Items.Count - 1);
         _filling = false;
         Load();
     }
@@ -597,7 +648,7 @@ sealed class HistoryPanel : Panel
     /// Beim erneuten Öffnen: heutigen Tag neu laden, damit die neuesten Werte dabei sind
     public void ReloadIfToday()
     {
-        if ((DateTime.Now - _loadedAt).TotalMinutes >= 2 && _range.SelectedIndex <= 1) Load();
+        if ((DateTime.Now - _loadedAt).TotalMinutes >= 1 && (_range.SelectedIndex < Recent.Length || _range.SelectedIndex == Recent.Length + 1)) Load();
     }
 
     async void Load()
@@ -605,13 +656,28 @@ sealed class HistoryPanel : Panel
         _cts?.Cancel();
         var cts = _cts = new CancellationTokenSource();
         int sel = _range.SelectedIndex;
-        var days = sel <= 0 ? _days.Where(d => d >= DateTime.Today.AddDays(-6)).ToList()
-                 : sel - 1 < _days.Count ? new List<DateTime> { _days[sel - 1] } : new List<DateTime>();
+        if (!_filling && sel >= 0 && sel <= Recent.Length) { AppSettings.Instance.HistoryRange = sel; AppSettings.Instance.Save(); }
+        DoLayout();
+        // Zeitraum bestimmen: [from, to]
+        DateTime from, to;
+        if (sel >= 0 && sel < Recent.Length) { to = DateTime.Now; from = to - Recent[sel].Span; }
+        else if (sel == Recent.Length)
+        {
+            from = _fromPick.Value; to = _toPick.Value;
+            if (to <= from) to = from.AddHours(1);
+        }
+        else
+        {
+            int di = sel - Recent.Length - 1;
+            from = di >= 0 && di < _days.Count ? _days[di] : DateTime.Today;
+            to = from.AddDays(1).AddTicks(-1);
+        }
+        var days = _days.Where(d => d >= from.Date && d <= to.Date).ToList();
         _chart.EmptyText = days.Count == 0 ? "Noch keine Aufzeichnungen. Aufzeichnung im Reiter Einstellungen einschalten." : "Lade …";
         _chart.SetData(null, new());
         try
         {
-            var data = await Task.Run(() => CsvHistory.Load(days, null, cts.Token));
+            var data = await Task.Run(() => CsvHistory.Load(days, null, cts.Token).Slice(from, to));
             if (cts.IsCancellationRequested) return;
             _data = data;
             _loadedAt = DateTime.Now;

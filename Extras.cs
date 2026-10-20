@@ -75,9 +75,8 @@ sealed class KeySensors
                 case HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel when k.Gpu == null:
                     if (temps.Count > 0) k.Gpu = MainForm.PickMain(hw, temps);
                     k.GpuLoad = MainForm.MainLoad(hw);
-                    k.Hotspot = temps.FirstOrDefault(t => t.Name.Contains("Hot Spot", StringComparison.OrdinalIgnoreCase)
-                                                       || t.Name.Contains("Hotspot", StringComparison.OrdinalIgnoreCase)
-                                                       || t.Name.Contains("Junction", StringComparison.OrdinalIgnoreCase));
+                    k.Hotspot = temps.FirstOrDefault(DeltaSensor.IsHotspot)
+                                ?? temps.FirstOrDefault(t => t.Name.Contains("Junction", StringComparison.OrdinalIgnoreCase));
                     break;
                 case HardwareType.Motherboard when k.Board == null:
                     if (temps.Count > 0) k.Board = MainForm.PickMain(hw, temps);
@@ -103,6 +102,77 @@ sealed class KeySensors
     };
 
     static float? Higher(float? a, float? b) => a is null ? b : b is null ? a : Math.Max(a.Value, b.Value);
+}
+
+// ===========================================================================
+// Berechneter Wert: ΔT Grafikkarte (Hot Spot − Kern) – zeigt, wie gut der Kühler die Wärme abnimmt
+// ===========================================================================
+sealed class DeltaSensor : ISensor
+{
+    static readonly Dictionary<string, DeltaSensor?> _cache = new();
+    readonly ISensor _hot, _core;
+    float? _min, _max;
+
+    /// Heißester Punkt des Grafikchips (nicht der Grafikspeicher: „Memory Junction“ ist VRAM)
+    public static bool IsHotspot(ISensor t) =>
+        t.SensorType == SensorType.Temperature
+        && !t.Name.Contains("Memory", StringComparison.OrdinalIgnoreCase)
+        && (t.Name.Contains("Hot Spot", StringComparison.OrdinalIgnoreCase)
+            || t.Name.Contains("Hotspot", StringComparison.OrdinalIgnoreCase)
+            || t.Name.Contains("Junction", StringComparison.OrdinalIgnoreCase));
+
+    public static DeltaSensor? For(IHardware hw)
+    {
+        if (hw.HardwareType is not (HardwareType.GpuAmd or HardwareType.GpuNvidia or HardwareType.GpuIntel)) return null;
+        string key = hw.Identifier.ToString();
+        lock (_cache)
+        {
+            if (_cache.TryGetValue(key, out var d) && (d != null || hw.Sensors.Length == 0)) return d;
+            var hot = hw.Sensors.FirstOrDefault(IsHotspot);
+            var core = hw.Sensors.FirstOrDefault(t => t.SensorType == SensorType.Temperature
+                && (t.Name.Equals("GPU Core", StringComparison.OrdinalIgnoreCase) || t.Name.Equals("Core", StringComparison.OrdinalIgnoreCase)
+                    || t.Name.Equals("GPU Temperature", StringComparison.OrdinalIgnoreCase)));
+            d = hot != null && core != null && hot != core ? new DeltaSensor(hw, hot, core) : null;
+            _cache[key] = d;
+            return d;
+        }
+    }
+
+    DeltaSensor(IHardware hw, ISensor hot, ISensor core)
+    {
+        Hardware = hw; _hot = hot; _core = core;
+        Identifier = new Identifier(hw.Identifier, "temperature", "delta-hotspot");
+    }
+
+    public float? Value
+    {
+        get
+        {
+            if (_hot.Value is not float h || _core.Value is not float c) return null;
+            float v = h - c;
+            if (_min is null || v < _min) _min = v;
+            if (_max is null || v > _max) _max = v;
+            return v;
+        }
+    }
+
+    public string Name { get => "ΔT Hot Spot − Kern"; set { } }
+    public IHardware Hardware { get; }
+    public Identifier Identifier { get; }
+    public SensorType SensorType => SensorType.Temperature;
+    public float? Min => _min;
+    public float? Max => _max;
+    public int Index => 999;
+    public bool IsDefaultHidden => false;
+    public IControl Control => null!;
+    public IReadOnlyList<IParameter> Parameters => Array.Empty<IParameter>();
+    public IEnumerable<SensorValue> Values => Array.Empty<SensorValue>();
+    public TimeSpan ValuesTimeWindow { get; set; }
+    public void ResetMin() => _min = null;
+    public void ResetMax() => _max = null;
+    public void ClearValues() { }
+    public void Accept(IVisitor visitor) { }
+    public void Traverse(IVisitor visitor) { }
 }
 
 // ===========================================================================

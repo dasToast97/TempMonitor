@@ -21,6 +21,8 @@ sealed class AppSettings
     public bool CareReminder { get; set; } = true;
     public DateTime CareLast { get; set; }
     public DateTime CareChecked { get; set; }
+    /// Analyse → Verlauf: zuletzt gewählter Zeitraum (0 = letzte 15 Minuten … )
+    public int HistoryRange { get; set; } = 1;
 
     // ----- Warnungen (Windows-Benachrichtigung) -----
     public bool WarnEnabled { get; set; } = true;

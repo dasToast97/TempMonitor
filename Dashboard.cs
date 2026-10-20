@@ -9,7 +9,11 @@ namespace TempMonitor;
 // ===========================================================================
 sealed class HistoryStore
 {
-    public const int MaxPoints = 300;
+    /// Höchstens 1 Stunde (1 Wert pro Sekunde) im Speicher
+    public const int Capacity = 3600;
+    public static readonly int[] WindowChoices = { 1, 5, 15, 30, 60 };
+    /// Angezeigter Zeitraum in Punkten (Sekunden), einstellbar in der Übersicht
+    public static int MaxPoints => Math.Clamp(UiState.Instance.TileMinutes, 1, 60) * 60;
     readonly object _lock = new();
     readonly Dictionary<string, List<float>> _data = new();
     readonly Dictionary<string, long> _total = new();
@@ -24,9 +28,9 @@ sealed class HistoryStore
                 {
                     if (s.Value is not float v || float.IsNaN(v)) continue;
                     string id = s.Identifier.ToString();
-                    if (!_data.TryGetValue(id, out var list)) { list = new List<float>(MaxPoints + 1); _data[id] = list; }
+                    if (!_data.TryGetValue(id, out var list)) { list = new List<float>(Capacity + 301); _data[id] = list; }
                     list.Add(v);
-                    if (list.Count > MaxPoints) list.RemoveAt(0);
+                    if (list.Count > Capacity + 300) list.RemoveRange(0, list.Count - Capacity);
                     _total[id] = (_total.TryGetValue(id, out var n) ? n : 0) + 1;
                 }
         }
@@ -40,7 +44,7 @@ sealed class HistoryStore
         {
             string id = s.Identifier.ToString();
             return _data.TryGetValue(id, out var l)
-                ? (l.ToArray(), _total.TryGetValue(id, out var n) ? n : l.Count)
+                ? (Tail(l), _total.TryGetValue(id, out var n) ? n : l.Count)
                 : (Array.Empty<float>(), 0);
         }
     }
@@ -49,8 +53,16 @@ sealed class HistoryStore
     {
         if (s == null) return Array.Empty<float>();
         lock (_lock)
-            return _data.TryGetValue(s.Identifier.ToString(), out var l) ? l.ToArray() : Array.Empty<float>();
+            return _data.TryGetValue(s.Identifier.ToString(), out var l) ? Tail(l) : Array.Empty<float>();
     }
+
+    static float[] Tail(List<float> l)
+    {
+        int n = Math.Min(l.Count, MaxPoints);
+        return l.GetRange(l.Count - n, n).ToArray();
+    }
+
+    public static string WindowText(int min) => min >= 60 ? "1 Std" : $"{min} Min";
 }
 
 // ===========================================================================
@@ -400,6 +412,10 @@ sealed class SensorTile : Control
         }
         using (var basePen = new Pen(Theme.Grid))
             g.DrawLine(basePen, gr.Left, gr.Bottom, gr.Right, gr.Bottom);
+        // Zeitraum der Kurve (unten links), damit klar ist, wie weit sie zurückreicht
+        TextRenderer.DrawText(g, $"−{HistoryStore.WindowText(UiState.Instance.TileMinutes)}", TinyFont,
+            new Rectangle(gr.Left + (int)(2 * k), gr.Bottom - (int)(14 * k), (int)(60 * k), (int)(13 * k)), Color.FromArgb(140, Theme.Muted),
+            TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.Bottom);
 
         float dx = gr.Width / (float)(HistoryStore.MaxPoints - 1);
 
@@ -756,6 +772,25 @@ sealed class DashboardView : FlowLayoutPanel
         {
             Margin = new Padding(S(6), S(4), S(6), S(2)),
         };
+        var window = PageBar.Button($"Verlauf: {HistoryStore.WindowText(UiState.Instance.TileMinutes)} ▾", K);
+        window.Click += (_, _) =>
+        {
+            var m = new ContextMenuStrip();
+            foreach (int min in HistoryStore.WindowChoices)
+            {
+                int mm = min;
+                var it = new ToolStripMenuItem($"Letzte {HistoryStore.WindowText(min)}") { Checked = UiState.Instance.TileMinutes == min };
+                it.Click += (_, _) =>
+                {
+                    UiState.Instance.TileMinutes = mm; UiState.Instance.Save();
+                    window.Text = $"Verlauf: {HistoryStore.WindowText(mm)} ▾";
+                    foreach (var t in _tiles) t.Invalidate();
+                };
+                m.Items.Add(it);
+            }
+            m.Show(window, new Point(0, window.Height));
+        };
+        bar.AddRight(window);
         var customize = PageBar.Button("Übersicht anpassen …", K);
         customize.Click += (_, _) => Customize();
         bar.AddRight(customize);
@@ -819,7 +854,7 @@ sealed class DashboardView : FlowLayoutPanel
 
         // Temperatur-Graphen
         SensorTile? last = null;
-        foreach (var s in all.Where(MainForm.IsUsefulTemp))
+        foreach (var s in all.Where(x => x is DeltaSensor || MainForm.IsUsefulTemp(x)))
         {
             string sub = s.Hardware.Name != hw.Name ? s.Hardware.Name : cat;
             var tile = new SensorTile(_hist, s, Hw.LoadFor(_computer, hw, s), s.Name, sub, accent, TileSize.Medium, component: false);
@@ -1046,7 +1081,7 @@ sealed class ComponentPage : FlowLayoutPanel
         AddFull(bar);
 
         // ----- Temperatur-Graphen -----
-        var temps = all.Where(MainForm.IsUsefulTemp).Where(s => _showHidden || !Hidden(s)).ToList();
+        var temps = all.Where(x => x is DeltaSensor || MainForm.IsUsefulTemp(x)).Where(s => _showHidden || !Hidden(s)).ToList();
         if (temps.Count > 0)
         {
             AddFull(new SectionHeader("Temperaturen", accent) { Height = S(36), Margin = new Padding(S(6), S(8), S(6), S(2)) });
