@@ -744,9 +744,22 @@ sealed class HealthPanel : Panel
         return v[v.Count / 2];
     }
 
-    List<Finding> HistoryChecks()
+    /// Gründe für eine Pflege-Erinnerung (Staub / Wärmeleitpaste), aus dem letzten HistoryChecks-Lauf
+    static List<string> _care = new();
+
+    /// Prüft den Verlauf und liefert einen Hinweistext, wenn sich die Kühlung über die Tage spürbar verschlechtert hat.
+    public static string? CareReminder()
+    {
+        try { HistoryChecks(); } catch { return null; }
+        var c = _care;
+        return c.Count == 0 ? null : string.Join(" ", c);
+    }
+
+    static List<Finding> HistoryChecks()
     {
         var res = new List<Finding>();
+        var care = new List<string>();
+        _care = care;
         var keys = AppSettings.Instance.LogKeys;
         var days = CsvHistory.Days().Where(d => d >= DateTime.Today.AddDays(-13)).ToList();
         if (days.Count == 0 || keys.Count == 0)
@@ -797,6 +810,7 @@ sealed class HealthPanel : Panel
             float now = cpu[^1].Value;
             string tr = Trend(cpu, out float dlt);
             var lvl = now >= 90 || dlt >= 8 ? Level.Bad : now >= 80 || dlt >= 5 ? Level.Watch : Level.Good;
+            if (dlt >= 5 && cpu.Count >= 5) care.Add($"Der Prozessor ist unter Last {dlt:0} °C wärmer als vor ein paar Tagen.");
             res.Add(new(lvl, $"Prozessor unter Last: {now:0} °C",
                 $"Typische CPU-Temperatur bei über 80 % Auslastung (an {cpu.Count} Tagen gemessen).{tr}" +
                 (lvl != Level.Good ? " Steigt sie über Wochen, sind oft Staub in Kühler/Filtern oder alternde Wärmeleitpaste die Ursache." : "")));
@@ -810,6 +824,7 @@ sealed class HealthPanel : Panel
             float now = gpu[^1].Value;
             string tr = Trend(gpu, out float dlt);
             var lvl = now >= 87 || dlt >= 8 ? Level.Bad : now >= 80 || dlt >= 5 ? Level.Watch : Level.Good;
+            if (dlt >= 5 && gpu.Count >= 5) care.Add($"Die Grafikkarte ist unter Last {dlt:0} °C wärmer als vor ein paar Tagen.");
             res.Add(new(lvl, $"Grafikkarte unter Last: {now:0} °C", $"Typische GPU-Temperatur bei über 80 % Auslastung (an {gpu.Count} Tagen).{tr}"));
         }
 
@@ -824,6 +839,7 @@ sealed class HealthPanel : Panel
                 float now = gap[^1].Value;
                 string tr = Trend(gap, out float dlt);
                 var lvl = now >= 30 || dlt >= 6 ? Level.Bad : now >= 22 || dlt >= 4 ? Level.Watch : Level.Good;
+                if (dlt >= 5 && gap.Count >= 5) care.Add($"Der Abstand GPU ↔ Hot Spot ist um {dlt:0} °C gewachsen (Wärmeleitpaste?).");
                 res.Add(new(lvl, $"Abstand GPU ↔ Hot Spot: {now:0} °C",
                     $"Unter Last ist der heißeste Punkt des Grafikchips {now:0} °C wärmer als der Durchschnitt.{tr} " +
                     (lvl == Level.Good ? "Normal sind etwa 10–20 °C."

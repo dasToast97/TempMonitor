@@ -424,6 +424,13 @@ sealed class RgbSettings
     public bool BoardWearMigrated { get; set; } = true;
     /// Mainboard: jede LED einzeln (Direktmodus, experimentell) statt einer Farbe je Zone
     public bool BoardPerLed { get; set; }
+    /// Warnlicht: alle LEDs pulsieren rot, solange eine Temperatur über der Warngrenze liegt oder die Pumpe ausfällt
+    public bool WarnLight { get; set; } = true;
+    /// Nachtmodus: Beleuchtung in einem Zeitraum dimmen
+    public bool NightDim { get; set; }
+    public int NightFrom { get; set; } = 22;
+    public int NightTo { get; set; } = 7;
+    public int NightLevel { get; set; } = 20;
 
     /// true = eigene Effekte von Toast Temperatur (jede LED einzeln), false = Effekte des Mainboards
     public bool Custom { get; set; } = true;
@@ -492,6 +499,61 @@ sealed class RgbService
     readonly Func<KeySensors?> _keys;
     readonly Dictionary<int, Color> _lastTempColor = new();
     readonly Dictionary<int, DateTime> _lastTempWrite = new();
+
+    /// Warnlicht aktiv (Temperatur über Warngrenze oder Pumpenalarm)
+    public volatile bool Alarm;
+    /// 1 = normal, kleiner = Nachtmodus gedimmt
+    public volatile float NightFactor = 1;
+    bool _night, _boardAlarm;
+    DateTime _alarmSince, _hotLast;
+
+    public bool IsNight(DateTime now)
+    {
+        int h = now.Hour, f = Math.Clamp(Settings.NightFrom, 0, 23), t = Math.Clamp(Settings.NightTo, 0, 23);
+        return f == t ? false : f < t ? h >= f && h < t : h >= f || h < t;
+    }
+
+    /// Jede Sekunde: Warnlicht und Nachtmodus nachführen
+    void UpdateOverlays()
+    {
+        var k = _keys();
+        var a = AppSettings.Instance;
+        bool hot = k != null && (k.Cpu?.Value >= a.WarnCpu || k.Gpu?.Value >= a.WarnGpu || k.Hotspot?.Value >= a.WarnHotspot);
+        if (hot) _hotLast = DateTime.Now;
+        bool pump = FanController.Current?.PumpAlarm != null;
+        // Nach dem Abkühlen noch 15 s rot halten, damit es nicht hin- und herspringt
+        bool alarm = Settings.WarnLight && (pump || hot || (DateTime.Now - _hotLast).TotalSeconds < 15 && _hotLast != default);
+        if (alarm && !Alarm) { _alarmSince = DateTime.Now; RgbSettings.Log("Warnlicht an" + (pump ? " (Pumpe)" : " (Temperatur)")); }
+        if (!alarm && Alarm) RgbSettings.Log("Warnlicht aus");
+        Alarm = alarm;
+
+        bool night = Settings.NightDim && IsNight(DateTime.Now);
+        NightFactor = night ? Math.Clamp(Settings.NightLevel, 5, 100) / 100f : 1f;
+
+        if (Device == null) return;
+        bool boardHw = !Settings.Custom || BoardNative;
+        // Mainboard mit eigenen Effekten: Warnlicht als EIN Befehl (eingebautes Blitzen in Rot), danach zurück
+        if (boardHw && alarm != _boardAlarm)
+        {
+            _boardAlarm = alarm;
+            if (alarm) foreach (var z in Device.Zones) Device.SetZone(z, 0x02, Color.Red, 90);
+            else ReapplyBoard();
+        }
+        if (night != _night)
+        {
+            _night = night;
+            RgbSettings.Log(night ? "Nachtmodus an" : "Nachtmodus aus");
+            if (boardHw && !alarm) ReapplyBoard();
+        }
+    }
+
+    void ReapplyBoard()
+    {
+        _lastTempColor.Clear();
+        if (Settings.Custom) ApplyBoardFromCustom(); else ApplyAll();
+    }
+
+    static Color Dim(Color c, float f) => f >= 1 ? c : Color.FromArgb((int)(c.R * f), (int)(c.G * f), (int)(c.B * f));
 
     public RgbService(PolychromeUsb? dev, Func<KeySensors?> keys)
     {
@@ -679,7 +741,8 @@ sealed class RgbService
             TickTemperature(force: true);
             return;
         }
-        if (!Device.SetZone(z, (byte)s.Mode, Color.FromArgb(s.Color), s.Speed))
+        if (_boardAlarm) return;
+        if (!Device.SetZone(z, (byte)s.Mode, Dim(Color.FromArgb(s.Color), NightFactor), s.Speed))
             RgbSettings.Log($"{z.Name}: Senden fehlgeschlagen ({Device.LastError})");
     }
 
@@ -765,9 +828,10 @@ sealed class RgbService
     /// Jede Sekunde: Zonen im Temperatur-Modus nachführen (nur bei spürbarer Änderung senden)
     public void TickTemperature(bool force = false)
     {
-        if ((Settings.Custom && !BoardNative) || Device == null) return;
+        try { UpdateOverlays(); } catch (Exception ex) { RgbSettings.Log("Warnlicht: " + ex.Message); }
+        if ((Settings.Custom && !BoardNative) || Device == null || _boardAlarm) return;
         if (_keys()?.Value(Settings.TempSource) is not float t) return;
-        var col = TempColor(t);
+        var col = Dim(TempColor(t), NightFactor);
         foreach (var z in Device!.Zones)
         {
             if (Settings.For(z.Index).Mode != RgbSettings.TempMode) continue;
@@ -960,6 +1024,7 @@ sealed class RgbView : FlowLayoutPanel
         }
         if (st.Custom || _svc.Device == null) BuildCustom();
         if (!st.Custom && _svc.Device != null) BuildHardware();
+        BuildExtras();
 
         if (_svc.Device is PolychromeUsb board)
         {
@@ -984,6 +1049,22 @@ sealed class RgbView : FlowLayoutPanel
             }
             Add(info);
         }
+    }
+
+    void BuildExtras()
+    {
+        var st = _svc.Settings;
+        Add(new SectionHeader("Warnlicht & Nachtmodus", Theme.Muted) { Height = S(34), Margin = new Padding(S(6), S(10), S(6), S(2)) });
+        var c = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+        c.Check("Warnlicht: alles pulsiert rot, wenn es kritisch wird (Warngrenzen aus Einstellungen → Warnungen, Pumpenausfall)",
+            st.WarnLight, v => { st.WarnLight = v; st.Save(); });
+        c.Check("Nachtmodus: Beleuchtung nachts dimmen", st.NightDim, v => { st.NightDim = v; st.Save(); _svc.TickTemperature(force: true); });
+        c.Numbers(
+            ("von", (float)st.NightFrom, 0, 23, "Uhr", (Action<float>)(v => { st.NightFrom = (int)v; st.Save(); })),
+            ("bis", (float)st.NightTo, 0, 23, "Uhr", (Action<float>)(v => { st.NightTo = (int)v; st.Save(); })),
+            ("Helligkeit", (float)st.NightLevel, 5, 100, "%", (Action<float>)(v => { st.NightLevel = (int)v; st.Save(); })));
+        c.Note("Beim Mainboard wird nur beim Wechsel einmal umgeschaltet – das schont den Controller-Speicher.");
+        Add(c);
     }
 
     void BuildHardware()
@@ -1477,6 +1558,19 @@ sealed class EffectEngine
                     var frame = new List<Color[]>(segs.Length);
                     for (int si = 0; si < segs.Length; si++)
                         frame.Add(EffectRenderer.Render(fx, ti * 16 + si, segs[si], t, temp));
+                    if (_svc.Alarm)
+                    {
+                        // Warnlicht: weich rot pulsieren (nie ganz aus)
+                        double ph = 0.5 + 0.5 * Math.Sin(t * Math.PI * 2 * 0.8);
+                        var red = Color.FromArgb((int)(255 * (0.25 + 0.75 * ph)), 0, 0);
+                        foreach (var seg in frame) Array.Fill(seg, red);
+                    }
+                    else if (_svc.NightFactor < 1)
+                    {
+                        float nf = _svc.NightFactor;
+                        foreach (var seg in frame)
+                            for (int k = 0; k < seg.Length; k++) seg[k] = Color.FromArgb((int)(seg[k].R * nf), (int)(seg[k].G * nf), (int)(seg[k].B * nf));
+                    }
                     if (target is not PolychromeTarget && _svc.Settings.SwapRG.Contains(target.Id))   // Mainboard tauscht selbst (SwapRgFix)
                         foreach (var seg in frame)
                             for (int k = 0; k < seg.Length; k++) seg[k] = Color.FromArgb(seg[k].G, seg[k].R, seg[k].B);

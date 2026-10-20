@@ -605,6 +605,8 @@ sealed class SettingsView : FlowLayoutPanel
             s.PowerSave, v => { s.PowerSave = v; Save(); });
         a.Check("Automatisch nach Updates suchen (jede Minute; aus = nur beim Start und per Knopf)", s.AutoUpdateCheck,
             v => { s.AutoUpdateCheck = v; Save(); });
+        a.Check("Erinnern, wenn die Kühlung nachlässt (Staub / Wärmeleitpaste, höchstens alle 30 Tage)", s.CareReminder,
+            v => { s.CareReminder = v; Save(); });
         bool auto = Autostart.IsEnabled;
         a.Check("Mit Windows starten (unsichtbar im Hintergrund)", auto, v =>
         {

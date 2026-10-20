@@ -471,6 +471,7 @@ sealed class MainForm : Form
 
         // Danach alle 5 Minuten erneut nachsehen
         _updateTimer.Tick += async (_, _) => await PeriodicUpdateCheck();
+        _updateTimer.Tick += async (_, _) => await CareCheck();
         _updateTimer.Start();
         _tray.BalloonTipClicked += async (_, _) =>
         {
@@ -484,6 +485,31 @@ sealed class MainForm : Form
     readonly System.Windows.Forms.Timer _updateTimer = new() { Interval = 60 * 1000 };
     Updater.ReleaseInfo? _pendingUpdate;
     string? _notifiedTag;
+
+    bool _careBusy;
+    /// Einmal am Tag den Verlauf ansehen; steigen die Temperaturen unter Last deutlich, an Staub / Wärmeleitpaste erinnern
+    async Task CareCheck()
+    {
+        var s = AppSettings.Instance;
+        if (_careBusy || _exiting || !s.CareReminder) return;
+        if (DateTime.Now - s.CareChecked < TimeSpan.FromHours(24) || DateTime.Now - s.CareLast < TimeSpan.FromDays(30)) return;
+        _careBusy = true;
+        try
+        {
+            s.CareChecked = DateTime.Now;
+            var msg = await Task.Run(HealthPanel.CareReminder);
+            if (msg != null && !_exiting)
+            {
+                s.CareLast = DateTime.Now;
+                _tray.ShowBalloonTip(20000, "Zeit für eine Reinigung?",
+                    msg + " Häufige Ursache: Staub in Kühler, Lüftern oder Filtern – bei älteren PCs auch die Wärmeleitpaste. Details im Reiter Analyse → Gesundheits-Check.",
+                    ToolTipIcon.Info);
+            }
+            s.Save();
+        }
+        catch (Exception ex) { ErrorLog.Write("Pflege-Erinnerung", ex); }
+        finally { _careBusy = false; }
+    }
 
     async Task PeriodicUpdateCheck()
     {

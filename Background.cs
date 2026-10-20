@@ -17,6 +17,10 @@ sealed class AppSettings
     public bool PowerSave { get; set; } = true;
     /// Jede Minute nach Updates suchen (beim Start wird immer gesucht)
     public bool AutoUpdateCheck { get; set; } = true;
+    /// Erinnerung an Staub/Wärmeleitpaste, wenn die Temperaturen unter Last über Tage steigen
+    public bool CareReminder { get; set; } = true;
+    public DateTime CareLast { get; set; }
+    public DateTime CareChecked { get; set; }
 
     // ----- Warnungen (Windows-Benachrichtigung) -----
     public bool WarnEnabled { get; set; } = true;

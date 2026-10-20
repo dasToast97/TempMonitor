@@ -71,7 +71,7 @@ sealed class FanView : FlowLayoutPanel
                 // warten, bis das Erkennen fertig ist (max. 20 s)
                 for (int t = 0; t < 200 && !ch.IdentifyFinished; t++) await Task.Delay(100);
                 ch.IdentifyFinished = false;
-                var res = AskRole(ch, _ctl, FindForm()!, $"Anschluss {i + 1} von {list.Count}");
+                var res = FanCard.AskRole(ch, _ctl, FindForm()!, $"Anschluss {i + 1} von {list.Count}");
                 ch.InWizard = false;
                 if (res == null) break;
             }
