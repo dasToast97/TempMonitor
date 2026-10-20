@@ -201,6 +201,9 @@ sealed class FanSettings
     public List<string> ShowPorts { get; set; } = new();
     /// Zusätzliche Sicherung: Anschlüsse (stabiler Schlüssel), an denen eine Pumpe hängt – eine Pumpe darf nie als Lüfter behandelt werden
     public List<string> PumpKeys { get; set; } = new();
+    /// Pumpen-Wächter: wie oft eine Pumpe ausgefallen/zu langsam war
+    public int PumpAlarmCount { get; set; }
+    public DateTime? PumpAlarmLast { get; set; }
 
     // ----- Automatischer Profilwechsel -----
     public bool AutoGame { get; set; }
@@ -473,6 +476,10 @@ sealed class FanChannel
     public string? IdentifyResult;
     public volatile bool IdentifyFinished;
     public float IdentifyStartCpu, IdentifyStartGpu;
+    // Pumpen-Wächter
+    public float PumpBaseline;
+    public int PumpLowTicks, PumpOkTicks;
+    public DateTime IdentifyEndedAt = DateTime.MinValue;
     public int ReadbackMismatchTicks;
     public float? DriverTemp;
 
@@ -1315,6 +1322,7 @@ sealed class FanController
             var prof = Profiles.Get(Profile);
             try { TickLaptop(prof); } catch (Exception ex) { LaptopStatus = "Fehler: " + ex.Message; }
             try { Uniwill?.Tick(); } catch { }
+            try { PumpGuard(); } catch { }
             // Erst die regelnden Lüfter, dann die Gruppen-Mitglieder, die ihnen folgen
             foreach (bool followers in new[] { false, true })
             {
@@ -1343,9 +1351,70 @@ sealed class FanController
         }
     }
 
+    /// Pumpe ausgefallen/zu langsam -> Text der Warnung, sonst null. Solange gesetzt: alle Lüfter voll.
+    public string? PumpAlarm { get; private set; }
+    /// Wird ausgelöst, wenn eine Pumpe ausfällt (für die Benachrichtigung)
+    public event Action<string>? PumpAlarmRaised;
+
+    /// Pumpen-Wächter: Jede Pumpe mit Drehzahlsignal wird jede Sekunde geprüft. Fällt sie unter 300 U/min oder
+    /// unter 35 % ihrer üblichen Drehzahl (4 s lang), werden sofort alle Lüfter auf 100 % gestellt und gewarnt.
+    void PumpGuard()
+    {
+        string? alarm = null;
+        foreach (var ch in Channels.Where(c => c.Kind == FanKind.Pump && c.Rpm != null && c.Ext is not OasisFan))
+        {
+            if (ch.Identifying || ch.CalPhase > 0 || (DateTime.Now - ch.IdentifyEndedAt).TotalSeconds < 15) { ch.PumpLowTicks = 0; continue; }
+            if (ch.Rpm!.Value is not float rpm) continue;
+            bool low = rpm < 300 || (ch.PumpBaseline > 800 && rpm < ch.PumpBaseline * 0.35f);
+            if (!low)
+            {
+                ch.PumpBaseline = ch.PumpBaseline <= 0 ? rpm : ch.PumpBaseline * 0.98f + rpm * 0.02f;
+                ch.PumpLowTicks = 0;
+                continue;
+            }
+            // Nur wenn die Pumpe in dieser Sitzung schon einmal normal lief (sonst: Pumpe ohne Drehzahlsignal)
+            if (ch.PumpBaseline <= 0) continue;
+            if (++ch.PumpLowTicks >= 4)
+                alarm ??= $"{ch.DisplayName}: nur {rpm:N0} U/min (sonst ca. {ch.PumpBaseline:N0})";
+        }
+
+        if (alarm != null && PumpAlarm == null)
+        {
+            PumpAlarm = alarm;
+            _s.PumpAlarmCount++;
+            _s.PumpAlarmLast = DateTime.Now;
+            _s.Save();
+            ErrorLog.Write("Pumpen-Wächter: " + alarm);
+            try { PumpAlarmRaised?.Invoke(alarm); } catch { }
+        }
+        else if (alarm == null && PumpAlarm != null)
+        {
+            // Erst nach 15 s stabilem Lauf aufheben
+            if (Channels.Where(c => c.Kind == FanKind.Pump && c.Rpm != null).All(c => c.PumpLowTicks == 0))
+            {
+                foreach (var c in Channels) c.PumpOkTicks++;
+                if (Channels.FirstOrDefault()?.PumpOkTicks >= 15)
+                {
+                    PumpAlarm = null;
+                    foreach (var c in Channels) c.PumpOkTicks = 0;
+                }
+            }
+        }
+        else if (alarm != null) foreach (var c in Channels) c.PumpOkTicks = 0;
+    }
+
     /// Gemeinsamer Anfang: Kalibrierung, Erkennen, nicht steuerbar, BIOS. true = Lüfter ist damit fertig.
     bool Prelude(FanChannel ch, ProfileInfo prof)
     {
+        // Pumpe ausgefallen: alles auf volle Kühlung, Vorrang vor allem anderen
+        if (PumpAlarm != null && !ch.MonitorOnly && ch.Ext is not { Ready: false })
+        {
+            ch.Output = 100;
+            Write(ch, 100);
+            ch.Driver = null;
+            ch.Status = "⚠ Pumpen-Wächter: " + PumpAlarm + " – volle Kühlung";
+            return true;
+        }
         try { DetectPump(ch); } catch { }
 
         if (ch.CalPhase > 0)
@@ -1432,6 +1501,7 @@ sealed class FanController
                 SafeDefault(ch);
             }
             ch.IdentifyFinished = true;
+            ch.IdentifyEndedAt = DateTime.Now;
             ch.KickUntil = DateTime.Now.AddSeconds(3);   // nach dem Anhalten kräftig wieder anlaufen
             if (prof.Profile == FanProfile.Bios) SafeDefault(ch);
         }

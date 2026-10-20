@@ -587,6 +587,15 @@ sealed class SettingsView : FlowLayoutPanel
             s.OverlayEnabled, v => { s.OverlayEnabled = v; Save(); _overlayChanged(); });
         t.Numbers(("Deckkraft", (float)s.OverlayOpacity, 30, 100, "%", (Action<float>)(v => { s.OverlayOpacity = (int)v; Save(); _overlayChanged(); })));
 
+        // ----- Sicherung & Diagnose -----
+        AddSection("Sicherung & Diagnose", Color.FromArgb(129, 140, 248));
+        var bk = AddCard();
+        bk.Note("Alle Einstellungen (Lüfter, Pumpen, Profile, RGB, Ansicht) in eine Datei sichern – z. B. vor einer Windows-Neuinstallation " +
+                "oder um sie auf einen anderen PC zu übertragen. Das Diagnose-Paket sammelt alle Protokolle für die Fehlersuche.");
+        bk.Buttons(("Einstellungen sichern …", () => BackupTools.Export(FindForm())),
+                   ("Einstellungen laden …", () => BackupTools.Import(FindForm())),
+                   ("Diagnose-Paket erstellen", () => BackupTools.Diagnose(FindForm())));
+
         // ----- Aufzeichnung & Autostart -----
         AddSection("Aufzeichnung & Autostart", Color.FromArgb(45, 212, 191));
         var a = AddCard();
@@ -643,8 +652,12 @@ static class SafeFile
 {
     static readonly object Gate = new();
 
+    /// Nach einem Import: nichts mehr speichern, bis neu gestartet ist (sonst überschreibt der alte Stand den Import)
+    public static volatile bool Frozen;
+
     public static void Write(string path, string text)
     {
+        if (Frozen) return;
         lock (Gate)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -688,5 +701,99 @@ static class SafeFile
             catch { }
         }
         return null;
+    }
+}
+
+/// Einstellungen sichern/laden und Diagnose-Paket
+static class BackupTools
+{
+    static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor");
+
+    public static void Export(IWin32Window? owner)
+    {
+        try
+        {
+            using var dlg = new SaveFileDialog
+            {
+                Title = "Einstellungen sichern",
+                Filter = "Toast-Temperatur-Sicherung (*.zip)|*.zip",
+                FileName = $"ToastTemperatur-Einstellungen_{DateTime.Now:yyyy-MM-dd}.zip",
+                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            };
+            if (dlg.ShowDialog(owner) != DialogResult.OK) return;
+            if (File.Exists(dlg.FileName)) File.Delete(dlg.FileName);
+            using (var zip = System.IO.Compression.ZipFile.Open(dlg.FileName, System.IO.Compression.ZipArchiveMode.Create))
+                foreach (var f in Directory.GetFiles(Dir, "*.json"))
+                    zip.CreateEntryFromFile(f, Path.GetFileName(f));
+            MessageBox.Show(owner, "Gesichert:\n" + dlg.FileName, "Einstellungen sichern", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex) { MessageBox.Show(owner, "Sichern fehlgeschlagen: " + ex.Message, "Einstellungen sichern", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+    }
+
+    public static void Import(IWin32Window? owner)
+    {
+        try
+        {
+            using var dlg = new OpenFileDialog { Title = "Einstellungen laden", Filter = "Toast-Temperatur-Sicherung (*.zip)|*.zip" };
+            if (dlg.ShowDialog(owner) != DialogResult.OK) return;
+            using var zip = System.IO.Compression.ZipFile.OpenRead(dlg.FileName);
+            var entries = zip.Entries.Where(e => e.Name.EndsWith(".json", StringComparison.OrdinalIgnoreCase) && e.FullName == e.Name).ToList();
+            if (entries.Count == 0) { MessageBox.Show(owner, "Die Datei enthält keine Einstellungen von Toast Temperatur.", "Einstellungen laden"); return; }
+            // Jede Datei vorher prüfen: lesbares JSON?
+            foreach (var e in entries)
+            {
+                using var r = new StreamReader(e.Open());
+                System.Text.Json.JsonDocument.Parse(r.ReadToEnd()).Dispose();
+            }
+            if (MessageBox.Show(owner, $"{entries.Count} Einstellungsdateien laden und die jetzigen ersetzen?\n\n" +
+                    "Die jetzigen Einstellungen werden vorher gesichert (Ordner „vor-import“). Toast Temperatur startet danach neu.",
+                    "Einstellungen laden", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+
+            SafeFile.Frozen = true;   // der laufende Stand darf den Import nicht mehr überschreiben
+            string old = Path.Combine(Dir, "vor-import", DateTime.Now.ToString("yyyy-MM-dd_HHmmss"));
+            Directory.CreateDirectory(old);
+            foreach (var f in Directory.GetFiles(Dir, "*.json")) File.Copy(f, Path.Combine(old, Path.GetFileName(f)), true);
+            foreach (var e in entries) e.ExtractToFile(Path.Combine(Dir, e.Name), overwrite: true);
+            MessageBox.Show(owner, "Geladen. Toast Temperatur startet jetzt neu.", "Einstellungen laden", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            Application.Restart();
+        }
+        catch (Exception ex)
+        {
+            SafeFile.Frozen = false;
+            MessageBox.Show(owner, "Laden fehlgeschlagen: " + ex.Message, "Einstellungen laden", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    public static void Diagnose(IWin32Window? owner)
+    {
+        try
+        {
+            string desk = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+            string path = Path.Combine(desk, $"ToastTemperatur-Diagnose_{DateTime.Now:yyyy-MM-dd_HHmm}.zip");
+            if (File.Exists(path)) File.Delete(path);
+            using (var zip = System.IO.Compression.ZipFile.Open(path, System.IO.Compression.ZipArchiveMode.Create))
+            {
+                foreach (var f in Directory.GetFiles(Dir).Where(f => f.EndsWith(".log") || f.EndsWith(".json") || f.EndsWith(".alt")))
+                {
+                    try
+                    {
+                        // Dateien können gerade offen sein -> über einen geteilten Lesezugriff kopieren
+                        using var src = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                        using var dst = zip.CreateEntry(Path.GetFileName(f)).Open();
+                        src.CopyTo(dst);
+                    }
+                    catch { }
+                }
+                var info = zip.CreateEntry("info.txt");
+                using var w = new StreamWriter(info.Open());
+                w.WriteLine($"Toast Temperatur {Updater.CurrentVersion.ToString(3)}");
+                w.WriteLine($"Windows {Environment.OSVersion.Version} · {(Environment.Is64BitOperatingSystem ? "64" : "32")} Bit · {DateTime.Now:yyyy-MM-dd HH:mm}");
+            }
+            System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{path}\"");
+            MessageBox.Show(owner, "Diagnose-Paket liegt auf dem Desktop:\n" + Path.GetFileName(path) +
+                "\n\nEs enthält nur Protokolle und Einstellungen von Toast Temperatur – keine persönlichen Dateien.",
+                "Diagnose-Paket", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex) { MessageBox.Show(owner, "Erstellen fehlgeschlagen: " + ex.Message, "Diagnose-Paket", MessageBoxButtons.OK, MessageBoxIcon.Error); }
     }
 }

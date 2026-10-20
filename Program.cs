@@ -369,6 +369,20 @@ sealed class MainForm : Form
         {
             Program.Step("Lüfter suchen");
             _fans = new FanController(FanSettings.Load());
+            _fans.PumpAlarmRaised += msg =>
+            {
+                try
+                {
+                    BeginInvoke(() =>
+                    {
+                        _tray.ShowBalloonTip(15000, "⚠ Pumpe ausgefallen?",
+                            msg + "\nAlle Lüfter laufen jetzt auf 100 %. Bitte Pumpe und Kabel prüfen – bei Wasserkühlung den PC im Zweifel ausschalten.",
+                            ToolTipIcon.Error);
+                        System.Media.SystemSounds.Hand.Play();
+                    });
+                }
+                catch { }
+            };
             _fans.Discover(_computer);
             FanController.Current = _fans;
             Program.Step($"{_fans.Channels.Count} Lüfter gefunden");
