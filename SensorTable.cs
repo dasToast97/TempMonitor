@@ -38,8 +38,8 @@ sealed class UiState
     {
         try
         {
-            if (File.Exists(FilePath))
-                return JsonSerializer.Deserialize<UiState>(File.ReadAllText(FilePath)) ?? new();
+            if (SafeFile.ReadJson<UiState>(FilePath) is string json)
+                return JsonSerializer.Deserialize<UiState>(json) ?? new();
         }
         catch { }
         return new();
@@ -50,7 +50,7 @@ sealed class UiState
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(this));
+            SafeFile.Write(FilePath, JsonSerializer.Serialize(this));
         }
         catch { }
     }

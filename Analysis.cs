@@ -1010,7 +1010,7 @@ sealed class CoolingTestPanel : Panel
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(_past, new JsonSerializerOptions { WriteIndented = true }));
+            SafeFile.Write(FilePath, JsonSerializer.Serialize(_past, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }
     }

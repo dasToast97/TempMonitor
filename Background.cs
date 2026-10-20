@@ -50,8 +50,8 @@ sealed class AppSettings
     {
         try
         {
-            if (File.Exists(FilePath))
-                return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new();
+            if (SafeFile.ReadJson<AppSettings>(FilePath) is string json)
+                return JsonSerializer.Deserialize<AppSettings>(json) ?? new();
         }
         catch { }
         return new();
@@ -62,7 +62,7 @@ sealed class AppSettings
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(this));
+            SafeFile.Write(FilePath, JsonSerializer.Serialize(this));
         }
         catch { }
     }

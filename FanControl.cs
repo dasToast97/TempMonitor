@@ -100,6 +100,8 @@ sealed class FanChannelSettings
     public bool DetectedPump { get; set; }
     /// Temperaturquellen hat der Nutzer selbst gewählt (dann nicht automatisch ändern)
     public bool SourcesUserSet { get; set; }
+    /// Hardware + Anschlussname, um die Einstellungen nach geänderter Sensor-Kennung wiederzufinden
+    public string? StableKey { get; set; }
     public string? PumpReason { get; set; }
     public bool SourcesInitialized { get; set; }
     public bool UseCpu { get; set; }
@@ -237,9 +239,8 @@ sealed class FanSettings
     {
         try
         {
-            if (File.Exists(FilePath))
+            if (SafeFile.ReadJson<FanSettings>(FilePath) is string json)
             {
-                var json = File.ReadAllText(FilePath);
                 var s = JsonSerializer.Deserialize<FanSettings>(json) ?? new();
                 if (!json.Contains("\"SafetyDefaultMigrated\""))
                 {
@@ -286,7 +287,7 @@ sealed class FanSettings
         try
         {
             Directory.CreateDirectory(Dir);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(this, Json));
+            SafeFile.Write(FilePath, JsonSerializer.Serialize(this, Json));
         }
         catch { /* nicht kritisch */ }
     }
@@ -294,6 +295,32 @@ sealed class FanSettings
     public FanChannelSettings For(string id)
     {
         if (!Fans.TryGetValue(id, out var s)) { s = new(); Fans[id] = s; }
+        return s;
+    }
+
+    /// Wie For, aber über einen stabilen Schlüssel (Hardware + Anschlussname): Ändert sich nach einem Neustart
+    /// die interne Kennung des Sensors (z. B. andere Reihenfolge beim Erkennen), bleiben die Einstellungen erhalten.
+    public FanChannelSettings ForStable(string id, string key, ISet<string> taken)
+    {
+        if (Fans.TryGetValue(id, out var s))
+        {
+            s.StableKey ??= key;
+            return s;
+        }
+        var old = Fans.FirstOrDefault(kv => kv.Value.StableKey == key && !taken.Contains(kv.Key));
+        if (old.Value != null)
+        {
+            Fans.Remove(old.Key);
+            Fans[id] = old.Value;
+            foreach (var g in Groups)
+                for (int i = 0; i < g.Members.Count; i++)
+                    if (g.Members[i] == old.Key) g.Members[i] = id;
+            if (ShowPorts.Remove(old.Key)) ShowPorts.Add(id);
+            ErrorLog.Write($"Lüfter-Einstellungen übernommen: Kennung {old.Key} -> {id} ({key})");
+            return old.Value;
+        }
+        s = new() { StableKey = key };
+        Fans[id] = s;
         return s;
     }
 
@@ -642,7 +669,7 @@ sealed class FanController
     void AddBoardChannel(IHardware top, ISensor sensor, ISensor? rpm, string baseName, bool gpu, List<ISensor> fans)
     {
         string id = sensor.Control.Identifier.ToString();
-        var cfg = _s.For(id);
+        var cfg = _s.ForStable(id, $"{top.Name}|{(gpu ? "gpu" : "")}{rpm?.Name ?? baseName}", Channels.Select(c => c.Id).ToHashSet());
 
         string defName = gpu
             ? (fans.Count > 1 && rpm != null ? $"Grafikkarte · {rpm.Name}" : "Grafikkarten-Lüfter")

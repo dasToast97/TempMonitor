@@ -446,9 +446,8 @@ sealed class RgbSettings
     {
         try
         {
-            if (File.Exists(FilePath))
+            if (SafeFile.ReadJson<RgbSettings>(FilePath) is string json)
             {
-                var json = File.ReadAllText(FilePath);
                 var s = JsonSerializer.Deserialize<RgbSettings>(json) ?? new();
                 // Einmalig: Mainboard standardmäßig mit eigenen (stabilen) Effekten, die dem eigenen Effekt folgen
                 if (!json.Contains("\"BoardFollowMigrated\"")) { s.BoardHardware = true; s.BoardFollowMigrated = true; }
@@ -466,7 +465,7 @@ sealed class RgbSettings
         try
         {
             Directory.CreateDirectory(Dir);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+            SafeFile.Write(FilePath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }
     }

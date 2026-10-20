@@ -635,3 +635,58 @@ sealed class SettingsView : FlowLayoutPanel
         f.Buttons(("Logbuch öffnen", ErrorLog.Open));
     }
 }
+
+/// Einstellungen sicher speichern: erst in eine Zwischendatei schreiben (auf die Platte durchgeschrieben),
+/// dann austauschen – die vorherige Version bleibt als .bak. So geht bei Absturz/Stromausfall/Herunterfahren
+/// während des Speicherns nichts verloren.
+static class SafeFile
+{
+    static readonly object Gate = new();
+
+    public static void Write(string path, string text)
+    {
+        lock (Gate)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            string tmp = path + ".tmp";
+            var bytes = System.Text.Encoding.UTF8.GetBytes(text);
+            using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            {
+                fs.Write(bytes, 0, bytes.Length);
+                fs.Flush(true);
+            }
+            if (File.Exists(path))
+            {
+                try { File.Replace(tmp, path, path + ".bak", ignoreMetadataErrors: true); }
+                catch { File.Copy(path, path + ".bak", true); File.Move(tmp, path, true); }
+            }
+            else File.Move(tmp, path, true);
+        }
+    }
+
+    /// Text einer gültigen JSON-Datei (Hauptdatei, sonst Sicherung) – null, wenn keine lesbar ist
+    public static string? ReadJson<T>(string path) where T : class =>
+        Read(path, t => System.Text.Json.JsonSerializer.Deserialize<T>(t) != null ? t : null);
+
+    /// Liest die Datei; ist sie leer/kaputt (parse wirft), wird die Sicherung (.bak) versucht
+    public static T? Read<T>(string path, Func<string, T?> parse) where T : class
+    {
+        foreach (var p in new[] { path, path + ".bak" })
+        {
+            try
+            {
+                if (!File.Exists(p)) continue;
+                var text = File.ReadAllText(p);
+                if (string.IsNullOrWhiteSpace(text) || text.Trim('\0').Length == 0) continue;
+                var v = parse(text);
+                if (v != null)
+                {
+                    if (p != path) ErrorLog.Write($"Einstellungen aus Sicherung wiederhergestellt: {Path.GetFileName(path)}");
+                    return v;
+                }
+            }
+            catch { }
+        }
+        return null;
+    }
+}
