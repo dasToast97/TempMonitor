@@ -874,6 +874,20 @@ sealed class RgbView : FlowLayoutPanel
                 if (v) st.DisabledTargets.Remove(tt.Id); else if (!st.DisabledTargets.Contains(tt.Id)) st.DisabledTargets.Add(tt.Id);
                 st.Save();
             });
+            // ARGB-Controller (z. B. Nollie): LED-Anzahl je Kanal einstellen – neue Kanäle haben oft 0 LEDs
+            if (t is OpenRgbTarget ot && ot.Device.Resizable)
+            {
+                var dev = ot.Device;
+                top.Note($"      ↳ LEDs je Kanal (bei einem Verteiler-Hub: LEDs EINES Lüfters, z. B. 9–18). 0 = Kanal aus:", muted: true);
+                for (int zi = 0; zi < dev.Zones.Count; zi++)
+                {
+                    var z = dev.Zones[zi];
+                    if (z.Max <= z.Min) continue;
+                    int idx = zi;
+                    var nums = top.Numbers(($"      {z.Name}", (float)z.Leds, z.Min, Math.Min(z.Max, 1000), "LEDs",
+                        (Action<float>)(v => Debounce(() => { ot.Client.ResizeZone(dev, idx, (int)v); _svc.RescanNow(); }))));
+                }
+            }
             var swapBox = top.Check("      ↳ Rot und Grün sind vertauscht (Haken = korrigieren)", st.SwapRG.Contains(t.Id), v =>
             {
                 if (v) { if (!st.SwapRG.Contains(tt.Id)) st.SwapRG.Add(tt.Id); } else st.SwapRG.Remove(tt.Id);

@@ -115,7 +115,9 @@ sealed class OpenRgbClient : IDisposable
         public uint Index;
         public string Name = "";
         public int Type;
-        public List<(string Name, int Leds)> Zones = new();
+        public List<(string Name, int Leds, int Min, int Max)> Zones = new();
+        /// Hat Zonen, deren LED-Anzahl man einstellen muss (z. B. ARGB-Controller wie Nollie: Kanäle starten oft mit 0 LEDs)
+        public bool Resizable => Zones.Any(z => z.Max > z.Min);
         public int TotalLeds;
     }
 
@@ -265,16 +267,35 @@ sealed class OpenRgbClient : IDisposable
             for (int z = 0; z < zones; z++)
             {
                 string zn = Str();
-                I32(); I32(); I32();         // type, leds_min, leds_max
+                I32();                       // type
+                int min = I32(), max = I32();
                 int cnt = I32();
                 int matrix = U16();
                 p += matrix;
-                dev.Zones.Add((zn, cnt));
+                dev.Zones.Add((zn, cnt, min, max));
             }
             dev.TotalLeds = U16();
             return dev;
         }
         catch { return null; }
+    }
+
+    const uint ResizeZoneId = 1000;
+
+    /// LED-Anzahl einer Zone setzen (z. B. Kanal eines ARGB-Controllers) – danach Geräteliste neu einlesen
+    public bool ResizeZone(OpenRgbDevice dev, int zone, int size)
+    {
+        try
+        {
+            var buf = new byte[8];
+            BitConverter.GetBytes(zone).CopyTo(buf, 0);
+            BitConverter.GetBytes(size).CopyTo(buf, 4);
+            Send(dev.Index, ResizeZoneId, buf);
+            NeedsRefresh = true;
+            RgbSettings.Log($"OpenRGB: {dev.Name} Zone {zone} auf {size} LEDs gesetzt");
+            return true;
+        }
+        catch { return false; }
     }
 
     public void CustomMode(OpenRgbDevice dev)
@@ -317,6 +338,8 @@ sealed class OpenRgbTarget : IRgbTarget
 {
     readonly OpenRgbClient _client;
     readonly OpenRgbClient.OpenRgbDevice _dev;
+    public OpenRgbClient.OpenRgbDevice Device => _dev;
+    public OpenRgbClient Client => _client;
     public OpenRgbTarget(OpenRgbClient client, OpenRgbClient.OpenRgbDevice dev) { _client = client; _dev = dev; }
     public string Id => "openrgb:" + _dev.Name;
     public string Name => _dev.Name;
