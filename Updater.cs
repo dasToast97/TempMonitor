@@ -134,8 +134,8 @@ static class Updater
     {
         if (_dialogOpen) return;
 
-        var notes = string.IsNullOrWhiteSpace(rel.Notes) ? "" :
-            (rel.Notes.Length > 800 ? rel.Notes[..800] + " …" : rel.Notes);
+        var plain = string.IsNullOrWhiteSpace(rel.Notes) ? "" : Plain(rel.Notes);
+        var notes = plain.Length > 1500 ? plain[..1500] + " …" : plain;
 
         var btnInstall = new TaskDialogButton("Jetzt aktualisieren");
         var btnLater = new TaskDialogButton("Später");
@@ -165,7 +165,20 @@ static class Updater
             return;
         }
 
-        await InstallAsync(owner, rel);
+        _dialogOpen = true;   // während Download/Installation keine weitere Update-Abfrage
+        try { await InstallAsync(owner, rel); }
+        finally { _dialogOpen = false; }
+    }
+
+    /// Release-Text von GitHub (Markdown) lesbar machen: **fett**, ## Überschriften, Links
+    static string Plain(string md)
+    {
+        var s = md.Replace("\r", "");
+        s = System.Text.RegularExpressions.Regex.Replace(s, @"^#+\s*", "", System.Text.RegularExpressions.RegexOptions.Multiline);
+        s = s.Replace("**", "").Replace("__", "").Replace("`", "");
+        s = System.Text.RegularExpressions.Regex.Replace(s, @"\[([^\]]+)\]\([^)]+\)", "$1");
+        s = System.Text.RegularExpressions.Regex.Replace(s, @"^\s*[-*]\s+", "• ", System.Text.RegularExpressions.RegexOptions.Multiline);
+        return s.Trim();
     }
 
     static async Task InstallAsync(IWin32Window owner, ReleaseInfo rel)
@@ -254,7 +267,7 @@ sealed class ProgressForm : Form
 
     public ProgressForm(string text)
     {
-        float k = DeviceDpi / 96f;
+        float k = Dpi.K(this);
         Text = "Update";
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition = FormStartPosition.CenterParent;

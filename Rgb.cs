@@ -851,7 +851,7 @@ sealed class RgbView : FlowLayoutPanel
 {
     readonly RgbService _svc;
     readonly List<Control> _full = new();
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
 
     public RgbView(RgbService svc)
@@ -1643,7 +1643,7 @@ sealed class ColorListEditor : Panel
 {
     readonly List<int> _colors;
     readonly Action _save;
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
 
     public ColorListEditor(List<int> colors, Action save)

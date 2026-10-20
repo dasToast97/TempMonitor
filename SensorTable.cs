@@ -140,9 +140,9 @@ static class SensorFormat
 // ===========================================================================
 sealed class CollapsibleHeader : Control
 {
-    static readonly Font HeadFont = new("Segoe UI Semibold", 12f);
-    static readonly Font BigFont = new("Segoe UI Semibold", 13f);
-    static readonly Font CountFont = new("Segoe UI", 9f);
+    Font HeadFont => Dpi.F("Segoe UI Semibold", 12f, this);
+    Font BigFont => Dpi.F("Segoe UI Semibold", 13f, this);
+    Font CountFont => Dpi.F("Segoe UI", 9f, this);
 
     readonly Color _accent;
     readonly string _key;
@@ -203,7 +203,7 @@ sealed class CollapsibleHeader : Control
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        float k = DeviceDpi / 96f;
+        float k = Dpi.K(this);
         g.SmoothingMode = SmoothingMode.AntiAlias;
 
         if (Big)
@@ -252,9 +252,9 @@ sealed class CollapsibleHeader : Control
 // ===========================================================================
 sealed class SensorTable : Control
 {
-    static readonly Font RowFont = new("Segoe UI", 9f);
-    static readonly Font GroupFont = new("Segoe UI Semibold", 9.5f);
-    static readonly Font HeadFont = new("Segoe UI Semibold", 8.5f);
+    Font RowFont => Dpi.F("Segoe UI", 9f, this);
+    Font GroupFont => Dpi.F("Segoe UI Semibold", 9.5f, this);
+    Font HeadFont => Dpi.F("Segoe UI Semibold", 8.5f, this);
 
     sealed class Group
     {
@@ -274,7 +274,7 @@ sealed class SensorTable : Control
     readonly string _hwName;
     int _hoverRow = -1;
 
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int RowH => (int)(24 * K);
 
     public SensorTable(IHardware hw, IEnumerable<ISensor> sensors, Color accent)
@@ -563,7 +563,7 @@ sealed class DriverBanner : Panel
 
     public DriverBanner()
     {
-        float k = DeviceDpi / 96f;
+        float k = Dpi.K(this);
         Height = (int)(76 * k);
         BackColor = Color.FromArgb(58, 46, 18);
         Margin = new Padding((int)(6 * k), (int)(10 * k), (int)(6 * k), (int)(4 * k));

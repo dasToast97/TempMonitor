@@ -116,7 +116,7 @@ sealed class HistoryChart : Control
         Color.FromArgb(192, 132, 252), Color.FromArgb(244, 114, 182), Color.FromArgb(45, 212, 191), Color.FromArgb(251, 146, 60),
         Color.FromArgb(163, 230, 53), Color.FromArgb(148, 163, 184),
     };
-    static readonly Font SmallFont = new("Segoe UI", 8.25f);
+    Font SmallFont => Dpi.F("Segoe UI", 8.25f, this);
 
     HistoryData? _data;
     List<string> _shown = new();
@@ -136,7 +136,7 @@ sealed class HistoryChart : Control
         BackColor = Theme.Card;
     }
 
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
 
     public void SetData(HistoryData? data, List<string> shown, bool keepZoom = false)
@@ -448,7 +448,7 @@ sealed class AnalysisView : FlowLayoutPanel
     readonly HealthPanel _health;
     readonly CoolingTestPanel _test;
     bool _shownOnce;
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
 
     public AnalysisView(IComputer computer, Func<KeySensors?> keys, FanController? fans)
@@ -523,7 +523,7 @@ sealed class HistoryPanel : Panel
     CancellationTokenSource? _cts;
     bool _filling;
     DateTime _loadedAt;
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
 
     public HistoryPanel()
@@ -661,10 +661,10 @@ sealed class HealthPanel : Panel
     readonly Label _summary;
     List<Finding> _items = new();
     bool _busy;
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
-    static readonly Font TitleFont = new("Segoe UI Semibold", 10f);
-    static readonly Font TextFont = new("Segoe UI", 9f);
+    Font TitleFont => Dpi.F("Segoe UI Semibold", 10f, this);
+    Font TextFont => Dpi.F("Segoe UI", 9f, this);
 
     public HealthPanel(IComputer computer, Func<KeySensors?> keys, FanController? fans)
     {
@@ -961,7 +961,7 @@ sealed class CoolingTestPanel : Panel
     int _seconds;
     readonly HistoryData _data = new();
     float? _clockStart;
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
 
     const string T = "CPU [°C]", P = "CPU-Leistung [W]", F = "CPU-Lüfter [U/min]";

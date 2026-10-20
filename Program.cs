@@ -83,6 +83,38 @@ static class Program
 }
 
 // ---------------------------------------------------------------------------
+// Skalierung je Bildschirm (z. B. Laptop 150 % + Monitor 100 %): scharf statt verschwommen
+// ---------------------------------------------------------------------------
+static class Dpi
+{
+    /// DPI, mit der Windows Schriften in Punkt umrechnet (Haupt-Bildschirm beim Start)
+    public static readonly int System = GetSystemDpi();
+    /// DPI des Bildschirms, auf dem das Hauptfenster gerade ist
+    public static int Main = System;
+    static readonly Dictionary<(string, float, int), Font> _cache = new();
+
+    static int GetSystemDpi()
+    {
+        try { using var g = Graphics.FromHwnd(IntPtr.Zero); return (int)Math.Round(g.DpiY); } catch { return 96; }
+    }
+
+    /// Skalierungsfaktor für ein Steuerelement (vor dem Einblenden: der Bildschirm des Hauptfensters)
+    public static float K(Control c) => (c.IsHandleCreated ? c.DeviceDpi : Main) / 96f;
+
+    /// Schrift in passender Größe für den Bildschirm, auf dem das Steuerelement ist
+    public static Font F(string family, float points, Control c)
+    {
+        int dpi = c.IsHandleCreated ? c.DeviceDpi : Main;
+        lock (_cache)
+        {
+            if (!_cache.TryGetValue((family, points, dpi), out var f))
+                _cache[(family, points, dpi)] = f = new Font(family, points * dpi / System);
+            return f;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Farben & Einstufung
 // ---------------------------------------------------------------------------
 static class Theme
@@ -206,11 +238,17 @@ sealed class MainForm : Form
     readonly DataLogger _logger = new();
     bool _exiting, _shownOnce, _loaded;
 
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
 
     public MainForm()
     {
         Text = $"Toast Temperatur {Updater.CurrentVersion.ToString(3)}";
+        // Pro Bildschirm skalieren: beim Wechsel auf einen Bildschirm mit anderer Skalierung rechnet WinForms
+        // Positionen und Schriften um, eigene Zeichnungen nutzen Dpi.K/Dpi.F
+        AutoScaleMode = AutoScaleMode.Dpi;
+        AutoScaleDimensions = new SizeF(Dpi.System, Dpi.System);
+        HandleCreated += (_, _) => Dpi.Main = DeviceDpi;
+        DpiChanged += (_, e) => { Dpi.Main = e.DeviceDpiNew; BeginInvoke(() => { PerformLayout(); Invalidate(true); }); };
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Theme.Background;
         ForeColor = Theme.Text;
@@ -1095,7 +1133,7 @@ sealed class MainForm : Form
 // ---------------------------------------------------------------------------
 sealed class SectionHeader : Control
 {
-    static readonly Font HeadFont = new("Segoe UI Semibold", 12f);
+    Font HeadFont => Dpi.F("Segoe UI Semibold", 12f, this);
     readonly Color? _accent;
 
     public SectionHeader(string text, Color? accent)
@@ -1110,7 +1148,7 @@ sealed class SectionHeader : Control
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        float k = DeviceDpi / 96f;
+        float k = Dpi.K(this);
         g.Clear(Theme.Background);
         int x = 0;
         if (_accent is Color a)
@@ -1131,7 +1169,7 @@ sealed class SectionHeader : Control
 // ---------------------------------------------------------------------------
 sealed class TabButton : Control
 {
-    static readonly Font TabFont = new("Segoe UI Semibold", 10.5f);
+    Font TabFont => Dpi.F("Segoe UI Semibold", 10.5f, this);
     bool _selected, _hover;
     public bool Selected { get => _selected; set { _selected = value; Invalidate(); } }
 
@@ -1151,7 +1189,7 @@ sealed class TabButton : Control
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        float k = DeviceDpi / 96f;
+        float k = Dpi.K(this);
         g.Clear(Theme.Header);
         var col = _selected ? Theme.Text : _hover ? Theme.Text : Theme.Muted;
         TextRenderer.DrawText(g, Text, TabFont, new Rectangle(0, 0, Width, Height - (int)(3 * k)), col,
@@ -1192,7 +1230,7 @@ sealed class LegendBar : Panel
     {
         base.OnPaint(e);
         var g = e.Graphics;
-        float k = DeviceDpi / 96f;
+        float k = Dpi.K(this);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         int x = (int)(16 * k);
         int d = (int)(10 * k);

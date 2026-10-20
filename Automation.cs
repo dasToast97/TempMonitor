@@ -237,7 +237,7 @@ static class AutomationSettings
     public static void Build(SettingsView v, FanController ctl, AutoSwitcher auto)
     {
         var s = ctl.Settings;
-        float k = v.DeviceDpi / 96f;
+        float k = Dpi.K(v);
         var titles = Profiles.All.Select(p => p.Title).ToArray();
         int Index(FanProfile p) => Array.FindIndex(Profiles.All, i => i.Profile == p);
 
@@ -316,7 +316,7 @@ sealed class ScheduleEditor : Panel
     readonly Action _save;
     static readonly string[] Times = Enumerable.Range(0, 48).Select(i => $"{i / 2:00}:{(i % 2) * 30:00}").ToArray();
     static readonly string[] DayNames = { "Mo", "Di", "Mi", "Do", "Fr", "Sa", "So" };
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
 
     public ScheduleEditor(List<ScheduleRule> rules, Action save)
@@ -529,7 +529,7 @@ sealed class AppRulesEditor : Panel
 {
     readonly List<AppRule> _rules;
     readonly Action _save;
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
 
     public AppRulesEditor(List<AppRule> rules, Action save)

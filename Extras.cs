@@ -53,71 +53,6 @@ static class ErrorLog
 }
 
 // ===========================================================================
-// Einstellungen sichern / wiederherstellen (eine .zip-Datei)
-// ===========================================================================
-static class Backup
-{
-    static readonly string Dir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor");
-
-    public static void Export(IWin32Window owner)
-    {
-        using var dlg = new SaveFileDialog
-        {
-            Title = "Einstellungen sichern",
-            Filter = "Toast-Temperatur-Sicherung (*.zip)|*.zip",
-            FileName = $"Toast-Temperatur-Einstellungen_{DateTime.Now:yyyy-MM-dd}.zip",
-        };
-        if (dlg.ShowDialog(owner) != DialogResult.OK) return;
-        try
-        {
-            AppSettings.Instance.Save();
-            UiState.Instance.Save();
-            FanController.Current?.Save();
-            if (File.Exists(dlg.FileName)) File.Delete(dlg.FileName);
-            using var zip = ZipFile.Open(dlg.FileName, ZipArchiveMode.Create);
-            foreach (var f in Directory.GetFiles(Dir, "*.json"))
-                zip.CreateEntryFromFile(f, Path.GetFileName(f));
-            MessageBox.Show(owner, "Einstellungen gesichert:\n" + dlg.FileName, "Sichern",
-                MessageBoxButtons.OK, MessageBoxIcon.Information);
-        }
-        catch (Exception ex)
-        {
-            ErrorLog.Write("Sichern fehlgeschlagen", ex);
-            MessageBox.Show(owner, "Sichern fehlgeschlagen:\n" + ex.Message, "Sichern", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-    }
-
-    /// true = wiederhergestellt, Programm sollte neu starten
-    public static bool Import(IWin32Window owner)
-    {
-        using var dlg = new OpenFileDialog
-        {
-            Title = "Einstellungen wiederherstellen",
-            Filter = "Toast-Temperatur-Sicherung (*.zip)|*.zip",
-        };
-        if (dlg.ShowDialog(owner) != DialogResult.OK) return false;
-        try
-        {
-            using var zip = ZipFile.OpenRead(dlg.FileName);
-            var entries = zip.Entries.Where(e => e.Name.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
-                                                 && !e.FullName.Contains('/') && !e.FullName.Contains('\\')).ToList();
-            if (entries.Count == 0) throw new InvalidDataException("Die Datei enthält keine Einstellungen.");
-            Directory.CreateDirectory(Dir);
-            foreach (var e in entries) e.ExtractToFile(Path.Combine(Dir, e.Name), overwrite: true);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            ErrorLog.Write("Wiederherstellen fehlgeschlagen", ex);
-            MessageBox.Show(owner, "Wiederherstellen fehlgeschlagen:\n" + ex.Message, "Wiederherstellen",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return false;
-        }
-    }
-}
-
-// ===========================================================================
 // Die wichtigsten Werte an einem Ort (Infobereich, Overlay, Warnungen)
 // ===========================================================================
 sealed class KeySensors
@@ -286,8 +221,8 @@ static class TrayIconPainter
 // ===========================================================================
 sealed class OverlayForm : Form
 {
-    static readonly Font LabelFont = new("Segoe UI", 9f);
-    static readonly Font ValueFont = new("Segoe UI Semibold", 11f);
+    Font LabelFont => Dpi.F("Segoe UI", 9f, this);
+    Font ValueFont => Dpi.F("Segoe UI Semibold", 11f, this);
 
     readonly Func<KeySensors?> _keys;
     readonly Func<FanController?> _fans;
@@ -304,7 +239,7 @@ sealed class OverlayForm : Form
         StartPosition = FormStartPosition.Manual;
         BackColor = Theme.Header;
         DoubleBuffered = true;
-        float k = DeviceDpi / 96f;
+        float k = Dpi.K(this);
         Size = new Size((int)(210 * k), (int)(126 * k));
         Opacity = Math.Clamp(AppSettings.Instance.OverlayOpacity, 30, 100) / 100.0;
 
@@ -359,7 +294,7 @@ sealed class OverlayForm : Form
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        float k = DeviceDpi / 96f;
+        float k = Dpi.K(this);
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
         g.Clear(Theme.Header);
         using (var border = new Pen(Theme.Border)) g.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
@@ -509,7 +444,7 @@ sealed class SettingsView : FlowLayoutPanel
     readonly List<Control> _full = new();
     readonly Action _overlayChanged;
     readonly Action _restart;
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
 
     /// Weitere Abschnitte (z. B. Automatik, Gesundheit) hängen sich hier ein
@@ -615,21 +550,6 @@ sealed class SettingsView : FlowLayoutPanel
         });
         a.Buttons(("Aufzeichnungen öffnen", DataLogger.OpenFolder));
 
-        // ----- Sichern -----
-        AddSection("Einstellungen sichern", Color.FromArgb(167, 139, 250));
-        var b = AddCard();
-        b.Note("Sichert alle Einstellungen in eine Datei: Lüfterprofile, Namen, Gruppen, Gelerntes, Übersicht, Warnungen. " +
-               "Praktisch nach einer Windows-Neuinstallation oder für einen zweiten PC.");
-        b.Buttons(
-            ("Einstellungen sichern …", () => Backup.Export(FindForm()!)),
-            ("Wiederherstellen …", () =>
-            {
-                if (!Backup.Import(FindForm()!)) return;
-                if (MessageBox.Show(FindForm(), "Einstellungen wiederhergestellt. Toast Temperatur jetzt neu starten?",
-                        "Wiederherstellen", MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes)
-                    _restart();
-            }));
-
         // ----- Weitere Abschnitte (Automatik, Gesundheit, Kühlungs-Test …) -----
         if (Extend != null)
             foreach (Action<SettingsView> h in Extend.GetInvocationList())
@@ -723,6 +643,8 @@ static class BackupTools
                 InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
             };
             if (dlg.ShowDialog(owner) != DialogResult.OK) return;
+            // aktuellen Stand erst auf die Platte schreiben
+            try { AppSettings.Instance.Save(); UiState.Instance.Save(); FanController.Current?.Save(); } catch { }
             if (File.Exists(dlg.FileName)) File.Delete(dlg.FileName);
             using (var zip = System.IO.Compression.ZipFile.Open(dlg.FileName, System.IO.Compression.ZipArchiveMode.Create))
                 foreach (var f in Directory.GetFiles(Dir, "*.json"))

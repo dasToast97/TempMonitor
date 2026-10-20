@@ -18,7 +18,7 @@ sealed class FanView : FlowLayoutPanel
     Label? _oasisState;
     Label? _laptopState;
 
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
 
     public event Action? ProfileChanged;
@@ -576,7 +576,7 @@ sealed class TargetsPanel : Panel
     public TargetsPanel(FanController ctl)
     {
         _ctl = ctl;
-        float k = DeviceDpi / 96f;
+        float k = Dpi.K(this);
         int S(float px) => (int)(px * k);
         Height = S(84);
         BackColor = Theme.Card;
@@ -657,9 +657,9 @@ sealed class TargetsPanel : Panel
 // ===========================================================================
 sealed class ProfileButton : Control
 {
-    static readonly Font TitleFont = new("Segoe UI Semibold", 10.5f);
-    static readonly Font DescFont = new("Segoe UI", 8.5f);
-    static readonly Font TagFont = new("Segoe UI Semibold", 7f);
+    Font TitleFont => Dpi.F("Segoe UI Semibold", 10.5f, this);
+    Font DescFont => Dpi.F("Segoe UI", 8.5f, this);
+    Font TagFont => Dpi.F("Segoe UI Semibold", 7f, this);
 
     public ProfileInfo Info { get; }
     bool _selected, _hover;
@@ -677,7 +677,7 @@ sealed class ProfileButton : Control
     protected override void OnCreateControl()
     {
         base.OnCreateControl();
-        float k = DeviceDpi / 96f;
+        float k = Dpi.K(this);
         Size = new Size((int)(196 * k), (int)(78 * k));
         Margin = new Padding((int)(6 * k));
     }
@@ -698,7 +698,7 @@ sealed class ProfileButton : Control
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        float k = DeviceDpi / 96f;
+        float k = Dpi.K(this);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
         g.Clear(Theme.Background);
@@ -738,9 +738,9 @@ sealed class ProfileButton : Control
 // ===========================================================================
 sealed class FanCard : Control
 {
-    static readonly Font NameFont = new("Segoe UI Semibold", 11f);
-    static readonly Font SmallFont = new("Segoe UI", 8.5f);
-    static readonly Font BigFont = new("Segoe UI Semibold", 20f);
+    Font NameFont => Dpi.F("Segoe UI Semibold", 11f, this);
+    Font SmallFont => Dpi.F("Segoe UI", 8.5f, this);
+    Font BigFont => Dpi.F("Segoe UI Semibold", 20f, this);
 
     readonly FanChannel _ch;
     readonly FanController _ctl;
@@ -757,7 +757,7 @@ sealed class FanCard : Control
     readonly bool _follower;
     bool _showCurve;
 
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
 
     const int BaseHeight = 236;
@@ -1186,7 +1186,7 @@ sealed class FanCard : Control
 sealed class CurveEditor : Control
 {
     const float TMin = 20, TMax = 100;
-    static readonly Font SmallFont = new("Segoe UI", 8f);
+    Font SmallFont => Dpi.F("Segoe UI", 8f, this);
 
     readonly List<float[]> _pts;
     int _drag = -1, _hover = -1;
@@ -1209,7 +1209,7 @@ sealed class CurveEditor : Control
         BackColor = Theme.Card;
     }
 
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
 
     Rectangle Plot => new((int)(36 * K), (int)(10 * K), Width - (int)(48 * K), Height - (int)(34 * K));
 
@@ -1363,7 +1363,7 @@ sealed class GroupsPanel : Panel
 {
     readonly FanController _ctl;
     readonly Action _changed;
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
 
     public GroupsPanel(FanController ctl, Action changed)
@@ -1544,7 +1544,7 @@ sealed class CalibrationPanel : Panel
     readonly FanController _ctl;
     readonly Label _note, _state;
     readonly Button _btn;
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
 
     readonly Action _finished;

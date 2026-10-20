@@ -134,13 +134,13 @@ static class Hw
 // ===========================================================================
 sealed class SensorTile : Control
 {
-    static readonly Font TitleS = new("Segoe UI Semibold", 10f);
-    static readonly Font TitleM = new("Segoe UI Semibold", 12f);
-    static readonly Font SubFont = new("Segoe UI", 8.5f);
-    static readonly Font ValueS = new("Segoe UI Semibold", 20f);
-    static readonly Font ValueM = new("Segoe UI Semibold", 28f);
-    static readonly Font BadgeFont = new("Segoe UI Semibold", 8.5f);
-    static readonly Font TinyFont = new("Segoe UI", 7.5f);
+    Font TitleS => Dpi.F("Segoe UI Semibold", 10f, this);
+    Font TitleM => Dpi.F("Segoe UI Semibold", 12f, this);
+    Font SubFont => Dpi.F("Segoe UI", 8.5f, this);
+    Font ValueS => Dpi.F("Segoe UI Semibold", 20f, this);
+    Font ValueM => Dpi.F("Segoe UI Semibold", 28f, this);
+    Font BadgeFont => Dpi.F("Segoe UI Semibold", 8.5f, this);
+    Font TinyFont => Dpi.F("Segoe UI", 7.5f, this);
 
     readonly HistoryStore _hist;
     readonly string _title, _subtitle;
@@ -171,7 +171,7 @@ sealed class SensorTile : Control
         BackColor = Theme.Background;
     }
 
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
 
     protected override void OnCreateControl() { base.OnCreateControl(); ApplySize(); }
@@ -466,12 +466,12 @@ sealed class SensorTile : Control
 // ===========================================================================
 sealed class FansTile : Control
 {
-    static readonly Font TitleS = new("Segoe UI Semibold", 10f);
-    static readonly Font TitleM = new("Segoe UI Semibold", 12f);
-    static readonly Font SubFont = new("Segoe UI", 8.5f);
-    static readonly Font NameFont = new("Segoe UI", 9f);
-    static readonly Font RpmFont = new("Segoe UI Semibold", 10f);
-    static readonly Font ValueS = new("Segoe UI Semibold", 20f);
+    Font TitleS => Dpi.F("Segoe UI Semibold", 10f, this);
+    Font TitleM => Dpi.F("Segoe UI Semibold", 12f, this);
+    Font SubFont => Dpi.F("Segoe UI", 8.5f, this);
+    Font NameFont => Dpi.F("Segoe UI", 9f, this);
+    Font RpmFont => Dpi.F("Segoe UI Semibold", 10f, this);
+    Font ValueS => Dpi.F("Segoe UI Semibold", 20f, this);
     static readonly Color Accent = Color.FromArgb(56, 189, 248);
 
     readonly HistoryStore _hist;
@@ -492,7 +492,7 @@ sealed class FansTile : Control
         Cursor = Cursors.Hand;
     }
 
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
 
     protected override void OnCreateControl() { base.OnCreateControl(); ApplySize(); }
@@ -689,7 +689,7 @@ sealed class DashboardView : FlowLayoutPanel
     readonly List<SensorTable> _tables = new();
     readonly List<Control> _full = new();
 
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
 
     /// Klick auf die Lüfter-Kachel: zum Reiter "Lüfter" wechseln
@@ -965,7 +965,7 @@ sealed class ComponentPage : FlowLayoutPanel
     SensorTable? _table;
     bool _showHidden;
 
-    float K => DeviceDpi / 96f;
+    float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
 
     public IHardware Hardware => _hw;
@@ -1113,7 +1113,7 @@ sealed class CustomizeDialog : Form
         _computer = computer;
         _tiles = UiState.Instance.Tiles.Select(t => new TileConfig { Kind = t.Kind, Id = t.Id, Size = t.Size }).ToList();
 
-        float k = DeviceDpi / 96f;
+        float k = Dpi.K(this);
         int S(float px) => (int)(px * k);
 
         Text = "Übersicht anpassen";
