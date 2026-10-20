@@ -36,6 +36,54 @@ sealed class FanView : FlowLayoutPanel
     }
 
     /// Nach Gruppen-Änderungen alles neu aufbauen (Scroll-Position bleibt)
+    bool _wizardRunning;
+
+    /// Lüfter-Assistent: jeden steuerbaren Anschluss nacheinander „erkennen“ und zuordnen lassen
+    async Task RunWizard()
+    {
+        if (_wizardRunning) return;
+        if (!_ctl.SafeToStop(out var why))
+        {
+            MessageBox.Show(FindForm(), $"Der Assistent hält Lüfter kurz an – das geht nur, wenn der PC kühl ist. Gerade {why}.\n" +
+                "Bitte warten, bis er sich abgekühlt hat (z. B. kein Spiel offen).", "Lüfter-Assistent", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        var list = _ctl.Channels.Where(c => !c.IsGpu && !c.MonitorOnly && c.Ext == null).ToList();
+        if (MessageBox.Show(FindForm(),
+                $"{list.Count} Anschlüsse werden nacheinander je 5–7 Sekunden angehalten (oder hochgedreht, wenn sie gerade stehen). " +
+                "Schau dabei in den PC und sag danach, was sich bewegt hat.\n\n" +
+                "Schutz: Wird es dabei wärmer, bricht Toast Temperatur sofort ab und kühlt voll. Pumpen werden nur kurz angehalten. " +
+                "Trotzdem gilt: Benutzung auf eigene Gefahr.\n\nStarten?",
+                "Lüfter-Assistent", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK) return;
+        _wizardRunning = true;
+        try
+        {
+            for (int i = 0; i < list.Count; i++)
+            {
+                var ch = list[i];
+                if (!_ctl.SafeToStop(out var w2))
+                {
+                    MessageBox.Show(FindForm(), $"Assistent pausiert: {w2}. Bitte später fortsetzen.", "Lüfter-Assistent");
+                    break;
+                }
+                ch.InWizard = true;
+                _ctl.Identify(ch);
+                // warten, bis das Erkennen fertig ist (max. 20 s)
+                for (int t = 0; t < 200 && !ch.IdentifyFinished; t++) await Task.Delay(100);
+                ch.IdentifyFinished = false;
+                var res = AskRole(ch, _ctl, FindForm()!, $"Anschluss {i + 1} von {list.Count}");
+                ch.InWizard = false;
+                if (res == null) break;
+            }
+        }
+        finally
+        {
+            foreach (var c in list) c.InWizard = false;
+            _wizardRunning = false;
+            Rebuild();
+        }
+    }
+
     public void Rebuild()
     {
         var pos = AutoScrollPosition;
@@ -85,6 +133,26 @@ sealed class FanView : FlowLayoutPanel
             ? $"Lüfter & Pumpen  ·  {_ctl.Channels.Count} angeschlossen, {_ctl.HiddenCount} leere Anschlüsse ausgeblendet"
             : $"Lüfter & Pumpen  ·  {_ctl.Channels.Count} angeschlossen";
         AddSection(count, Color.FromArgb(56, 189, 248));
+        if (_ctl.Channels.Any(c => !c.IsGpu && !c.MonitorOnly && c.Ext == null))
+        {
+            var wz = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+            wz.Note("Welcher Anschluss ist was? Der Lüfter-Assistent hält jeden Anschluss nacheinander kurz an und fragt, was stehen geblieben ist " +
+                    "(CPU-Kühler, Gehäuse-Lüfter oder Pumpe) – danach ist alles richtig benannt und geregelt. Dauert ca. 10 Sekunden je Anschluss.");
+            wz.Buttons(("Lüfter-Assistent starten", () => _ = RunWizard()));
+            AddFull(wz);
+            if (!_ctl.Settings.WizardOffered)
+            {
+                _ctl.Settings.WizardOffered = true;
+                _ctl.Save();
+                BeginInvoke(() =>
+                {
+                    if (MessageBox.Show(FindForm(), "Neu: Der Lüfter-Assistent ordnet in wenigen Minuten jeden Anschluss richtig zu " +
+                            "(CPU-Kühler, Gehäuse-Lüfter, Pumpe). Jetzt starten?\n\n(Geht auch später im Reiter Lüfter.)",
+                            "Lüfter-Assistent", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                        _ = RunWizard();
+                });
+            }
+        }
         if (_ctl.Channels.Count == 0)
         {
             var hint = new Label
@@ -863,21 +931,31 @@ sealed class FanCard : Control
     /// Nach „Erkennen“: Was hat sich bewegt? -> Name, Art und Temperaturquellen passend setzen
     void AskIdentified()
     {
+        if (AskRole(_ch, _ctl, FindForm()!, null) == true) _rebuild();
+    }
+
+    /// Nach „Erkennen“: Was hat sich bewegt? -> Name, Art und Temperaturquellen passend setzen.
+    /// true = gesetzt, false = übersprungen, null = Assistent abbrechen
+    public static bool? AskRole(FanChannel ch, FanController ctl, IWin32Window owner, string? step)
+    {
         var bCpu = new TaskDialogButton("CPU-Kühler / Radiator-Lüfter");
         var bCase = new TaskDialogButton("Gehäuse-Lüfter");
         var bPump = new TaskDialogButton("Pumpe (Wasserkühlung)");
-        var bNone = new TaskDialogButton("Nichts gesehen / weiß nicht");
+        var bNone = new TaskDialogButton(step != null ? "Nichts gesehen – überspringen" : "Nichts gesehen / weiß nicht");
+        var bStop = new TaskDialogButton("Assistent beenden");
         var page = new TaskDialogPage
         {
-            Caption = "Erkennen",
-            Heading = $"„{_ch.DisplayName}“ – was ist eben stehen geblieben bzw. hochgedreht?",
-            Text = (_ch.IdentifyResult ?? "") + "\n\nDeine Auswahl setzt Namen, Art und Temperaturquellen passend (später jederzeit änderbar).",
+            Caption = step != null ? "Lüfter-Assistent · " + step : "Erkennen",
+            Heading = $"„{ch.DisplayName}“ – was ist eben stehen geblieben bzw. hochgedreht?",
+            Text = (ch.IdentifyResult ?? "") + "\n\nDeine Auswahl setzt Namen, Art und Temperaturquellen passend (später jederzeit änderbar).",
             Icon = TaskDialogIcon.Information,
-            Buttons = { bCpu, bCase, bPump, bNone },
             AllowCancel = true,
         };
-        var r = TaskDialog.ShowDialog(FindForm()!, page);
-        var cfg = _ch.Cfg;
+        foreach (var b in new[] { bCpu, bCase, bPump, bNone }) page.Buttons.Add(b);
+        if (step != null) page.Buttons.Add(bStop);
+        var r = TaskDialog.ShowDialog(owner, page);
+        if (r == bStop || (step != null && r == TaskDialogButton.Cancel)) return null;
+        var cfg = ch.Cfg;
         if (r == bCpu)
         {
             cfg.Kind = FanKind.Fan;
@@ -896,11 +974,11 @@ sealed class FanCard : Control
             cfg.CustomName = "Pumpe";
             cfg.UseCpu = true; cfg.UseGpu = false; cfg.UseBoard = false;
         }
-        else return;
+        else return false;
         cfg.SourcesUserSet = true;
         cfg.SourcesInitialized = true;
-        _ctl.Save();
-        _rebuild();
+        ctl.Save();
+        return true;
     }
 
     void SaveName()
@@ -983,7 +1061,7 @@ sealed class FanCard : Control
 
     public void RefreshValues()
     {
-        if (_ch.IdentifyFinished)
+        if (_ch.IdentifyFinished && !_ch.InWizard)
         {
             _ch.IdentifyFinished = false;
             BeginInvoke(AskIdentified);

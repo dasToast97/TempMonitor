@@ -203,6 +203,7 @@ sealed class FanSettings
     public List<string> PumpKeys { get; set; } = new();
     /// Pumpen-Wächter: wie oft eine Pumpe ausgefallen/zu langsam war
     public int PumpAlarmCount { get; set; }
+    public bool WizardOffered { get; set; }
     public DateTime? PumpAlarmLast { get; set; }
 
     // ----- Automatischer Profilwechsel -----
@@ -475,6 +476,7 @@ sealed class FanChannel
     /// Ergebnis des letzten Erkennens (für die Nachfrage in der Oberfläche)
     public string? IdentifyResult;
     public volatile bool IdentifyFinished;
+    public volatile bool InWizard;
     public float IdentifyStartCpu, IdentifyStartGpu;
     // Pumpen-Wächter
     public float PumpBaseline;
