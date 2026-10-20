@@ -135,4 +135,4 @@ jobs:
           files: |
             publish/TempMonitor-Setup.exe
             publish/TempMonitor.exe
-          generate_release_notes: true
+          body_path: release-notes.md
