@@ -102,6 +102,8 @@ sealed class FanChannelSettings
     public bool SourcesUserSet { get; set; }
     /// Hardware + Anschlussname, um die Einstellungen nach geänderter Sensor-Kennung wiederzufinden
     public string? StableKey { get; set; }
+    /// Lüfter meldet keine Drehzahl (Tacho-Leitung fehlt, z. B. hinter Hub/Splitter) – dann nicht nach Drehzahl beurteilen
+    public bool NoTachSignal { get; set; }
     public string? PumpReason { get; set; }
     public bool SourcesInitialized { get; set; }
     public bool UseCpu { get; set; }
@@ -197,6 +199,8 @@ sealed class FanSettings
     public List<FanGroup> Groups { get; set; } = new();
     /// Anschlüsse, die trotz fehlender Drehzahl angezeigt werden sollen
     public List<string> ShowPorts { get; set; } = new();
+    /// Zusätzliche Sicherung: Anschlüsse (stabiler Schlüssel), an denen eine Pumpe hängt – eine Pumpe darf nie als Lüfter behandelt werden
+    public List<string> PumpKeys { get; set; } = new();
 
     // ----- Automatischer Profilwechsel -----
     public bool AutoGame { get; set; }
@@ -713,6 +717,8 @@ sealed class FanController
             else cfg.UseCpu = cfg.UseGpu = true;   // Gehäuselüfter: CPU + GPU (Mainboard nur als Grenze)
             cfg.SourcesInitialized = true;
         }
+        // Einmal als Pumpe bekannt -> bleibt Pumpe (außer der Nutzer stellt ausdrücklich „Lüfter“ ein)
+        if (!gpu && cfg.Kind == null && cfg.StableKey != null && _s.PumpKeys.Contains(cfg.StableKey)) cfg.DetectedPump = true;
         if (!gpu && ch.Kind == FanKind.Pump) PumpSources(cfg);
 
         Channels.Add(ch);
@@ -1545,7 +1551,7 @@ sealed class FanController
     void StallCheck(FanChannel ch, float next)
     {
         // Sicherheit (optional): Lüfter dreht trotz Befehl nicht -> zurück ans BIOS
-        if (_s.StallDetection && ch.Rpm?.Value is float rpm && rpm < 50 && next >= 40)
+        if (_s.StallDetection && !ch.Cfg.NoTachSignal && ch.Rpm?.Value is float rpm && rpm < 50 && next >= 40)
         {
             if (++ch.NoSpinTicks >= 15)
             {
@@ -1703,6 +1709,9 @@ sealed class FanController
         if (ch.Od8?.LastError is string err)
             ch.Status += $" · {err}";
         if (ch.Cfg.Kind == null && (ch.Cfg.DetectedPump || ch.PumpHeader)) ch.Status += " · automatisch als Pumpe erkannt";
+        if (ch.Kind == FanKind.Pump && ch.Cfg.StableKey is string pk && !_s.PumpKeys.Contains(pk)) { _s.PumpKeys.Add(pk); _s.Save(); }
+        if (ch.Ext == null && ch.Rpm?.Value is float rz && rz < 50 && ch.Output >= 25)
+            ch.Status += " · kein Drehzahlsignal – wird trotzdem geregelt, Wirkung über die Temperatur gemessen";
         if (ch.Ext?.Alarm is string alarm) ch.Status = "⚠ " + alarm;
         else if (ch.Ext?.Note is string note) ch.Status += $" · {note}";
         if (GroupOf(ch) is FanGroup grp && MembersOf(grp).Count() > 1)
@@ -1739,6 +1748,9 @@ sealed class FanController
         }
 
         if (ch.Rpm?.Value is not float rpm) return;
+        // Kein Drehzahlsignal (zeigt immer 0): Reaktion lässt sich nicht an der Drehzahl ablesen.
+        // Wirkung wird stattdessen über die Temperatur gemessen (Smart-Automatik) – nicht als „nicht steuerbar“ werten.
+        if (ch.Cfg.NoTachSignal || rpm < 50 && ch.TestStartRpm < 50) { ch.TestStart = null; ch.TestFailures = 0; return; }
 
         if (ch.TestStart is DateTime start)
         {
