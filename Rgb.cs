@@ -431,6 +431,8 @@ sealed class RgbSettings
     public int NightFrom { get; set; } = 22;
     public int NightTo { get; set; } = 7;
     public int NightLevel { get; set; } = 20;
+    /// Nollie 8: LEDs je Kanal (0 = Kanal aus)
+    public List<int> NollieLeds { get; set; } = new() { 30, 30, 30, 30, 30, 30, 30, 30 };
 
     /// true = eigene Effekte von Toast Temperatur (jede LED einzeln), false = Effekte des Mainboards
     public bool Custom { get; set; } = true;
@@ -566,6 +568,7 @@ sealed class RgbService
         if (Ite8291Lightbar.Probe() is Ite8291Lightbar lb) Targets.Add(lb);
         _keys = keys;
         Settings = RgbSettings.Load();
+        if (NollieTarget.Probe(() => Settings.NollieLeds) is NollieTarget nol) Targets.Add(nol);
         if (dev != null) dev.SwapRgFix = Settings.SwapRG.Contains("polychrome");
         Engine = new EffectEngine(this);
         if (dev == null) Settings.Custom = true;   // ohne Mainboard-Controller gibt es nur eigene Effekte
@@ -615,6 +618,12 @@ sealed class RgbService
             try
             {
                 bool changed = false;
+                // Nollie später eingesteckt / nach dem Start erst bereit
+                if (!HasOwnNollie && NollieTarget.Probe(() => Settings.NollieLeds) is NollieTarget nol)
+                {
+                    lock (Targets) Targets.Add(nol);
+                    changed = true;
+                }
                 if (OpenRgb.NeedsRefresh) OpenRgb.Dispose();
                 if (!OpenRgb.Connected && OpenRgb.Connect())
                 {
@@ -646,6 +655,8 @@ sealed class RgbService
         if (Settings.DisabledTargets.Contains(t.Id)) return false;
         // ASRock-Mainboard nie über OpenRGB (dessen Direktmodus flackert dort) – Toast Temperatur steuert es selbst
         if (Device != null && IsBoardViaOpenRgb(t)) return false;
+        // Nollie steuert Toast Temperatur selbst – nicht zusätzlich über OpenRGB
+        if (t is OpenRgbTarget on && on.Name.Contains("Nollie", StringComparison.OrdinalIgnoreCase) && HasOwnNollie) return false;
         if (BoardNative && Device != null && t is PolychromeTarget) return false;
         return true;
     }
@@ -660,6 +671,8 @@ sealed class RgbService
                     && (o.Name.Contains("ASRock", StringComparison.OrdinalIgnoreCase) || o.Name.Contains("Polychrome", StringComparison.OrdinalIgnoreCase)));
         }
     }
+
+    bool HasOwnNollie { get { lock (Targets) return Targets.Any(x => x is NollieTarget); } }
 
     static bool IsBoardViaOpenRgb(IRgbTarget t) =>
         t is OpenRgbTarget o && (o.Name.Contains("ASRock", StringComparison.OrdinalIgnoreCase) || o.Name.Contains("Polychrome", StringComparison.OrdinalIgnoreCase));
@@ -950,6 +963,22 @@ sealed class RgbView : FlowLayoutPanel
                     int idx = zi;
                     var nums = top.Numbers(($"      {z.Name}", (float)z.Leds, z.Min, Math.Min(z.Max, 1000), "LEDs",
                         (Action<float>)(v => Debounce(() => { ot.Client.ResizeZone(dev, idx, (int)v); _svc.RescanNow(); }))));
+                }
+            }
+            if (t is NollieTarget)
+            {
+                top.Note("      ↳ LEDs je Kanal (0 = Kanal aus, höchstens 126). Bei Lüftern hintereinander: Summe; bei einem Verteiler-Hub: LEDs eines Lüfters.", muted: true);
+                while (st.NollieLeds.Count < NollieTarget.Channels) st.NollieLeds.Add(0);
+                for (int row = 0; row < 2; row++)
+                {
+                    var items = new List<(string, float, int, int, string, Action<float>)>();
+                    for (int c = row * 4; c < row * 4 + 4; c++)
+                    {
+                        int cc = c;
+                        items.Add(($"{(c % 4 == 0 ? "      " : "")}Kanal {c + 1}", (float)st.NollieLeds[c], 0, NollieTarget.MaxLeds, "",
+                            (Action<float>)(v => { st.NollieLeds[cc] = (int)v; st.Save(); })));
+                    }
+                    top.Numbers(items.ToArray());
                 }
             }
             var swapBox = top.Check("      ↳ Rot und Grün sind vertauscht (Haken = korrigieren)", st.SwapRG.Contains(t.Id), v =>

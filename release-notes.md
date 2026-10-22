@@ -1,8 +1,4 @@
-## Neu in 2.11.0
+## Neu in 2.12.0
 
-- **Scharfe Darstellung auf jedem Bildschirm** – auch auf Bildschirmen mit anderer Skalierung (z. B. Laptop 150 % + Monitor 100 %) wird das Fenster jetzt richtig gezeichnet statt unscharf hochgezogen.
-- **Analyse → Verlauf: Zeitraum wählbar** – letzte 15 Minuten, Stunde, 6 Stunden, 24 Stunden, 7 Tage, einzelne Tage oder ein eigener Zeitraum mit Datum und Uhrzeit. Oben rechts steht der gerade sichtbare Zeitraum, die Zeitachse zeigt beim Reinzoomen auch Sekunden.
-- **Übersicht: Verlaufsdauer einstellbar** – Knopf „Verlauf: 5 Min ▾“: Kurven in den Kacheln zeigen 1, 5, 15, 30 oder 60 Minuten.
-- **GPU ΔT (Hot Spot − Kern)** – neuer berechneter Wert, wird angezeigt und aufgezeichnet (nur bei Grafikkarten mit Hot-Spot-Sensor, z. B. AMD; NVIDIA RTX 50 meldet keinen Hot Spot).
-- Doppelten Abschnitt „Einstellungen sichern“ entfernt – alles unter „Sicherung & Diagnose“.
-- Update-Fenster: Beschreibung ohne Formatierungszeichen, keine zweite Abfrage während eines Downloads.
+- **Nollie 8 direkt eingebaut** – Toast Temperatur erkennt den Nollie 8 (auch mit OS2-Firmware) selbst und steuert ihn direkt über USB, ohne OpenRGB. Er erscheint im Reiter RGB in der Geräteliste; darunter pro Kanal die LED-Anzahl einstellen (Standard 30, 0 = Kanal aus, höchstens 126).
+- Wird der Nollie erst nach dem Start eingesteckt, findet Toast Temperatur ihn innerhalb von etwa 30 Sekunden.

@@ -554,6 +554,119 @@ sealed class Ite8291Keyboard : IRgbTarget, IDisposable
 // ITE 8291 Lichtleiste (048d:7001, z. B. vorne/hinten am Laptop): eine Farbe für die ganze Leiste.
 // Farbe 1 setzen: 14 00 01 R G B 00 00, dann einfarbig: 08 02 01 05 <Helligkeit 0–100> 01 00 00
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Nollie 8 (ARGB-Controller, 8 Kanäle à max. 126 LEDs) – direkt über USB, ohne OpenRGB
+// Protokoll wie OpenRGB (NollieController): 65-Byte-Berichte, Byte 1 = Paket + Kanal × 6, danach 21 LEDs als G,R,B;
+// zum Schluss Byte 1 = 0xFF = „anzeigen“.
+// ---------------------------------------------------------------------------
+sealed class NollieTarget : IRgbTarget, IDisposable
+{
+    public const int Channels = 8, MaxLeds = 126, PerPacket = 21, PacketsPerChannel = 6;
+    readonly SafeFileHandle _h;
+    readonly int _out;
+    readonly Func<IReadOnlyList<int>> _leds;
+    readonly string _model;
+    byte[][]? _last;
+    int _fails;
+    DateTime _lastFull;
+
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool WriteFile(SafeFileHandle h, byte[] buf, int len, out int written, IntPtr ov);
+
+    NollieTarget(SafeFileHandle h, int outLen, string model, Func<IReadOnlyList<int>> leds) { _h = h; _out = outLen; _model = model; _leds = leds; }
+
+    public static NollieTarget? Probe(Func<IReadOnlyList<int>> leds)
+    {
+        try
+        {
+            // 16D2 = Nollie, 16D5 = Nollie mit OS2-Firmware; 1F01 = Nollie 8, 2A08 = Nollie 8 (OS2.1), 
+            foreach (var (vid, pid, name) in new (ushort, ushort, string)[] { (0x16D2, 0x1F01, "Nollie 8"), (0x16D5, 0x1F01, "Nollie 8 (OS2)"), (0x16D5, 0x2A08, "Nollie 8 (OS2.1)") })
+            {
+                var r = Hid.OpenUsage(vid, pid, 0xFF00);
+                if (r == null) continue;
+                if (r.Value.OutLength < 65) { RgbSettings.Log($"{name}: Bericht zu klein ({r.Value.OutLength})"); r.Value.Handle.Dispose(); continue; }
+                RgbSettings.Log($"{name} gefunden ({vid:X4}:{pid:X4}, Out {r.Value.OutLength}) – wird direkt gesteuert");
+                return new NollieTarget(r.Value.Handle, r.Value.OutLength, name, leds);
+            }
+        }
+        catch (Exception ex) { RgbSettings.Log("Nollie: " + ex.Message); }
+        return null;
+    }
+
+    /// Kanäle mit LEDs (0 = Kanal aus)
+    int[] Active()
+    {
+        var l = _leds();
+        var res = new List<int>();
+        for (int c = 0; c < Channels; c++) if (c < l.Count && l[c] > 0) res.Add(c);
+        return res.ToArray();
+    }
+
+    public string Id => "nollie8";
+    public string Name => _model;
+    public string Kind => "ARGB-Controller";
+    public int[] Segments
+    {
+        get
+        {
+            var l = _leds();
+            return Active().Select(c => Math.Clamp(l[c], 1, MaxLeds)).ToArray();
+        }
+    }
+
+    public void Begin() { _last = null; _fails = 0; }
+
+    bool Send(byte[] buf)
+    {
+        if (WriteFile(_h, buf, buf.Length, out _, IntPtr.Zero)) { _fails = 0; return true; }
+        if (++_fails == 1) RgbSettings.Log($"{_model}: Senden fehlgeschlagen (Fehler {Marshal.GetLastWin32Error()})");
+        return false;
+    }
+
+    public bool Write(IReadOnlyList<Color[]> s)
+    {
+        var act = Active();
+        // Alle Pakete bauen, unveränderte weglassen (spart USB-Last); alle 2 s trotzdem alles senden
+        bool full = _last == null || (DateTime.Now - _lastFull).TotalSeconds >= 2;
+        _last ??= new byte[Channels * PacketsPerChannel][];
+        bool any = false, ok = true;
+        for (int i = 0; i < act.Length && i < s.Count; i++)
+        {
+            int ch = act[i];
+            var cols = s[i];
+            int n = Math.Min(cols.Length, MaxLeds);
+            int packets = (n + PerPacket - 1) / PerPacket;
+            for (int p = 0; p < packets; p++)
+            {
+                var buf = new byte[_out];
+                buf[1] = (byte)(p + ch * PacketsPerChannel);
+                for (int k = 0; k < PerPacket; k++)
+                {
+                    int li = p * PerPacket + k;
+                    if (li >= n) break;
+                    var c = cols[li];
+                    buf[2 + k * 3] = c.G; buf[3 + k * 3] = c.R; buf[4 + k * 3] = c.B;
+                }
+                int slot = ch * PacketsPerChannel + p;
+                if (!full && _last[slot] is byte[] prev && prev.AsSpan().SequenceEqual(buf)) continue;
+                ok &= Send(buf);
+                _last[slot] = buf;
+                any = true;
+            }
+        }
+        if (any)
+        {
+            var show = new byte[_out];
+            show[1] = 0xFF;
+            ok &= Send(show);
+        }
+        if (full) _lastFull = DateTime.Now;
+        return ok;
+    }
+
+    public void End() { }
+    public void Dispose() => _h.Dispose();
+}
+
 sealed class Ite8291Lightbar : IRgbTarget, IDisposable
 {
     readonly SafeFileHandle _h;
