@@ -929,9 +929,7 @@ sealed class FanCard : Control
             new ToolTip().SetToolTip(_hide, "Diesen von Hand eingeblendeten Anschluss wieder ausblenden – die Steuerung geht ans Mainboard (BIOS) zurück");
             _hide.Click += (_, _) =>
             {
-                if (MessageBox.Show(FindForm(), $"„{ch.DisplayName}“ wieder ausblenden?
-
-Der Anschluss wird dann wieder vom Mainboard (BIOS) geregelt. " +
+                if (MessageBox.Show(FindForm(), $"„{ch.DisplayName}“ wieder ausblenden?\n\nDer Anschluss wird dann wieder vom Mainboard (BIOS) geregelt. " +
                         "Unter „Leere Anschlüsse“ kannst du ihn jederzeit wieder einblenden.", "Lüfter entfernen",
                         MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
                 ctl.HidePort(ch);
