@@ -418,6 +418,8 @@ sealed class FanChannel
 {
     /// Mainboard/GPU-Steuerung über LibreHardwareMonitor (null bei externen Geräten wie der XMG Oasis)
     public IControl? Control { get; init; }
+    /// Von Hand eingeblendeter Anschluss (lässt sich wieder ausblenden)
+    public FanController.HiddenPort? ManualPort { get; set; }
     public ISensor? ControlSensor { get; init; }
     /// Externes Gerät (z. B. XMG Oasis über Bluetooth)
     public IExternalFan? Ext { get; init; }
@@ -635,12 +637,14 @@ sealed class FanController
 
             // Nicht angeschlossen: Mainboard-Anschluss ohne Drehzahl.
             // GPU-Lüfter bleiben immer, da sie im Leerlauf oft absichtlich stehen.
-            bool connected = gpu || (rpm?.Value ?? 0) > 0 || _s.ShowPorts.Contains(sensor.Control!.Identifier.ToString());
+            bool manual = !gpu && _s.ShowPorts.Contains(sensor.Control!.Identifier.ToString());
+            bool connected = gpu || (rpm?.Value ?? 0) > 0 || manual;
+            var (t0, s0, r0, b0, f0) = (top, sensor, rpm, baseName, fans);
+            var port = new HiddenPort(sensor.Control!.Identifier.ToString(), FriendlyName(rpm?.Name ?? baseName), top.Name,
+                sensor.Control!, rpm, () => AddBoardChannel(t0, s0, r0, b0, false, f0));
             if (!connected)
             {
-                var (t0, s0, r0, b0, f0) = (top, sensor, rpm, baseName, fans);
-                HiddenPorts.Add(new HiddenPort(sensor.Control!.Identifier.ToString(), FriendlyName(rpm?.Name ?? baseName), top.Name,
-                    sensor.Control!, rpm, () => AddBoardChannel(t0, s0, r0, b0, false, f0)));
+                HiddenPorts.Add(port);
                 HiddenCount++;
                 FanNaming.Hidden.Add(sensor.Identifier.ToString());
                 if (rpm != null) FanNaming.Hidden.Add(rpm.Identifier.ToString());
@@ -648,6 +652,7 @@ sealed class FanController
             }
 
             AddBoardChannel(top, sensor, rpm, baseName, gpu, fans);
+            if (manual && Channels.LastOrDefault(c => c.Id == port.Id) is FanChannel mc) mc.ManualPort = port;
         }
 
         // Drehzahl ohne Steuerung (z. B. Pumpe an einem festen Anschluss, AIO-Pumpe über USB):
@@ -757,6 +762,24 @@ sealed class FanController
             if (!_s.ShowPorts.Contains(p.Id)) _s.ShowPorts.Add(p.Id);
             HiddenCount = Math.Max(0, HiddenCount - 1);
             p.Add();
+            if (Channels.LastOrDefault(c => c.Id == p.Id) is FanChannel ch) ch.ManualPort = p;
+            _s.Save();
+        }
+    }
+
+    /// Von Hand eingeblendeten Anschluss wieder ausblenden: Steuerung ans Mainboard zurückgeben, Karte entfernen
+    public void HidePort(FanChannel ch)
+    {
+        if (ch.ManualPort is not HiddenPort p) return;
+        lock (_lock)
+        {
+            _s.ShowPorts.Remove(p.Id);
+            try { ch.Control?.SetDefault(); } catch { }
+            Channels.Remove(ch);
+            foreach (var g in _s.Groups) g.Members.Remove(ch.Id);
+            ch.ManualPort = null;
+            if (!HiddenPorts.Any(h => h.Id == p.Id)) HiddenPorts.Add(p);
+            HiddenCount++;
             _s.Save();
         }
     }

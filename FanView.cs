@@ -747,6 +747,7 @@ sealed class FanCard : Control
     readonly TextBox _name;
     readonly ComboBox _kind;
     readonly Button _identify;
+    readonly Button? _hide;
     readonly LinkLabel _reset;
     readonly Dictionary<Component, CheckBox> _sources = new();
     readonly Label _sourceLabel;
@@ -921,6 +922,23 @@ sealed class FanCard : Control
         Controls.Add(_name);
         Controls.Add(_kind);
         Controls.Add(_identify);
+        if (ch.ManualPort != null)
+        {
+            _hide = new Button { Text = "Entfernen", FlatStyle = FlatStyle.Flat, BackColor = Theme.CardHero, ForeColor = Theme.Muted, Cursor = Cursors.Hand };
+            _hide.FlatAppearance.BorderColor = Theme.Border;
+            new ToolTip().SetToolTip(_hide, "Diesen von Hand eingeblendeten Anschluss wieder ausblenden – die Steuerung geht ans Mainboard (BIOS) zurück");
+            _hide.Click += (_, _) =>
+            {
+                if (MessageBox.Show(FindForm(), $"„{ch.DisplayName}“ wieder ausblenden?
+
+Der Anschluss wird dann wieder vom Mainboard (BIOS) geregelt. " +
+                        "Unter „Leere Anschlüsse“ kannst du ihn jederzeit wieder einblenden.", "Lüfter entfernen",
+                        MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+                ctl.HidePort(ch);
+                _rebuild();
+            };
+            Controls.Add(_hide);
+        }
         Controls.Add(_reset);
         Controls.Add(_sourceLabel);
         foreach (var cb in _sources.Values) Controls.Add(cb);
@@ -1008,7 +1026,14 @@ sealed class FanCard : Control
         _name.SetBounds(S(48), S(14), Width - S(210), S(24));
         _kind.SetBounds(S(16), S(62), S(96), S(26));
         _identify.SetBounds(S(120), S(61), S(100), S(28));
-        _reset.Location = new Point(S(232), S(67));
+        if (_hide != null)
+        {
+            // Platz für „Entfernen“: Link kürzer und weiter rechts
+            _hide.SetBounds(S(228), S(61), S(86), S(28));
+            _reset.Text = "Zurücksetzen";
+            _reset.Location = new Point(S(322), S(67));
+        }
+        if (_hide == null) _reset.Location = new Point(S(232), S(67));
         _sourceLabel.Location = new Point(S(16), _ch.IsGpu ? S(160) : S(150));
         _group?.SetBounds(Width - S(196), S(144), S(180), S(26));
         _follow.SetBounds(S(16), S(170), Width - S(32), S(26));
