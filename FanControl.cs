@@ -199,6 +199,8 @@ sealed class FanSettings
     public List<FanGroup> Groups { get; set; } = new();
     /// Anschlüsse, die trotz fehlender Drehzahl angezeigt werden sollen
     public List<string> ShowPorts { get; set; } = new();
+    /// Reiter Lüfter: erweiterte Einstellungen aufgeklappt
+    public bool ShowAdvanced { get; set; }
     /// Zusätzliche Sicherung: Anschlüsse (stabiler Schlüssel), an denen eine Pumpe hängt – eine Pumpe darf nie als Lüfter behandelt werden
     public List<string> PumpKeys { get; set; } = new();
     /// Pumpen-Wächter: wie oft eine Pumpe ausgefallen/zu langsam war

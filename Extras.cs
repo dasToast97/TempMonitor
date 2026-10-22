@@ -592,15 +592,6 @@ sealed class SettingsView : FlowLayoutPanel
             s.OverlayEnabled, v => { s.OverlayEnabled = v; Save(); _overlayChanged(); });
         t.Numbers(("Deckkraft", (float)s.OverlayOpacity, 30, 100, "%", (Action<float>)(v => { s.OverlayOpacity = (int)v; Save(); _overlayChanged(); })));
 
-        // ----- Sicherung & Diagnose -----
-        AddSection("Sicherung & Diagnose", Color.FromArgb(129, 140, 248));
-        var bk = AddCard();
-        bk.Note("Alle Einstellungen (Lüfter, Pumpen, Profile, RGB, Ansicht) in eine Datei sichern – z. B. vor einer Windows-Neuinstallation " +
-                "oder um sie auf einen anderen PC zu übertragen. Das Diagnose-Paket sammelt alle Protokolle für die Fehlersuche.");
-        bk.Buttons(("Einstellungen sichern …", () => BackupTools.Export(FindForm())),
-                   ("Einstellungen laden …", () => BackupTools.Import(FindForm())),
-                   ("Diagnose-Paket erstellen", () => BackupTools.Diagnose(FindForm())));
-
         // ----- Aufzeichnung & Autostart -----
         AddSection("Aufzeichnung & Autostart", Color.FromArgb(45, 212, 191));
         var a = AddCard();
@@ -628,12 +619,59 @@ sealed class SettingsView : FlowLayoutPanel
                 catch (Exception ex) { ErrorLog.Write("Einstellungen erweitern", ex); }
             }
 
+        // ----- Erweitert (zugeklappt): Sicherung, Diagnose, Logbuch -----
+        const string advText = "Erweiterte Einstellungen (Sicherung, Diagnose, Fehler-Logbuch)";
+        var fold = Fold.Header(advText, s.SettingsAdvanced, K);
+        AddFull(fold);
+        int advStart = Controls.Count;
+        // ----- Sicherung & Diagnose -----
+        AddSection("Sicherung & Diagnose", Color.FromArgb(129, 140, 248));
+        var bk = AddCard();
+        bk.Note("Alle Einstellungen (Lüfter, Pumpen, Profile, RGB, Ansicht) in eine Datei sichern – z. B. vor einer Windows-Neuinstallation " +
+                "oder um sie auf einen anderen PC zu übertragen. Das Diagnose-Paket sammelt alle Protokolle für die Fehlersuche.");
+        bk.Buttons(("Einstellungen sichern …", () => BackupTools.Export(FindForm())),
+                   ("Einstellungen laden …", () => BackupTools.Import(FindForm())),
+                   ("Diagnose-Paket erstellen", () => BackupTools.Diagnose(FindForm())));
+
         // ----- Fehler-Logbuch -----
         AddSection("Fehler-Logbuch", Theme.Muted);
         var f = AddCard();
         int n = ErrorLog.Count();
         f.Note(n == 0 ? "Bisher keine Einträge." : $"{n} Einträge. Bei Problemen die Datei öffnen und den Inhalt mitschicken.");
         f.Buttons(("Logbuch öffnen", ErrorLog.Open));
+        Fold.Bind(fold, advText, Controls.Cast<Control>().Skip(advStart).ToList(), s.SettingsAdvanced, v => { s.SettingsAdvanced = v; Save(); });
+    }
+}
+
+/// Aufklappbarer Bereich „Erweiterte Einstellungen“ (selten gebrauchtes, damit die Seiten übersichtlich bleiben)
+static class Fold
+{
+    public static Button Header(string text, bool open, float k)
+    {
+        var b = new Button
+        {
+            Text = (open ? "▾" : "▸") + "  " + text,
+            FlatStyle = FlatStyle.Flat, ForeColor = Theme.Muted, BackColor = Theme.Background,
+            TextAlign = ContentAlignment.MiddleLeft, Height = (int)(36 * k),
+            Margin = new Padding((int)(6 * k), (int)(14 * k), (int)(6 * k), (int)(2 * k)),
+            Cursor = Cursors.Hand, Font = new Font("Segoe UI Semibold", 10.5f), UseMnemonic = false,
+        };
+        b.FlatAppearance.BorderSize = 0;
+        b.FlatAppearance.MouseOverBackColor = Theme.Card;
+        return b;
+    }
+
+    /// Alles, was nach dem Kopf eingefügt wurde, ein-/ausblenden (ohne die Seite neu aufzubauen)
+    public static void Bind(Button header, string text, List<Control> content, bool open, Action<bool> save)
+    {
+        foreach (var c in content) c.Visible = open;
+        header.Click += (_, _) =>
+        {
+            open = !open;
+            header.Text = (open ? "▾" : "▸") + "  " + text;
+            foreach (var c in content) c.Visible = open;
+            save(open);
+        };
     }
 }
 

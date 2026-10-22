@@ -433,6 +433,10 @@ sealed class RgbSettings
     public int NightLevel { get; set; } = 20;
     /// Nollie 8: LEDs je Kanal (0 = Kanal aus)
     public List<int> NollieLeds { get; set; } = new() { 30, 30, 30, 30, 30, 30, 30, 30 };
+    /// Mainboard-Beleuchtung ganz aus (z. B. wenn alle Lüfter am Nollie hängen)
+    public bool BoardOff { get; set; }
+    /// Reiter RGB: erweiterte Einstellungen aufgeklappt
+    public bool ShowAdvanced { get; set; }
 
     /// true = eigene Effekte von Toast Temperatur (jede LED einzeln), false = Effekte des Mainboards
     public bool Custom { get; set; } = true;
@@ -761,7 +765,7 @@ sealed class RgbService
 
     /// Mainboard läuft mit seinem eingebauten Effekt: im Mischbetrieb immer – sonst automatisch, wenn der eigene
     /// Effekt genau dem eingebauten entspricht (dann butterweich, ohne die Blitze beim Farbwechsel per Software)
-    public bool BoardNative => Settings.BoardHardware || EffectFitsBoard();
+    public bool BoardNative => Settings.BoardOff || Settings.BoardHardware || EffectFitsBoard();
 
     bool EffectFitsBoard()
     {
@@ -799,6 +803,14 @@ sealed class RgbService
     public void ApplyBoardFromCustom()
     {
         if (Device == null || !BoardNative) return;
+        if (Settings.BoardOff)
+        {
+            // Aus: jede Zone einmal auf „Aus“ (ein Befehl je Zone, schont den Controller)
+            foreach (var z in Device.Zones) Settings.For(z.Index).Mode = 0x00;
+            Settings.Save();
+            ApplyAll();
+            return;
+        }
         var fx = Settings.Effect;
         var c = fx.Colors.Count > 0 ? Color.FromArgb(fx.Colors[0]) : Color.FromArgb(0, 120, 255);
         float b = Math.Clamp(fx.Brightness, 5, 100) / 100f;
@@ -929,45 +941,40 @@ sealed class RgbView : FlowLayoutPanel
         var st = _svc.Settings;
         Add(new SectionHeader("RGB-Beleuchtung", Color.FromArgb(244, 114, 182)) { Height = S(40), Margin = new Padding(S(6), S(14), S(6), S(4)) });
         var top = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
-        if (_svc.Device != null)
-        {
-            top.Combo("Steuerung:", new[] { "Einfache Mainboard-Effekte (nur Farbe + Tempo, laufen auch ohne Toast Temperatur)", "Eigene Effekte (alle Einstellungen: Helligkeit, nicht ganz aus, Zeiten …)" },
-                st.Custom ? 1 : 0, i => { _svc.SetCustom(i == 1); RebuildSoon(); });
-            if (top.Controls.OfType<ComboBox>().LastOrDefault() is ComboBox modeBox) modeBox.Width = S(420);
-        }
 
-        // Geräte: auf welchen die eigenen Effekte laufen
+        // ----- Geräte -----
         List<IRgbTarget> targets;
         lock (_svc.Targets) targets = _svc.Targets.ToList();
-        top.Note(targets.Count == 0 ? "Noch keine RGB-Geräte gefunden." : "Gefundene Geräte – Haken = eigene Effekte laufen dort:", muted: targets.Count == 0);
-        foreach (var t in targets)
+        // Mainboard steht unten als eigene Zeile, ASRock über OpenRGB wird nie benutzt
+        var list = targets.Where(t => t is not PolychromeTarget && !(_svc.Device != null && t is OpenRgbTarget o
+            && (o.Name.Contains("ASRock") || o.Name.Contains("Polychrome")))).ToList();
+        top.Note(list.Count == 0 && _svc.Device == null ? "Noch keine RGB-Geräte gefunden." : "Geräte – Haken = eigener Effekt läuft dort:", muted: list.Count == 0);
+        foreach (var t in list)
         {
             var tt = t;
             int leds = t.Segments.Sum();
-            string extra = _svc.Device != null && t is OpenRgbTarget o && (o.Name.Contains("ASRock") || o.Name.Contains("Polychrome"))
-                ? "   ·   wird von Toast Temperatur direkt gesteuert" : "";
-            top.Check($"{t.Name}   ·   {t.Kind}, {leds} LED{(leds == 1 ? "" : "s")}{extra}", !st.DisabledTargets.Contains(t.Id), v =>
+            top.Check($"{t.Name}   ·   {t.Kind}, {leds} LED{(leds == 1 ? "" : "s")}", !st.DisabledTargets.Contains(t.Id), v =>
             {
                 if (v) st.DisabledTargets.Remove(tt.Id); else if (!st.DisabledTargets.Contains(tt.Id)) st.DisabledTargets.Add(tt.Id);
                 st.Save();
             });
-            // ARGB-Controller (z. B. Nollie): LED-Anzahl je Kanal einstellen – neue Kanäle haben oft 0 LEDs
+            // ARGB-Controller über OpenRGB: LED-Anzahl je Kanal – neue Kanäle haben oft 0 LEDs
             if (t is OpenRgbTarget ot && ot.Device.Resizable)
             {
                 var dev = ot.Device;
-                top.Note($"      ↳ LEDs je Kanal (bei einem Verteiler-Hub: LEDs EINES Lüfters, z. B. 9–18). 0 = Kanal aus:", muted: true);
+                top.Note("      ↳ LEDs je Kanal (0 = Kanal aus):", muted: true);
                 for (int zi = 0; zi < dev.Zones.Count; zi++)
                 {
                     var z = dev.Zones[zi];
                     if (z.Max <= z.Min) continue;
                     int idx = zi;
-                    var nums = top.Numbers(($"      {z.Name}", (float)z.Leds, z.Min, Math.Min(z.Max, 1000), "LEDs",
+                    top.Numbers(($"      {z.Name}", (float)z.Leds, z.Min, Math.Min(z.Max, 1000), "LEDs",
                         (Action<float>)(v => Debounce(() => { ot.Client.ResizeZone(dev, idx, (int)v); _svc.RescanNow(); }))));
                 }
             }
             if (t is NollieTarget)
             {
-                top.Note("      ↳ LEDs je Kanal (0 = Kanal aus, höchstens 126). Bei Lüftern hintereinander: Summe; bei einem Verteiler-Hub: LEDs eines Lüfters.", muted: true);
+                top.Note("      ↳ LEDs je Kanal (0 = Kanal aus, höchstens 126; Lüfter hintereinander = Summe, Verteiler-Hub = LEDs eines Lüfters):", muted: true);
                 while (st.NollieLeds.Count < NollieTarget.Channels) st.NollieLeds.Add(0);
                 for (int row = 0; row < 2; row++)
                 {
@@ -981,7 +988,77 @@ sealed class RgbView : FlowLayoutPanel
                     top.Numbers(items.ToArray());
                 }
             }
-            var swapBox = top.Check("      ↳ Rot und Grün sind vertauscht (Haken = korrigieren)", st.SwapRG.Contains(t.Id), v =>
+        }
+
+        // ----- Mainboard: folgt / aus / Software -----
+        if (_svc.Device != null && st.Custom)
+        {
+            int cur = st.BoardOff ? 1 : st.BoardHardware ? 0 : 2;
+            var box = top.Combo("Mainboard-Beleuchtung:", new[]
+            {
+                "Folgt dem Effekt (eingebaute Effekte, schonend)",
+                "Aus",
+                "Eigener Effekt per Software (Risiko, siehe Hinweis)",
+            }, cur, i =>
+            {
+                if (i == cur) return;
+                if (i == 2 && MessageBox.Show(FindForm(),
+                        "Achtung – Risiko für das Mainboard:\n\n" +
+                        "Der RGB-Controller dieses ASRock-Mainboards speichert jede Farbänderung in seinem internen Speicher. " +
+                        "Werden eigene Effekte per Software gesteuert, schreibt Toast Temperatur laufend neue Farben – das kann diesen " +
+                        "Speicher mit der Zeit abnutzen und die Mainboard-Beleuchtung dauerhaft beschädigen. Außerdem blitzt es dabei.\n\n" +
+                        "Trotzdem per Software steuern? (auf eigene Gefahr, höchstens wenige Farbbefehle pro Sekunde)",
+                        "Mainboard-Beleuchtung – bitte bestätigen", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                {
+                    RebuildSoon();
+                    return;
+                }
+                st.BoardOff = i == 1;
+                st.BoardHardware = i != 2;
+                if (i == 2) st.DisabledTargets.Remove("polychrome");
+                st.Save();
+                if (i != 2) Task.Run(_svc.ApplyBoardFromCustom);
+                RebuildSoon();
+            });
+            box.Width = S(380);
+            if (!st.BoardOff)
+                top.Note(st.BoardHardware ? "      ↳ Das Mainboard zeigt: " + _svc.BoardFollowText() + "." :
+                    "      ↳ Bekommt den eigenen Effekt per Software (eine Farbe je Anschluss). Kann blitzen.", muted: true);
+        }
+
+        var rivals = RgbRivals.Running();
+        if (rivals.Count > 0)
+            top.Note("⚠ Läuft gleichzeitig: " + string.Join(", ", rivals) + ". Diese Programme steuern die Beleuchtung auch und funken dazwischen " +
+                     "(Flackern, wilde Farben). Bitte beenden und aus dem Autostart nehmen.", muted: false);
+        Add(top);
+
+        if (st.Custom || _svc.Device == null) BuildCustom();
+        if (!st.Custom && _svc.Device != null) BuildHardware();
+        BuildExtras();
+        BuildAdvanced(targets);
+    }
+
+    /// Selten gebraucht: Steuerungsart, Rot/Grün-Tausch, OpenRGB, Mainboard-Anschlüsse
+    void BuildAdvanced(List<IRgbTarget> targets)
+    {
+        var st = _svc.Settings;
+        var toggle = Fold.Header("Erweiterte Einstellungen (Steuerung, Rot/Grün, OpenRGB, Mainboard-Anschlüsse)", st.ShowAdvanced, K);
+        toggle.Click += (_, _) => { st.ShowAdvanced = !st.ShowAdvanced; st.Save(); RebuildSoon(); };
+        Add(toggle);
+        if (!st.ShowAdvanced) return;
+
+        var adv = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+        if (_svc.Device != null)
+        {
+            var mb = adv.Combo("Steuerung:", new[] { "Einfache Mainboard-Effekte (nur Farbe + Tempo, laufen auch ohne Toast Temperatur)", "Eigene Effekte (alle Einstellungen)" },
+                st.Custom ? 1 : 0, i => { _svc.SetCustom(i == 1); RebuildSoon(); });
+            mb.Width = S(420);
+        }
+        adv.Note("Rot und Grün vertauscht? Häkchen beim betroffenen Gerät:", muted: false);
+        foreach (var t in targets.Where(t => !(_svc.Device != null && t is OpenRgbTarget o && (o.Name.Contains("ASRock") || o.Name.Contains("Polychrome")))))
+        {
+            var tt = t;
+            adv.Check("      " + t.Name, st.SwapRG.Contains(t.Id), v =>
             {
                 if (v) { if (!st.SwapRG.Contains(tt.Id)) st.SwapRG.Add(tt.Id); } else st.SwapRG.Remove(tt.Id);
                 st.Save();
@@ -991,81 +1068,33 @@ sealed class RgbView : FlowLayoutPanel
                     if (!st.Custom) Task.Run(_svc.ApplyAll);
                 }
             });
-            swapBox.ForeColor = Theme.Muted;
         }
-        if (_svc.Device != null && st.OpenRgbAuto != true)
-        {
-            top.Note("Empfohlen fürs Mainboard: Mit OpenRGB laufen die eigenen Effekte ohne Flackern und jede LED einzeln. " +
-                     "Toast Temperatur lädt OpenRGB (Open Source, ca. 20 MB) einmalig von der offiziellen Projektseite " +
-                     "codeberg.org/OpenRGB und startet es danach automatisch unsichtbar mit – sonst musst du nichts tun.", muted: false);
-            top.Buttons(("OpenRGB einrichten (empfohlen)", () => SetupOpenRgb()),
-                        ("Nein danke", () => { st.OpenRgbAuto = false; st.Save(); RebuildSoon(); }));
-        }
-        else if (st.OpenRgbAuto == true)
-        {
-            top.Check("OpenRGB automatisch mitstarten", true, v => { st.OpenRgbAuto = v; st.Save(); if (!v) OpenRgbManager.Stop(); else _svc.StartOpenRgb(); });
-        }
-        var rivals = RgbRivals.Running();
-        if (rivals.Count > 0)
-            top.Note("⚠ Läuft gleichzeitig: " + string.Join(", ", rivals) + ". Diese Programme steuern die Beleuchtung auch und funken dazwischen " +
-                     "(Flackern, wilde Farben). Für eigene Effekte bitte beenden und aus dem Autostart nehmen.", muted: false);
-        top.Note("OpenRGB: " + _svc.OpenRgb.Status + ". Für Tastaturen, Mäuse, RAM, Grafikkarten u. v. m.: OpenRGB (openrgb.org) starten, " +
-                 "im Reiter „SDK Server“ auf „Start Server“ klicken (Port 6742) – Toast Temperatur findet die Geräte dann automatisch " +
-                 "und spielt seine Effekte auch dort ab.");
-        if (_svc.Device != null)
-            { }
-        top.Buttons(("Geräte neu suchen", () => _svc.RescanNow()));
-        if (_svc.Device != null)
-            top.Note("Mit Hub am ARGB-Anschluss: Ein Verteiler-Hub schickt allen Geräten dasselbe Signal – als LED-Anzahl die des längsten Geräts " +
-                     "eintragen (oder die Summe, wenn die Geräte hintereinander geschaltet sind).");
-        Add(top);
 
-        if (st.Custom && _svc.Device != null)
+        // OpenRGB (für Maus, Tastatur, RAM … von anderen Herstellern)
+        if (st.OpenRgbAuto != true)
         {
-            var bh = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
-            bh.Check("Mainboard mit seinen eigenen Effekten laufen lassen (stabil, kein Flackern) – eigene Effekte nur auf den anderen Geräten",
-                st.BoardHardware, v =>
-                {
-                    if (!v && MessageBox.Show(FindForm(),
-                            "Achtung – Risiko für das Mainboard:\n\n" +
-                            "Der RGB-Controller dieses ASRock-Mainboards speichert jede Farbänderung in seinem internen Speicher. " +
-                            "Werden eigene Effekte per Software gesteuert, schreibt Toast Temperatur laufend neue Farben – das kann diesen " +
-                            "Speicher mit der Zeit abnutzen und die Mainboard-Beleuchtung dauerhaft beschädigen. Außerdem blitzt es dabei.\n\n" +
-                            "Empfohlen: Haken drin lassen (eingebaute Effekte, keine Abnutzung).\n\n" +
-                            "Trotzdem per Software steuern? (auf eigene Gefahr, höchstens wenige Farbbefehle pro Sekunde)",
-                            "Mainboard-Beleuchtung – bitte bestätigen", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
-                    {
-                        RebuildSoon();
-                        return;
-                    }
-                    st.BoardHardware = v; st.Save();
-                    if (v) Task.Run(_svc.ApplyBoardFromCustom);
-                    RebuildSoon();
-                });
-            bh.Note(st.BoardHardware
-                ? "Das Mainboard folgt automatisch deinem Effekt so gut es kann: " + _svc.BoardFollowText() +
-                  ". Helligkeit wirkt über die Farbe; „nicht ganz aus“ und die Atmen-Zeiten kann nur die Software (Maus, Tastatur …)."
-                : "Ohne Haken bekommt auch das Mainboard die eigenen Effekte mit allen Einstellungen (eine Farbe je Anschluss, " +
-                  "ca. 10× pro Sekunde). Bei manchen Hubs blitzt es dabei, wenn sich die Farbe ändert. Entspricht dein Effekt " +
-                  "genau einem eingebauten (z. B. Atmen mit einer Farbe, ohne „nicht ganz aus“ und ohne eigene Zeiten), " +
-                  "nimmt Toast Temperatur automatisch den eingebauten – der läuft ohne Blitze.");
-            Add(bh);
+            adv.Note("OpenRGB (für Maus, Tastatur, RAM, Grafikkarte anderer Hersteller): Toast Temperatur lädt es einmalig von codeberg.org/OpenRGB " +
+                     "(Open Source, ca. 20 MB) und startet es danach unsichtbar mit.", muted: false);
+            adv.Buttons(("OpenRGB einrichten", () => SetupOpenRgb()));
         }
-        if (st.Custom || _svc.Device == null) BuildCustom();
-        if (!st.Custom && _svc.Device != null) BuildHardware();
-        BuildExtras();
+        else
+            adv.Check("OpenRGB automatisch mitstarten", true, v => { st.OpenRgbAuto = v; st.Save(); if (!v) OpenRgbManager.Stop(); else _svc.StartOpenRgb(); });
+        adv.Note("OpenRGB: " + _svc.OpenRgb.Status);
+        adv.Buttons(("Geräte neu suchen", () => _svc.RescanNow()));
+        Add(adv);
 
         if (_svc.Device is PolychromeUsb board)
         {
             var info = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
             info.Note("Mainboard: " + string.Join(" · ", board.Zones.Select(z => z.Kind == RgbZoneKind.Addressable ? $"{z.Name} ({z.LedCount} LEDs)" : z.Name)));
-            if (!st.BoardHardware) info.Numbers(("Farbbefehle pro Sekunde ans Mainboard (nur bei Software-Steuerung; wenig = schonender)", (float)Math.Clamp(st.BoardFps, 1, 5), 1, 5, "",
-                (Action<float>)(v => { st.BoardFps = (int)v; st.Save(); })));
-            info.Note("Benutzte Anschlüsse – nur wo wirklich Beleuchtung dranhängt (weniger Befehle ans Mainboard = weniger Blitze):", muted: false);
+            if (st.Custom && !st.BoardHardware && !st.BoardOff)
+                info.Numbers(("Farbbefehle pro Sekunde ans Mainboard (wenig = schonender)", (float)Math.Clamp(st.BoardFps, 1, 5), 1, 5, "",
+                    (Action<float>)(v => { st.BoardFps = (int)v; st.Save(); })));
+            info.Note("Benutzte Anschlüsse – nur wo wirklich Beleuchtung dranhängt:", muted: false);
             foreach (var z in board.Zones)
             {
                 var zz = z;
-                info.Check(z.Name, !st.BoardZonesOff.Contains(z.Index), v =>
+                info.Check("      " + z.Name, !st.BoardZonesOff.Contains(z.Index), v =>
                 {
                     if (v) st.BoardZonesOff.Remove(zz.Index); else if (!st.BoardZonesOff.Contains(zz.Index)) st.BoardZonesOff.Add(zz.Index);
                     st.Save();
@@ -1076,6 +1105,7 @@ sealed class RgbView : FlowLayoutPanel
                 var zz = z;
                 info.Numbers(($"LEDs an {z.Name}", (float)z.LedCount, 1, 100, "", (Action<float>)(v => Debounce(() => board.SetLedCount(zz, (int)v)))));
             }
+            info.Note("Hub am ARGB-Anschluss: als LED-Anzahl die des längsten Geräts eintragen (oder die Summe, wenn hintereinander geschaltet).");
             Add(info);
         }
     }

@@ -23,6 +23,8 @@ sealed class AppSettings
     public DateTime CareChecked { get; set; }
     /// Analyse → Verlauf: zuletzt gewählter Zeitraum (0 = letzte 15 Minuten … )
     public int HistoryRange { get; set; } = 1;
+    /// Einstellungen: erweiterte Abschnitte aufgeklappt
+    public bool SettingsAdvanced { get; set; }
 
     // ----- Warnungen (Windows-Benachrichtigung) -----
     public bool WarnEnabled { get; set; } = true;

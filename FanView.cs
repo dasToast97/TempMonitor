@@ -136,8 +136,7 @@ sealed class FanView : FlowLayoutPanel
         if (_ctl.Channels.Any(c => !c.IsGpu && !c.MonitorOnly && c.Ext == null))
         {
             var wz = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
-            wz.Note("Welcher Anschluss ist was? Der Lüfter-Assistent hält jeden Anschluss nacheinander kurz an und fragt, was stehen geblieben ist " +
-                    "(CPU-Kühler, Gehäuse-Lüfter oder Pumpe) – danach ist alles richtig benannt und geregelt. Dauert ca. 10 Sekunden je Anschluss.");
+            wz.Note("Welcher Anschluss ist was? Der Assistent hält jeden Anschluss kurz an und fragt, was stehen geblieben ist.");
             wz.Buttons(("Lüfter-Assistent starten", () => _ = RunWizard()));
             AddFull(wz);
             if (!_ctl.Settings.WizardOffered)
@@ -187,35 +186,6 @@ sealed class FanView : FlowLayoutPanel
             if (lastCard != null) SetFlowBreak(lastCard, true);
         }
 
-        // ----- Leere / ausgeblendete Anschlüsse -----
-        List<FanController.HiddenPort> hidden;
-        lock (_ctl.HiddenPorts) hidden = _ctl.HiddenPorts.ToList();
-        if (hidden.Count > 0)
-        {
-            var hc = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
-            hc.Note($"Ausgeblendet, weil beim Start keine Drehzahl kam: {string.Join(", ", hidden.Select(h => h.Name))}. " +
-                    "Fehlt ein Lüfter (z. B. die Radiator-Lüfter am CPU-Anschluss)? „Prüfen“ dreht alle leeren Anschlüsse kurz hoch " +
-                    "und zeigt die, an denen sich etwas dreht. Lüfter ohne Drehzahlsignal kannst du auch direkt einblenden.");
-            Button? probeBtn = null;
-            hc.Buttons(("Leere Anschlüsse prüfen", async () =>
-            {
-                if (probeBtn != null) { probeBtn.Enabled = false; probeBtn.Text = "Prüfe … (7 s)"; }
-                var found = await _ctl.ProbeHiddenAsync();
-                MessageBox.Show(FindForm(), found.Count > 0
-                        ? "Gefunden und eingeblendet: " + string.Join(", ", found.Select(f => f.Name)) + "\n\nMit „Erkennen“ auf der neuen Karte siehst du, welcher Lüfter es ist."
-                        : "An keinem leeren Anschluss hat sich etwas gedreht (oder die Lüfter melden keine Drehzahl). Du kannst einen Anschluss trotzdem einblenden.",
-                    "Leere Anschlüsse", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                Rebuild();
-            }));
-            probeBtn = hc.Controls.OfType<Button>().LastOrDefault();
-            foreach (var h in hidden)
-            {
-                var hh = h;
-                hc.Buttons(($"{h.Name} einblenden", () => { _ctl.ShowPort(hh); Rebuild(); }));
-            }
-            AddFull(hc);
-        }
-
         // ----- Laptop (Tongfang) -----
         _laptopState = null;
         if (_ctl.Laptop is TongfangLaptop lap)
@@ -260,6 +230,49 @@ sealed class FanView : FlowLayoutPanel
             AddFull(BuildOasisPanel(link));
         }
 
+        // ----- Lautlos im Leerlauf -----
+        if (_ctl.Calibratable.Any())
+        {
+            AddSection("Lautlos im Leerlauf", Color.FromArgb(129, 140, 248));
+            AddFull(BuildZeroPanel());
+        }
+
+
+        // ----- Erweitert (zugeklappt): leere Anschlüsse, Gruppen, Kalibrierung, Sicherheit -----
+        const string advText = "Erweiterte Einstellungen (leere Anschlüsse, Gruppen, Kalibrierung, Sicherheit)";
+        var fold = Fold.Header(advText, _ctl.Settings.ShowAdvanced, K);
+        AddFull(fold);
+        int advStart = Controls.Count;
+        // ----- Leere / ausgeblendete Anschlüsse -----
+        List<FanController.HiddenPort> hidden;
+        lock (_ctl.HiddenPorts) hidden = _ctl.HiddenPorts.ToList();
+        if (hidden.Count > 0)
+        {
+            AddSection("Leere Anschlüsse", Color.FromArgb(148, 163, 184));
+            var hc = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+            hc.Note($"Ausgeblendet, weil beim Start keine Drehzahl kam: {string.Join(", ", hidden.Select(h => h.Name))}. " +
+                    "Fehlt ein Lüfter (z. B. die Radiator-Lüfter am CPU-Anschluss)? „Prüfen“ dreht alle leeren Anschlüsse kurz hoch " +
+                    "und zeigt die, an denen sich etwas dreht. Lüfter ohne Drehzahlsignal kannst du auch direkt einblenden.");
+            Button? probeBtn = null;
+            hc.Buttons(("Leere Anschlüsse prüfen", async () =>
+            {
+                if (probeBtn != null) { probeBtn.Enabled = false; probeBtn.Text = "Prüfe … (7 s)"; }
+                var found = await _ctl.ProbeHiddenAsync();
+                MessageBox.Show(FindForm(), found.Count > 0
+                        ? "Gefunden und eingeblendet: " + string.Join(", ", found.Select(f => f.Name)) + "\n\nMit „Erkennen“ auf der neuen Karte siehst du, welcher Lüfter es ist."
+                        : "An keinem leeren Anschluss hat sich etwas gedreht (oder die Lüfter melden keine Drehzahl). Du kannst einen Anschluss trotzdem einblenden.",
+                    "Leere Anschlüsse", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Rebuild();
+            }));
+            probeBtn = hc.Controls.OfType<Button>().LastOrDefault();
+            foreach (var h in hidden)
+            {
+                var hh = h;
+                hc.Buttons(($"{h.Name} einblenden", () => { _ctl.ShowPort(hh); Rebuild(); }));
+            }
+            AddFull(hc);
+        }
+
         // ----- Gruppen -----
         if (_ctl.Groupable.Count() >= 2)
         {
@@ -275,13 +288,13 @@ sealed class FanView : FlowLayoutPanel
             _calib = new CalibrationPanel(_ctl, () => BeginInvoke(Rebuild)) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
             AddFull(_calib);
 
-            AddSection("Lautlos im Leerlauf", Color.FromArgb(129, 140, 248));
-            AddFull(BuildZeroPanel());
         }
-
         // ----- Sicherheit (optional) -----
         AddSection("Sicherheit (optional)", Theme.Hot);
         AddFull(BuildSafetyPanel());
+
+        Fold.Bind(fold, advText, Controls.Cast<Control>().Skip(advStart).ToList(), _ctl.Settings.ShowAdvanced,
+            v => { _ctl.Settings.ShowAdvanced = v; _ctl.Save(); });
 
         ApplyCustomMode();
         ResizeFullWidth();
