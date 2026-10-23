@@ -501,6 +501,8 @@ sealed class FanChannel
     public float CalPct;
     /// Kalibrierung: zuletzt gemessene Leistung, bei der er noch lief
     public float CalLastRun;
+    /// Drehzahl beim Start von Toast Temperatur (stand der Lüfter da schon, ist der „Ausgangszustand“ kein echter BIOS-Zustand)
+    public float? InitRpm;
     /// Betrieb: Takte, in denen der Lüfter trotz Leistung stand (lernt die Untergrenze nach)
     public int LowStallTicks;
     public string? CalNote;
@@ -729,6 +731,7 @@ sealed class FanController
             Control = sensor.Control,
             ControlSensor = sensor,
             Rpm = rpm,
+            InitRpm = rpm?.Value,
             Id = id,
             DefaultName = defName,
             HardwareName = top.Name,
@@ -1361,7 +1364,19 @@ sealed class FanController
     {
         lock (_lock)
         {
-            foreach (var ch in Channels) SafeDefault(ch);
+            foreach (var ch in Channels)
+            {
+                SafeDefault(ch);
+                // „Zurück ans BIOS“ stellt den Zustand vom Programmstart wieder her. Stand der Lüfter damals schon
+                // (z. B. von einem früheren Lauf im Leerlauf angehalten), wäre das wieder „aus“ – dann lieber eine
+                // sichere feste Leistung, bis das BIOS nach dem nächsten Neustart wieder selbst übernimmt.
+                if (!ch.IsGpu && ch.Od8 == null && ch.Ext == null && ch.Control != null && !ch.Cfg.NoTachSignal
+                    && ch.InitRpm is float ir && ir < 100)
+                {
+                    float safe = ch.Kind == FanKind.Pump ? 100f : Math.Max(50f, (ch.Cfg.StartPercent ?? 35f) + 15f);
+                    try { ch.Control.SetSoftware(safe); } catch { }
+                }
+            }
             try { Laptop?.Restore(); } catch { }
             try { Uniwill?.Release(); } catch { }
             _s.Save();

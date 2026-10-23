@@ -1,3 +1,3 @@
-## Neu in 2.15.4
+## Neu in 2.15.5
 
-- Nollie mit neuer Firmware (OS2): Toast Temperatur liest beim Start einmal Firmware-Version und die im Nollie gespeicherten Effekt-Einstellungen aus und schreibt sie ins RGB-Protokoll (nur lesen, es wird nichts verändert). Vorbereitung dafür, die eingebauten Nollie-Effekte und den Nollie-Speicher direkt aus Toast Temperatur zu nutzen.
+- **Sicherheit beim Beenden/Update/Energiesparmodus:** „Zurück ans BIOS“ stellt den Zustand vom Programmstart wieder her. Stand ein Lüfter damals schon (z. B. weil ein früherer Lauf ihn im Leerlauf angehalten hatte), wäre er danach wieder aus. In diesem Fall bekommt er jetzt stattdessen eine sichere feste Leistung (mind. 50 %, Pumpen 100 %), bis das BIOS nach dem nächsten Neustart wieder selbst übernimmt.
