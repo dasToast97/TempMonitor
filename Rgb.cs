@@ -1896,7 +1896,7 @@ static class RgbRivals
         ("PolyChromeRGB", "ASRock Polychrome RGB"), ("ASRPolychromeRGB", "ASRock Polychrome RGB"), ("AsrPolychromeSync", "ASRock Polychrome RGB"),
         ("iCUE", "Corsair iCUE"), ("lghub", "Logitech G HUB"), ("lghub_agent", "Logitech G HUB"),
         ("ArmouryCrate", "ASUS Armoury Crate"), ("LightingService", "ASUS Aura"), ("MysticLight", "MSI Mystic Light"),
-        ("SignalRgb", "SignalRGB"), ("NZXT CAM", "NZXT CAM"), ("SteelSeriesGG", "SteelSeries GG"),
+        ("SignalRgb", "SignalRGB"), ("NollieRGB", "NollieRGB"), ("Nollie", "NollieRGB"), ("NZXT CAM", "NZXT CAM"), ("SteelSeriesGG", "SteelSeries GG"),
     };
 
     public static List<string> Running()

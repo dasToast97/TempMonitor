@@ -385,6 +385,9 @@ sealed class MainForm : Form
         base.OnLoad(e);
         if (_loaded) return;   // kann beim Start mit /tray früh aufgerufen werden
         _loaded = true;
+        // RGB sofort starten (vor den Sensoren, die einige Sekunden brauchen) – damit die Beleuchtung nach dem
+        // Hochfahren so früh wie möglich den eigenen Effekt zeigt
+        StartRgb();
         try
         {
             Program.Step("Sensoren öffnen");
@@ -493,7 +496,6 @@ sealed class MainForm : Form
             _analysis = null;
             ErrorLog.Write("Analyse", ex);
         }
-        StartRgb();
         ApplyOverlay();
 
         UpdateTrayMenu();
