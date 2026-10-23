@@ -125,9 +125,28 @@ static class OpenRgbManager
     {
         try
         {
-            if (_proc is { HasExited: false } || RunningElsewhere()) return;
+            if (_proc is { HasExited: false }) return;
             var exe = ExePath;
             if (exe == null) return;
+            // Von einem früheren Toast Temperatur übrig gebliebenes OpenRGB (z. B. nach Absturz oder Energiesparmodus)
+            // kennt oft die USB-Geräte nicht mehr -> beenden und frisch starten. Fremd gestartetes OpenRGB bleibt unangetastet.
+            foreach (var p in Process.GetProcessesByName("OpenRGB"))
+            {
+                using (p)
+                {
+                    try
+                    {
+                        if (string.Equals(p.MainModule?.FileName, exe, StringComparison.OrdinalIgnoreCase))
+                        {
+                            p.Kill(entireProcessTree: true);
+                            p.WaitForExit(3000);
+                            RgbSettings.Log("Altes OpenRGB beendet (neu starten)");
+                        }
+                    }
+                    catch { }
+                }
+            }
+            if (RunningElsewhere()) return;
             _proc = Process.Start(new ProcessStartInfo(exe, "--server --startminimized")
             {
                 UseShellExecute = false,

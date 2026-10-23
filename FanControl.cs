@@ -202,6 +202,9 @@ sealed class FanSettings
     public List<FanGroup> Groups { get; set; } = new();
     /// Anschlüsse, die trotz fehlender Drehzahl angezeigt werden sollen
     public List<string> ShowPorts { get; set; } = new();
+    /// Anschlüsse, an denen schon einmal ein Lüfter lief – bleiben sichtbar, auch wenn er beim Start gerade steht
+    /// (z. B. im Leerlauf angehalten, Energiesparmodus, Absturz)
+    public List<string> KnownPorts { get; set; } = new();
     /// Reiter Lüfter: erweiterte Einstellungen aufgeklappt
     public bool ShowAdvanced { get; set; }
     /// Zusätzliche Sicherung: Anschlüsse (stabiler Schlüssel), an denen eine Pumpe hängt – eine Pumpe darf nie als Lüfter behandelt werden
@@ -637,6 +640,7 @@ sealed class FanController
     {
         bool gpu = IsGpu(top.HardwareType);
         var fans = hw.Sensors.Where(s => s.SensorType == SensorType.Fan).ToList();
+        bool knownChanged = false;
 
         foreach (var sensor in hw.Sensors.Where(s => s.SensorType == SensorType.Control && s.Control != null))
         {
@@ -646,8 +650,12 @@ sealed class FanController
 
             // Nicht angeschlossen: Mainboard-Anschluss ohne Drehzahl.
             // GPU-Lüfter bleiben immer, da sie im Leerlauf oft absichtlich stehen.
-            bool manual = !gpu && _s.ShowPorts.Contains(sensor.Control!.Identifier.ToString());
-            bool connected = gpu || (rpm?.Value ?? 0) > 0 || manual;
+            string pid = sensor.Control!.Identifier.ToString();
+            bool manual = !gpu && _s.ShowPorts.Contains(pid);
+            bool known = !gpu && _s.KnownPorts.Contains(pid);
+            bool spinning = (rpm?.Value ?? 0) > 0;
+            bool connected = gpu || spinning || manual || known;
+            if (!gpu && spinning && !known) { _s.KnownPorts.Add(pid); knownChanged = true; }
             var (t0, s0, r0, b0, f0) = (top, sensor, rpm, baseName, fans);
             var port = new HiddenPort(sensor.Control!.Identifier.ToString(), FriendlyName(rpm?.Name ?? baseName), top.Name,
                 sensor.Control!, rpm, () => AddBoardChannel(t0, s0, r0, b0, false, f0));
@@ -661,8 +669,10 @@ sealed class FanController
             }
 
             AddBoardChannel(top, sensor, rpm, baseName, gpu, fans);
-            if (manual && Channels.LastOrDefault(c => c.Id == port.Id) is FanChannel mc) mc.ManualPort = port;
+            if ((manual || known) && Channels.LastOrDefault(c => c.Id == port.Id) is FanChannel mc) mc.ManualPort = port;
         }
+
+        if (knownChanged) _s.Save();
 
         // Drehzahl ohne Steuerung (z. B. Pumpe an einem festen Anschluss, AIO-Pumpe über USB):
         // trotzdem anzeigen, damit man sie sieht und ein Ausfall auffällt
@@ -783,6 +793,7 @@ sealed class FanController
         lock (_lock)
         {
             _s.ShowPorts.Remove(p.Id);
+            _s.KnownPorts.Remove(p.Id);
             try { ch.Control?.SetDefault(); } catch { }
             Channels.Remove(ch);
             foreach (var g in _s.Groups) g.Members.Remove(ch.Id);

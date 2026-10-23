@@ -385,6 +385,7 @@ sealed class MainForm : Form
         base.OnLoad(e);
         if (_loaded) return;   // kann beim Start mit /tray früh aufgerufen werden
         _loaded = true;
+        Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
         // RGB sofort starten (vor den Sensoren, die einige Sekunden brauchen) – damit die Beleuchtung nach dem
         // Hochfahren so früh wie möglich den eigenen Effekt zeigt
         StartRgb();
@@ -763,6 +764,32 @@ sealed class MainForm : Form
         base.OnFormClosed(e);
     }
 
+    bool _suspended;
+
+    /// Energiesparmodus: vorher alle Lüfter ans BIOS geben (falls einer gerade steht, läuft er nach dem Aufwachen sicher an);
+    /// nach dem Aufwachen Toast Temperatur sauber neu starten – Sensoren, USB-Geräte und OpenRGB sind danach oft „neu“
+    void OnPowerModeChanged(object? sender, Microsoft.Win32.PowerModeChangedEventArgs e)
+    {
+        try
+        {
+            if (e.Mode == Microsoft.Win32.PowerModes.Suspend)
+            {
+                Program.Step("Energiesparmodus – Lüfter ans BIOS");
+                _suspended = true;
+                _fans?.RestoreAll();
+                OpenRgbManager.Stop();
+            }
+            else if (e.Mode == Microsoft.Win32.PowerModes.Resume && _suspended && !_exiting)
+            {
+                _suspended = false;
+                Program.Step("Aufgewacht – starte neu");
+                bool tray = !Visible || WindowState == FormWindowState.Minimized;
+                BeginInvoke(() => RestartApp(tray));
+            }
+        }
+        catch (Exception ex) { ErrorLog.Write("Energiesparmodus", ex); }
+    }
+
     /// Lüfter sofort zurück an BIOS / Treiber geben
     public void EmergencyRestore()
     {
@@ -1033,13 +1060,15 @@ sealed class MainForm : Form
     }
 
     /// Programm neu starten (z. B. nach Treiber-Installation)
-    void RestartApp()
+    void RestartApp() => RestartApp(tray: false);
+
+    void RestartApp(bool tray)
     {
         string exe = Environment.ProcessPath ?? Application.ExecutablePath;
         Process.Start(new ProcessStartInfo
         {
             FileName = "cmd.exe",
-            Arguments = $"/c timeout /t 2 /nobreak >nul & start \"\" \"{exe}\"",
+            Arguments = $"/c timeout /t 2 /nobreak >nul & start \"\" \"{exe}\"{(tray ? " /tray" : "")}",
             CreateNoWindow = true,
             UseShellExecute = false,
             WindowStyle = ProcessWindowStyle.Hidden,
@@ -1050,7 +1079,7 @@ sealed class MainForm : Form
 
     async Task RefreshAsync()
     {
-        if (_busy) return;
+        if (_busy || _suspended) return;
         _busy = true;
         try
         {

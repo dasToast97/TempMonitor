@@ -710,6 +710,21 @@ sealed class RgbService
 
     /// Beim Beenden: eigene Effekte stoppen, das Mainboard übernimmt mit seinen Effekten
     /// OpenRGB starten und danach mehrmals nachsehen, bis sein SDK-Server bereit ist
+    /// Alles neu suchen: auch OpenRGB neu starten (findet dann z. B. Tastatur/Maus nach Energiesparmodus wieder)
+    public void FullRescan()
+    {
+        Task.Run(() =>
+        {
+            if (Settings.OpenRgbAuto == true && OpenRgbManager.Installed)
+            {
+                try { OpenRgb.Dispose(); } catch { }
+                OpenRgbManager.Stop();
+                StartOpenRgb();   // beendet auch ein übrig gebliebenes eigenes OpenRGB
+            }
+            DiscoverOnce();
+        });
+    }
+
     public void StartOpenRgb()
     {
         Task.Run(async () =>
@@ -1033,6 +1048,7 @@ sealed class RgbView : FlowLayoutPanel
         if (rivals.Count > 0)
             top.Note("⚠ Läuft gleichzeitig: " + string.Join(", ", rivals) + ". Diese Programme steuern die Beleuchtung auch und funken dazwischen " +
                      "(Flackern, wilde Farben). Bitte beenden und aus dem Autostart nehmen.", muted: false);
+        top.Buttons(("Geräte neu suchen", () => _svc.FullRescan()));
         Add(top);
 
         if (st.Custom || _svc.Device == null) BuildCustom();
@@ -1083,7 +1099,7 @@ sealed class RgbView : FlowLayoutPanel
         else
             adv.Check("OpenRGB automatisch mitstarten", true, v => { st.OpenRgbAuto = v; st.Save(); if (!v) OpenRgbManager.Stop(); else _svc.StartOpenRgb(); });
         adv.Note("OpenRGB: " + _svc.OpenRgb.Status);
-        adv.Buttons(("Geräte neu suchen", () => _svc.RescanNow()));
+        adv.Buttons(("Geräte neu suchen", () => _svc.FullRescan()));
         Add(adv);
 
         if (_svc.Device is PolychromeUsb board)
