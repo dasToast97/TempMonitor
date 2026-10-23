@@ -433,6 +433,8 @@ sealed class RgbSettings
     public int NightLevel { get; set; } = 20;
     /// Nollie 8: LEDs je Kanal (0 = Kanal aus)
     public List<int> NollieLeds { get; set; } = new() { 30, 30, 30, 30, 30, 30, 30, 30 };
+    /// Nollie-Speicher: was der Nollie ohne Toast Temperatur und beim Hochfahren zeigt
+    public NollieHwSettings NollieHw { get; set; } = new();
     /// Mainboard-Beleuchtung ganz aus (z. B. wenn alle Lüfter am Nollie hängen)
     public bool BoardOff { get; set; }
     /// Reiter RGB: erweiterte Einstellungen aufgeklappt
@@ -869,9 +871,63 @@ sealed class RgbService
     }
 
     /// Jede Sekunde: Zonen im Temperatur-Modus nachführen (nur bei spürbarer Änderung senden)
+    public NollieTarget? MemoryNollie { get { lock (Targets) return Targets.OfType<NollieTarget>().FirstOrDefault(t => t.SupportsMemory); } }
+    string? _nolPending;
+    DateTime _nolPendingSince, _nolChecked;
+    volatile bool _nolWriting;
+    public string NollieStatus { get; private set; } = "";
+
+    /// Nollie-Speicher aktuell halten: geändert und 10 s lang unverändert -> einmal schreiben (nur Unterschiede lösen ein Schreiben aus)
+    void NollieMemoryTick()
+    {
+        var hw = Settings.NollieHw;
+        if (!hw.Enabled || _nolWriting || (DateTime.Now - _nolChecked).TotalSeconds < 3) return;
+        _nolChecked = DateTime.Now;
+        if (MemoryNollie is not NollieTarget nol) return;
+        var cmds = NollieHw.Build(hw, Settings.Effect, Settings.NollieLeds);
+        if (cmds.Count == 0) return;
+        string sig = NollieHw.Signature(cmds);
+        if (sig == hw.LastWritten) { _nolPending = null; return; }
+        if (sig != _nolPending) { _nolPending = sig; _nolPendingSince = DateTime.Now; NollieStatus = "Änderung erkannt – wird gleich in den Nollie geschrieben …"; return; }
+        if ((DateTime.Now - _nolPendingSince).TotalSeconds < 10) return;
+        WriteNollie(nol, cmds, sig);
+    }
+
+    /// Sofort schreiben (Knopf)
+    public void WriteNollieNow()
+    {
+        if (MemoryNollie is not NollieTarget nol) { NollieStatus = "Kein Nollie mit neuer Firmware gefunden."; return; }
+        var cmds = NollieHw.Build(Settings.NollieHw, Settings.Effect, Settings.NollieLeds);
+        if (cmds.Count == 0) { NollieStatus = "Kein Kanal hat LEDs – bitte LED-Zahlen eintragen."; return; }
+        WriteNollie(nol, cmds, NollieHw.Signature(cmds));
+    }
+
+    void WriteNollie(NollieTarget nol, List<byte[]> cmds, string sig)
+    {
+        _nolWriting = true;
+        Task.Run(() =>
+        {
+            try
+            {
+                bool ok = nol.WriteMemory(cmds);
+                if (ok)
+                {
+                    Settings.NollieHw.LastWritten = sig;
+                    Settings.Save();
+                    NollieStatus = $"Im Nollie gespeichert ({DateTime.Now:HH:mm:ss}).";
+                    RgbSettings.Log($"Nollie-Speicher geschrieben ({cmds.Count} Befehle): {NollieHw.Describe(Settings.NollieHw, Settings.Effect)}");
+                }
+                else NollieStatus = "Schreiben fehlgeschlagen – Details im RGB-Protokoll.";
+            }
+            catch (Exception ex) { NollieStatus = "Fehler: " + ex.Message; RgbSettings.Log("Nollie-Speicher: " + ex.Message); }
+            finally { _nolPending = null; _nolWriting = false; }
+        });
+    }
+
     public void TickTemperature(bool force = false)
     {
         try { UpdateOverlays(); } catch (Exception ex) { RgbSettings.Log("Warnlicht: " + ex.Message); }
+        try { NollieMemoryTick(); } catch (Exception ex) { RgbSettings.Log("Nollie-Speicher: " + ex.Message); }
         if ((Settings.Custom && !BoardNative) || Device == null || _boardAlarm) return;
         if (_keys()?.Value(Settings.TempSource) is not float t) return;
         var col = Dim(TempColor(t), NightFactor);
@@ -1054,7 +1110,104 @@ sealed class RgbView : FlowLayoutPanel
         if (st.Custom || _svc.Device == null) BuildCustom();
         if (!st.Custom && _svc.Device != null) BuildHardware();
         BuildExtras();
+        BuildNollieMemory(targets);
         BuildAdvanced(targets);
+    }
+
+    /// Nollie-Speicher: Beleuchtung im Nollie ablegen (läuft beim Hochfahren und ohne Toast Temperatur)
+    void BuildNollieMemory(List<IRgbTarget> targets)
+    {
+        var nol = targets.OfType<NollieTarget>().FirstOrDefault();
+        if (nol == null) return;
+        var st = _svc.Settings;
+        var hw = st.NollieHw;
+        Add(new SectionHeader("Nollie-Speicher – beim Hochfahren & ohne Toast Temperatur", Theme.Muted) { Height = S(34), Margin = new Padding(S(6), S(10), S(6), S(2)) });
+        var c = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+        if (!nol.SupportsMemory)
+        {
+            c.Note("Dieser Nollie hat noch die alte Firmware. Zum Speichern einmal mit NollieRGB (nolliergb.com) auf die neue Firmware aktualisieren.", muted: false);
+            Add(c);
+            return;
+        }
+        void Changed() { st.Save(); RebuildSoon(); }
+        c.Check("Beleuchtung im Nollie speichern (läuft dann auch beim Hochfahren, im Energiesparmodus und ohne Toast Temperatur)", hw.Enabled,
+            v => { hw.Enabled = v; if (v) hw.LastWritten = ""; Changed(); });
+        if (hw.Enabled)
+        {
+            var src = c.Combo("Ohne Toast Temperatur:", new[] { "Passend zu meinem Effekt (automatisch)", "Eigener Nollie-Effekt", "Aus" },
+                Math.Clamp(hw.Source, 0, 2), i => { hw.Source = i; Changed(); });
+            src.Width = S(300);
+            if (hw.Source == 1)
+            {
+                c.Check("Jeder Kanal eigener Effekt (wie die Canvas in NollieRGB)", hw.PerChannel, v => { hw.PerChannel = v; Changed(); });
+                if (!hw.PerChannel) FxEditor(c, "", hw.All, Changed);
+                else
+                    for (int ch = 0; ch < NollieTarget.Channels; ch++)
+                        if (ch < st.NollieLeds.Count && st.NollieLeds[ch] > 0) FxEditor(c, $"Kanal {ch + 1}: ", hw.For(ch), Changed);
+            }
+            c.Space(6);
+            var boot = c.Combo("Beim Einschalten:", new[] { "Kein Start-Effekt" }.Concat(NollieHw.BootNames).ToArray(),
+                Math.Clamp(hw.BootEffect + 1, 0, NollieHw.BootNames.Length), i => { hw.BootEffect = i - 1; Changed(); });
+            boot.Width = S(220);
+            if (hw.BootEffect >= 0)
+            {
+                c.Numbers(("Tempo", (float)hw.BootStep, 1, 10, "", (Action<float>)(v => { hw.BootStep = (int)v; st.Save(); })));
+                ColorButtons(c, ("Farbe", hw.BootColor, v => hw.BootColor = v));
+            }
+            int[] idles = { 0, 5, 10, 30, 60 };
+            c.Combo("Nollie übernimmt nach:", new[] { "ca. 3 s (Standard)", "5 s", "10 s", "30 s", "60 s" },
+                Math.Max(0, Array.IndexOf(idles, hw.IdleSeconds)), i => { hw.IdleSeconds = idles[i]; st.Save(); });
+            c.Note(NollieHw.Describe(hw, st.Effect), muted: false);
+            var status = c.Note(_svc.NollieStatus.Length > 0 ? _svc.NollieStatus
+                : hw.LastWritten.Length > 0 ? "Gespeicherter Stand ist aktuell." : "Wird nach der ersten Änderung bzw. in ca. 10 s gespeichert.");
+            c.Buttons(("Jetzt in den Nollie schreiben", () => { _svc.WriteNollieNow(); status.Text = "Wird geschrieben …"; }));
+            c.Note("Geschrieben wird nur bei Änderungen (schont den Speicher). Firmware und Bootloader werden nie angefasst.");
+        }
+        else c.Note(NollieHw.Describe(hw, st.Effect));
+        Add(c);
+    }
+
+    void FxEditor(SettingsCard c, string prefix, NollieFx f, Action changed)
+    {
+        var st = _svc.Settings;
+        var box = c.Combo(prefix + "Nollie-Effekt:", NollieHw.EffectNames, Math.Clamp(f.Effect, 0, NollieHw.EffectNames.Length - 1),
+            i => { f.Effect = i; changed(); });
+        box.Width = S(220);
+        var u = NollieHw.Uses(f.Effect);
+        if (f.Effect == 0) return;
+        var nums = new List<(string, float, int, int, string, Action<float>)>
+        {
+            ("      Helligkeit", f.Brightness, 0, 100, "%", v => { f.Brightness = (int)v; st.Save(); }),
+        };
+        if (u.Step) nums.Add(("Tempo", f.Step, 1, 10, "", v => { f.Step = (int)v; st.Save(); }));
+        if (u.Size) nums.Add(("Größe", f.Size, 0, 50, "", v => { f.Size = (int)v; st.Save(); }));
+        if (u.Delay) nums.Add(("Verzögerung", f.Delay, 0, 8, "", v => { f.Delay = (int)v; st.Save(); }));
+        c.Numbers(nums.ToArray());
+        var cols = new List<(string, int, Action<int>)>();
+        if (u.Colors1) cols.Add(("Farbe 1", f.Color1, v => f.Color1 = v));
+        if (u.Color2) cols.Add(("Farbe 2", f.Color2, v => f.Color2 = v));
+        if (u.Color3) cols.Add(("Farbe 3", f.Color3, v => f.Color3 = v));
+        if (cols.Count > 0) ColorButtons(c, cols.ToArray());
+    }
+
+    void ColorButtons(SettingsCard c, params (string Label, int Value, Action<int> Set)[] items)
+    {
+        var st = _svc.Settings;
+        c.Buttons(items.Select(it => (it.Label, (Action)(() =>
+        {
+            using var dlg = new ColorDialog { Color = Color.FromArgb(it.Value), FullOpen = true };
+            if (dlg.ShowDialog(FindForm()) != DialogResult.OK) return;
+            it.Set(dlg.Color.ToArgb());
+            st.Save();
+            RebuildSoon();
+        }))).ToArray());
+        var btns = c.Controls.OfType<Button>().TakeLast(items.Length).ToList();
+        for (int i = 0; i < btns.Count; i++)
+        {
+            var col = Color.FromArgb(items[i].Value);
+            btns[i].BackColor = col;
+            btns[i].ForeColor = col.GetBrightness() > 0.55f ? Color.Black : Color.White;
+        }
     }
 
     /// Selten gebraucht: Steuerungsart, Rot/Grün-Tausch, OpenRGB, Mainboard-Anschlüsse

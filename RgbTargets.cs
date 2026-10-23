@@ -586,7 +586,7 @@ sealed class NollieTarget : IRgbTarget, IDisposable
                 if (r.Value.OutLength < 65) { RgbSettings.Log($"{name}: Bericht zu klein ({r.Value.OutLength})"); r.Value.Handle.Dispose(); continue; }
                 RgbSettings.Log($"{name} gefunden ({vid:X4}:{pid:X4}, Out {r.Value.OutLength}) – wird direkt gesteuert");
                 if (vid == 0x16D5) { string path = r.Value.Path; Task.Run(() => LogInfo(path, name)); }
-                return new NollieTarget(r.Value.Handle, r.Value.OutLength, name, leds);
+                return new NollieTarget(r.Value.Handle, r.Value.OutLength, name, leds) { SupportsMemory = vid == 0x16D5 };
             }
         }
         catch (Exception ex) { RgbSettings.Log("Nollie: " + ex.Message); }
@@ -637,6 +637,22 @@ sealed class NollieTarget : IRgbTarget, IDisposable
         catch (Exception ex) { RgbSettings.Log($"{model}: Abfrage fehlgeschlagen: {ex.Message}"); }
     }
 
+    /// Effekt-Einstellungen in den Nollie schreiben (je Befehl ein Bericht, kurze Pausen – der Nollie speichert jeden Befehl)
+    public bool WriteMemory(List<byte[]> cmds)
+    {
+        if (!SupportsMemory) return false;
+        bool ok = true;
+        foreach (var c in cmds)
+        {
+            var buf = new byte[_out];
+            Array.Copy(c, 0, buf, 1, Math.Min(c.Length, _out - 1));
+            ok &= Send(buf);
+            Thread.Sleep(40);
+        }
+        _last = null;   // danach wieder alles live senden
+        return ok;
+    }
+
     /// Kanäle mit LEDs (0 = Kanal aus)
     int[] Active()
     {
@@ -660,9 +676,15 @@ sealed class NollieTarget : IRgbTarget, IDisposable
 
     public void Begin() { _last = null; _fails = 0; }
 
+    readonly object _io = new();
+    /// Neue Firmware (OS2): kann Effekte im Nollie speichern
+    public bool SupportsMemory { get; private set; }
+
     bool Send(byte[] buf)
     {
-        if (WriteFile(_h, buf, buf.Length, out _, IntPtr.Zero)) { _fails = 0; return true; }
+        bool ok;
+        lock (_io) ok = WriteFile(_h, buf, buf.Length, out _, IntPtr.Zero);
+        if (ok) { _fails = 0; return true; }
         if (++_fails == 1) RgbSettings.Log($"{_model}: Senden fehlgeschlagen (Fehler {Marshal.GetLastWin32Error()})");
         return false;
     }
