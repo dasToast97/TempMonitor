@@ -788,6 +788,9 @@ sealed class RgbService
         EffectType.Wave or EffectType.RainbowWave => (0x07, "Welle"),
         EffectType.Comet => (0x0B, "Scannen"),
         EffectType.Fire => (0x0C, "Neon"),
+        EffectType.LavaLamp or EffectType.Tide or EffectType.Aurora => (0x07, "Welle"),
+        EffectType.Fireflies => (0x05, "Zufall"),
+        EffectType.Ember => (0x02, "Atmen"),
         EffectType.TempWave => ((byte)RgbSettings.TempMode, "Temperatur als Farbe"),
         _ => (0x01, "Statisch"),
     };
@@ -1187,6 +1190,11 @@ sealed class RgbView : FlowLayoutPanel
             EffectType.Sparkle => "Zufällige LEDs funkeln auf. Letzte Farbe = Hintergrund (ab 3 Farben).",
             EffectType.ColorCycle => "Alle LEDs wechseln gemeinsam durch die Farben.",
             EffectType.Fire => "Flackern wie Feuer aus den gewählten Farben.",
+            EffectType.LavaLamp => "Große, weiche Farbblasen treiben langsam hin und her und verschmelzen ineinander.",
+            EffectType.Tide => "Wie Wellen am Strand: ein ruhiges Anschwellen läuft durch, mit hellerem Wellenkamm (Farbe 1 = Tiefe, letzte = Gischt).",
+            EffectType.Fireflies => "Einzelne weiche Lichter glimmen langsam auf, treiben ein Stück und verlöschen wieder. Letzte Farbe = Hintergrund (ab 3 Farben).",
+            EffectType.Aurora => "Mehrere langsame Lichtschleier überlagern sich wie ein Polarlicht – Farben und Helligkeit wandern sanft.",
+            EffectType.Ember => "Warme Glut, die ganz ruhig an- und abschwillt – jede LED ein wenig anders. Schön mit „Dunkelste Stufe“ 20–40 %.",
             _ => "Farbe zeigt die Temperatur (blau → rot), dazu eine sanfte Welle.",
         });
         Add(c);
@@ -1339,7 +1347,8 @@ sealed class RgbView : FlowLayoutPanel
 // ===========================================================================
 // Eigene Effekte (laufen in Toast Temperatur, jede LED einzeln)
 // ===========================================================================
-enum EffectType { Breathing, Wave, RainbowWave, Gradient, Comet, Sparkle, ColorCycle, Fire, TempWave }
+// Neue Effekte immer hinten anhängen (gespeichert wird die Nummer)
+enum EffectType { Breathing, Wave, RainbowWave, Gradient, Comet, Sparkle, ColorCycle, Fire, TempWave, LavaLamp, Tide, Fireflies, Aurora, Ember }
 
 sealed class CustomEffect
 {
@@ -1378,6 +1387,11 @@ sealed class CustomEffect
         EffectType.Sparkle => "Funkeln",
         EffectType.ColorCycle => "Farbwechsel",
         EffectType.Fire => "Feuer",
+        EffectType.LavaLamp => "Lavalampe (ruhig)",
+        EffectType.Tide => "Meeresrauschen (ruhig)",
+        EffectType.Fireflies => "Glühwürmchen (ruhig)",
+        EffectType.Aurora => "Nordlicht-Schleier (ruhig)",
+        EffectType.Ember => "Glut (ruhig)",
         _ => "Temperatur-Welle",
     };
 
@@ -1395,6 +1409,11 @@ sealed class CustomEffect
         ("Sternenhimmel", new() { Type = EffectType.Sparkle, Colors = { C(255, 255, 255), C(120, 160, 255), C(10, 10, 40) }, Speed = 50 }),
         ("Farbwechsel", new() { Type = EffectType.ColorCycle, Colors = { C(255, 0, 0), C(0, 255, 0), C(0, 80, 255) }, Speed = 30 }),
         ("Temperatur-Welle", new() { Type = EffectType.TempWave, Speed = 30, Width = 25 }),
+        ("Lavalampe", new() { Type = EffectType.LavaLamp, Colors = { C(255, 40, 120), C(255, 120, 0), C(120, 0, 255) }, Speed = 30, Width = 25, MinLevel = 15 }),
+        ("Meeresrauschen", new() { Type = EffectType.Tide, Colors = { C(0, 20, 120), C(0, 140, 255), C(150, 240, 255) }, Speed = 30, Width = 30, MinLevel = 10 }),
+        ("Glühwürmchen", new() { Type = EffectType.Fireflies, Colors = { C(200, 255, 60), C(255, 200, 40), C(0, 30, 10) }, Speed = 35, Width = 3 }),
+        ("Nordlicht-Schleier", new() { Type = EffectType.Aurora, Colors = { C(0, 255, 140), C(0, 160, 255), C(160, 40, 255) }, Speed = 30, Width = 30, MinLevel = 8 }),
+        ("Glut", new() { Type = EffectType.Ember, Colors = { C(255, 70, 0), C(255, 25, 0), C(255, 140, 20) }, Speed = 30, Width = 10, MinLevel = 25 }),
     };
 }
 
@@ -1544,6 +1563,88 @@ static class EffectRenderer
                     float noise = (float)(Math.Sin(i * 1.7 + t * (3 + speed * 9)) * 0.5 + Math.Sin(i * 0.6 - t * (2 + speed * 5)) * 0.3
                                           + Rnd.NextDouble() * 0.4);
                     c = Scale(Palette(pal, Math.Clamp(noise * 0.5f + 0.4f, 0, 0.999f), cyclic: false), Level(0.3f + noise * 0.6f));
+                    break;
+                }
+                case EffectType.LavaLamp:
+                {
+                    // Drei große Blasen mit unterschiedlichen, sehr langsamen Bahnen; ihre Mischung ergibt Farbe und Helligkeit
+                    float tt = (float)t * (0.03f + speed * 0.25f);
+                    float x = pos * 0.6f;
+                    float a1 = 0.5f + 0.5f * MathF.Sin(x * 2.1f + tt * 1.00f + zone * 0.7f);
+                    float a2 = 0.5f + 0.5f * MathF.Sin(x * 1.3f - tt * 0.73f + 2.0f + zone * 1.3f);
+                    float a3 = 0.5f + 0.5f * MathF.Sin(x * 3.2f + tt * 0.51f + 4.1f);
+                    float sum = a1 + a2 + a3;
+                    Color col = pal.Count == 1 ? pal[0]
+                        : Lerp(Lerp(pal[0], pal[1 % pal.Count], a2 / Math.Max(0.01f, a1 + a2)), pal[^1], a3 * a3 * 0.8f);
+                    float lvl = Math.Clamp((sum - 0.6f) / 1.8f, 0, 1);
+                    c = Scale(col, Level((1 - MathF.Cos(lvl * MathF.PI)) / 2));
+                    break;
+                }
+                case EffectType.Tide:
+                {
+                    // Lange, ruhige Dünung: Phase läuft langsam, der Kamm ist hell und etwas weißlich
+                    float tt = (float)t * (0.05f + speed * 0.6f);
+                    float ph = pos * 0.5f - dir * tt;
+                    float swell = 0.5f + 0.5f * MathF.Sin(ph * MathF.PI * 2);
+                    float swell2 = 0.5f + 0.5f * MathF.Sin(ph * MathF.PI * 1.3f + 1.7f);
+                    float lvl = swell * 0.75f + swell2 * 0.25f;
+                    lvl = (1 - MathF.Cos(lvl * MathF.PI)) / 2;
+                    var deep = pal[0];
+                    var crest = pal[^1];
+                    var mid = pal.Count > 2 ? pal[pal.Count / 2] : Lerp(deep, crest, 0.5f);
+                    Color col = lvl < 0.6f ? Lerp(deep, mid, lvl / 0.6f) : Lerp(mid, crest, (lvl - 0.6f) / 0.4f);
+                    c = Scale(col, Level(0.15f + 0.85f * lvl));
+                    break;
+                }
+                case EffectType.Fireflies:
+                {
+                    // Feste Anzahl Glühwürmchen je Zone; jedes hat eigene Bahn, eigenes Tempo und eigenen Leuchtrhythmus
+                    var bg = Scale(pal.Count > 2 ? pal[^1] : Color.FromArgb(0, 20, 8), Math.Max(min, 0.04f));
+                    int flies = Math.Max(1, n / 7);
+                    float glowW = Math.Max(0.8f, width / 2f);
+                    float tt = (float)t * (0.15f + speed * 0.8f);
+                    float best = 0; Color fc = pal[0];
+                    for (int j = 0; j < flies; j++)
+                    {
+                        float seed = j * 12.9898f + zone * 78.233f;
+                        float h = MathF.Abs(MathF.Sin(seed) * 43758.5453f) % 1f;
+                        float center = (h + 0.18f * MathF.Sin(tt * (0.11f + h * 0.07f) + seed)) % 1f;
+                        if (center < 0) center += 1;
+                        float cx = center * (n - 1);
+                        float d = (i - cx) / glowW;
+                        float glow = MathF.Exp(-d * d);
+                        float pulse = MathF.Sin(tt * (0.35f + h * 0.3f) + seed * 3f);
+                        pulse = pulse > 0 ? MathF.Pow(pulse, 3) : 0;   // lange Pausen, sanftes Aufglimmen
+                        float v = glow * pulse;
+                        if (v > best) { best = v; fc = pal[j % Math.Max(1, pal.Count > 2 ? pal.Count - 1 : pal.Count)]; }
+                    }
+                    c = Lerp(bg, fc, best);
+                    break;
+                }
+                case EffectType.Aurora:
+                {
+                    // Überlagerte, langsam wandernde Schleier: Farbe wandert entlang der Palette, Helligkeit in weichen Bändern
+                    float tt = (float)t * (0.04f + speed * 0.35f);
+                    float x = pos;
+                    float band1 = 0.5f + 0.5f * MathF.Sin(x * 2.4f - dir * tt * 1.3f + zone);
+                    float band2 = 0.5f + 0.5f * MathF.Sin(x * 4.1f + dir * tt * 0.9f + 1.9f);
+                    float band3 = 0.5f + 0.5f * MathF.Sin(x * 0.9f - tt * 0.4f + 3.3f);
+                    float lvl = band1 * 0.5f + band2 * 0.3f + band3 * 0.2f;
+                    lvl = MathF.Pow(lvl, 1.6f);
+                    var col = Palette(pal, x * 0.25f + band3 * 0.5f - tt * 0.1f);
+                    c = Scale(col, Level(lvl));
+                    break;
+                }
+                case EffectType.Ember:
+                {
+                    // Glut: jede LED mit eigener, sehr langsamer Atmung; selten ein leichtes Aufflackern
+                    float tt = (float)t * (0.1f + speed * 0.7f);
+                    float seed = (i * 0.618f + zone * 0.31f) * MathF.PI * 2;
+                    float lvl = 0.55f + 0.25f * MathF.Sin(tt * 0.9f + seed) + 0.15f * MathF.Sin(tt * 0.37f + seed * 1.7f)
+                                + 0.05f * MathF.Sin(tt * 2.3f + seed * 2.9f);
+                    lvl = Math.Clamp(lvl, 0, 1);
+                    var col = Palette(pal, 0.5f + 0.45f * MathF.Sin(tt * 0.2f + seed), cyclic: false);
+                    c = Scale(col, Level(lvl * lvl));
                     break;
                 }
                 default:   // Temperatur-Welle

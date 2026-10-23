@@ -1,8 +1,11 @@
-## Neu in 2.14.0
+## Neu in 2.15.0
 
-- **Installationsordner wählbar** – das Setup fragt jetzt nach dem Ordner. Updates landen automatisch wieder im gewählten Ordner.
-- **Speicherorte einstellbar** – Einstellungen → Erweiterte Einstellungen → *Speicherorte*:
-  - **Aufzeichnungen (CSV)** – eigener Ordner; bisherige Aufzeichnungen können mit verschoben werden.
-  - **Diagnose-Paket & Sicherungen** – statt Desktop/Dokumente ein eigener Ordner.
-  - **Einstellungen & Protokolle** – an einen anderen Ort kopieren (Neustart); ist der Ort später nicht erreichbar, wird automatisch der Standard genommen.
-- Außerdem aus 2.13: Mainboard-Beleuchtung ausschaltbar, aufgeräumte Reiter mit zugeklappten „Erweiterten Einstellungen“.
+**5 neue ruhige RGB-Effekte** (Reiter RGB → Effekt bzw. Voreinstellung):
+
+- **Lavalampe** – große, weiche Farbblasen treiben langsam hin und her und verschmelzen.
+- **Meeresrauschen** – ruhige Dünung wie Wellen am Strand, mit hellerem Wellenkamm.
+- **Glühwürmchen** – einzelne weiche Lichter glimmen auf, treiben ein Stück und verlöschen.
+- **Nordlicht-Schleier** – mehrere langsame Lichtschleier überlagern sich wie ein Polarlicht.
+- **Glut** – warme Glut, die ganz ruhig an- und abschwillt, jede LED etwas anders.
+
+Alle mit Farben, Tempo, Helligkeit, „Dunkelste Stufe“ und Breite einstellbar.
