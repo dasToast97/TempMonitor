@@ -445,6 +445,8 @@ sealed class RgbSettings
     public int NightLevel { get; set; } = 20;
     /// Nollie 8: LEDs je Kanal (0 = Kanal aus)
     public List<int> NollieLeds { get; set; } = new() { 30, 30, 30, 30, 30, 30, 30, 30 };
+    /// Eigene Namen für Kanäle/Zonen (Schlüssel wie bei den Gruppen, z. B. „nollie8#ch3“)
+    public Dictionary<string, string> Names { get; set; } = new();
     /// Gruppen: Kanäle/Zonen mit eigenem Effekt
     public List<RgbGroup> Groups { get; set; } = new();
     /// Nollie-Speicher: was der Nollie ohne Toast Temperatur und beim Hochfahren zeigt
@@ -1081,7 +1083,8 @@ sealed class RgbView : FlowLayoutPanel
                     for (int c = row * 4; c < row * 4 + 4; c++)
                     {
                         int cc = c;
-                        items.Add(($"{(c % 4 == 0 ? "      " : "")}Kanal {c + 1}", (float)st.NollieLeds[c], 0, NollieTarget.MaxLeds, "",
+                        string nm = st.Names.TryGetValue($"nollie8#ch{c + 1}", out var cn) ? $" ({cn})" : "";
+                        items.Add(($"{(c % 4 == 0 ? "      " : "")}Kanal {c + 1}{nm}", (float)st.NollieLeds[c], 0, NollieTarget.MaxLeds, "",
                             (Action<float>)(v => { st.NollieLeds[cc] = (int)v; st.Save(); })));
                     }
                     top.Numbers(items.ToArray());
@@ -1176,7 +1179,7 @@ sealed class RgbView : FlowLayoutPanel
                 if (!hw.PerChannel) FxEditor(c, "", hw.All, Changed);
                 else
                     for (int ch = 0; ch < NollieTarget.Channels; ch++)
-                        if (ch < st.NollieLeds.Count && st.NollieLeds[ch] > 0) FxEditor(c, $"Kanal {ch + 1}: ", hw.For(ch), Changed);
+                        if (ch < st.NollieLeds.Count && st.NollieLeds[ch] > 0) FxEditor(c, $"Kanal {ch + 1}{(st.Names.TryGetValue($"nollie8#ch{ch + 1}", out var cn) ? " (" + cn + ")" : "")}: ", hw.For(ch), Changed);
             }
             c.Space(6);
             var boot = c.Combo("Beim Einschalten:", new[] { "Kein Start-Effekt" }.Concat(NollieHw.BootNames).ToArray(),
@@ -1471,7 +1474,7 @@ sealed class RgbView : FlowLayoutPanel
         var list = targets.Where(t => t is not PolychromeTarget && _svc.IsEnabled(t)).ToList();
         if (list.Sum(t => t.Segments.Length) < 2 && st.Groups.Count == 0) return;
 
-        string sum = "Zonen & Gruppen – Kanäle einzeln steuern   ·   " + (st.Groups.Count == 0 ? "alles läuft mit dem Haupt-Effekt" : $"{st.Groups.Count} Gruppe(n)");
+        string sum = "Kanäle: Namen & Gruppen (einzeln steuern)   ·   " + (st.Groups.Count == 0 ? "alles läuft mit dem Haupt-Effekt" : $"{st.Groups.Count} Gruppe(n)");
         Folded(sum, st.OpenGroups, v => { st.OpenGroups = v; st.Save(); }, () => BuildGroupAssign(list));
         BuildGroupEditors(list);
     }
@@ -1480,7 +1483,8 @@ sealed class RgbView : FlowLayoutPanel
     {
         var st = _svc.Settings;
         var c = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
-        c.Note("Kanal einer Gruppe zuordnen → die Gruppe bekommt ihren eigenen Effekt (darunter). „Haupt-Effekt“ = nicht gruppiert.");
+        c.Note("Jedem Kanal einen Namen geben (z. B. „Radiator“, „Front oben“) und einer Gruppe zuordnen → jede Gruppe bekommt ihren eigenen Effekt (darunter). " +
+               "„Haupt-Effekt“ = nicht gruppiert.");
         string[] Options() => new[] { "Haupt-Effekt" }.Concat(st.Groups.Select(g => g.Name)).Append("+ neue Gruppe").ToArray();
         foreach (var t in list)
         {
@@ -1489,8 +1493,10 @@ sealed class RgbView : FlowLayoutPanel
             {
                 string key = t.SegmentKey(i);
                 int gi = st.Groups.FindIndex(g => g.Members.Contains(key));
-                string label = $"{t.Name}{(names[i].Length > 0 ? " · " + names[i] : "")} ({t.Segments[i]} LEDs):";
-                var box = c.Combo(label, Options(), gi + 1, sel =>
+                string label = $"{t.Name}{(names[i].Length > 0 ? " · " + names[i] : "")} ({t.Segments[i]} LEDs)";
+                var (_, box) = c.NameCombo(label, 250, st.Names.GetValueOrDefault(key, ""), "Name, z. B. Front oben",
+                    n => { if (n.Length == 0) st.Names.Remove(key); else st.Names[key] = n; st.Save(); RebuildSoon(); },
+                    Options(), gi + 1, sel =>
                 {
                     foreach (var g in st.Groups) g.Members.Remove(key);
                     if (sel == st.Groups.Count + 1)
@@ -1504,7 +1510,6 @@ sealed class RgbView : FlowLayoutPanel
                     st.Save();
                     RebuildSoon();
                 });
-                box.Width = S(170);
             }
         }
         Add(c);
@@ -1533,8 +1538,9 @@ sealed class RgbView : FlowLayoutPanel
         }
     }
 
-    static string DescribeKey(List<IRgbTarget> targets, string key)
+    string DescribeKey(List<IRgbTarget> targets, string key)
     {
+        if (_svc.Settings.Names.TryGetValue(key, out var custom)) return custom;
         foreach (var t in targets)
             for (int i = 0; i < t.Segments.Length; i++)
                 if (t.SegmentKey(i) == key) return t.SegmentNames[i].Length > 0 ? t.SegmentNames[i] : t.Name;

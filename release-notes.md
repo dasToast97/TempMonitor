@@ -1,3 +1,3 @@
-## Neu in 2.17.1
+## Neu in 2.17.2
 
-- **RGB-Reiter übersichtlicher:** Zonen & Gruppen, Warnlicht & Nachtmodus und der Nollie-Speicher sind jetzt aufklappbare Bereiche. Die Kopfzeile zeigt jeweils kurz den aktuellen Stand (z. B. „Nollie-Speicher · an: passend zu deinem Effekt“) – aufklappen nur, wenn man etwas ändern will.
+- **Kanäle benennen:** Im Reiter RGB unter „Kanäle: Namen & Gruppen“ kann jeder Nollie-Kanal und jede Zone einen eigenen Namen bekommen (z. B. „Radiator“, „Front oben“, „Heck“). Die Namen erscheinen überall: bei den Gruppen, den LED-Zahlen und im Nollie-Speicher.

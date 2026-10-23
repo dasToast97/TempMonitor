@@ -506,6 +506,38 @@ sealed class SettingsCard : Panel
         return c;
     }
 
+    /// Eine Zeile: feste Beschriftung, Namensfeld, Auswahl (z. B. Kanal · eigener Name · Gruppe)
+    public (TextBox Name, ComboBox Box) NameCombo(string label, int labelWidth, string name, string placeholder, Action<string> setName,
+        string[] items, int selected, Action<int> set)
+    {
+        var lbl = new Label { Text = label, ForeColor = Theme.Muted, AutoSize = false, AutoEllipsis = true,
+            Location = new Point(S(14), _y + S(4)), Size = new Size(S(labelWidth), S(20)) };
+        Controls.Add(lbl);
+        int x = S(14) + S(labelWidth) + S(8);
+        var tb = new TextBox
+        {
+            Text = name, PlaceholderText = placeholder, BackColor = Theme.CardHero, ForeColor = Theme.Text,
+            BorderStyle = BorderStyle.FixedSingle, Location = new Point(x, _y), Width = S(170),
+        };
+        string last = name;
+        void Commit() { if (tb.Text.Trim() != last) { last = tb.Text.Trim(); setName(last); } }
+        tb.Leave += (_, _) => Commit();
+        tb.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; Commit(); } };
+        Controls.Add(tb);
+        x += tb.Width + S(10);
+        var c = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat,
+            BackColor = Theme.CardHero, ForeColor = Theme.Text, Location = new Point(x, _y), Width = S(170),
+        };
+        c.Items.AddRange(items);
+        c.SelectedIndex = Math.Clamp(selected, 0, items.Length - 1);
+        c.SelectedIndexChanged += (_, _) => set(c.SelectedIndex);
+        Controls.Add(c);
+        Grow(S(34));
+        return (tb, c);
+    }
+
     public void Space(int px) => Grow(S(px));
 }
 
