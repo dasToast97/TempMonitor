@@ -585,11 +585,56 @@ sealed class NollieTarget : IRgbTarget, IDisposable
                 if (r == null) continue;
                 if (r.Value.OutLength < 65) { RgbSettings.Log($"{name}: Bericht zu klein ({r.Value.OutLength})"); r.Value.Handle.Dispose(); continue; }
                 RgbSettings.Log($"{name} gefunden ({vid:X4}:{pid:X4}, Out {r.Value.OutLength}) – wird direkt gesteuert");
+                if (vid == 0x16D5) { string path = r.Value.Path; Task.Run(() => LogInfo(path, name)); }
                 return new NollieTarget(r.Value.Handle, r.Value.OutLength, name, leds);
             }
         }
         catch (Exception ex) { RgbSettings.Log("Nollie: " + ex.Message); }
         return null;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr tmpl);
+
+    /// Nur LESEN (keine Einstellung wird verändert): Firmware, Modus und gespeicherte Effekt-Einstellungen der neuen
+    /// Nollie-Firmware (OS2) abfragen und ins RGB-Protokoll schreiben – Grundlage, um später die eingebauten
+    /// Effekte und den Speicher des Nollie zu nutzen. Befehle wie beim OS2-Protokoll (GET_CONFIG FC, GET_EFFECT F9,
+    /// GET_CORE F5); Bootloader-/Update-Befehle werden nie gesendet.
+    static void LogInfo(string path, string model)
+    {
+        try
+        {
+            Thread.Sleep(1500);
+            using var h = CreateFile(path, 0xC0000000, 0x3, IntPtr.Zero, 3, 0x40000000 /* OVERLAPPED */, IntPtr.Zero);
+            if (h.IsInvalid) { RgbSettings.Log($"{model}: Abfrage nicht möglich (Fehler {Marshal.GetLastWin32Error()})"); return; }
+            using var fs = new FileStream(h, FileAccess.ReadWrite, 1, true);
+            string? Get(string what, params byte[] cmd)
+            {
+                var b = new byte[65];
+                cmd.CopyTo(b, 1);
+                fs.Write(b, 0, b.Length);
+                var r = new byte[65];
+                var t = fs.ReadAsync(r, 0, r.Length);
+                if (!t.Wait(400)) return $"{what}: keine Antwort";
+                int n = t.Result;
+                int len = Math.Min(n, 40);
+                return $"{what}: " + BitConverter.ToString(r, 1, Math.Max(0, len - 1));
+            }
+            var lines = new List<string?>
+            {
+                Get("Version", 0xFC, 0x01),
+                Get("Firmware", 0xFC, 0x02),
+                Get("Modus", 0xF9, 0x01),
+                Get("Effekt Canvas 0", 0xF9, 0x02, 0x00),
+                Get("Canvas-Zahl", 0xF9, 0x04),
+                Get("Start-Canvas-Zahl", 0xF9, 0x05),
+                Get("LED-Zahlen", 0xF9, 0x08),
+                Get("Start-Ablauf", 0xF9, 0x13),
+                Get("Leerlauf-Zeit", 0xF5, 0x16),
+            };
+            RgbSettings.Log($"{model} – Geräte-Infos (nur gelesen): " + string.Join(" | ", lines.Where(x => x != null)));
+        }
+        catch (Exception ex) { RgbSettings.Log($"{model}: Abfrage fehlgeschlagen: {ex.Message}"); }
     }
 
     /// Kanäle mit LEDs (0 = Kanal aus)
