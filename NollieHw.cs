@@ -129,7 +129,7 @@ static class NollieHw
     }
 
     /// Alle Befehle für den gewünschten Stand (Reihenfolge wie NollieRGB: LED-Zahlen, Effekte, Kanal-Zuordnung, Anzahl, Start, Leerlaufzeit)
-    public static List<byte[]> Build(NollieHwSettings s, CustomEffect custom, IReadOnlyList<int> leds)
+    public static List<byte[]> Build(NollieHwSettings s, CustomEffect custom, IReadOnlyList<int> leds, Func<int, CustomEffect>? perChannel = null)
     {
         var cmds = new List<byte[]>();
         var active = Enumerable.Range(0, NollieTarget.Channels).Where(c => c < leds.Count && leds[c] > 0).ToList();
@@ -147,7 +147,15 @@ static class NollieHw
         // Effekte: eine „Canvas“ für alle Kanäle oder je Kanal eine eigene
         var canvases = new List<(List<int> Chans, NollieFx Fx)>();
         if (s.Source == 2) canvases.Add((active, new NollieFx { Effect = 0, Brightness = 0 }));
-        else if (s.Source == 0) canvases.Add((active, FromCustom(custom)));
+        else if (s.Source == 0)
+        {
+            // Automatisch: jeder Kanal wie sein Effekt in Toast Temperatur (Gruppen) – gleiche Effekte teilen sich eine Canvas
+            foreach (var grp in active.GroupBy(ch => Convert.ToHexString(Params(0, FromCustom(perChannel?.Invoke(ch) ?? custom), 0))))
+            {
+                var chans = grp.ToList();
+                canvases.Add((chans, FromCustom(perChannel?.Invoke(chans[0]) ?? custom)));
+            }
+        }
         else if (!s.PerChannel) canvases.Add((active, s.All));
         else foreach (int c in active) canvases.Add((new List<int> { c }, s.For(c)));
         for (int i = 0; i < canvases.Count; i++) cmds.Add(Params(i, canvases[i].Fx, canvases[i].Chans.Count));

@@ -401,6 +401,18 @@ sealed class RgbZoneSettings
     public int Speed { get; set; } = 50;
 }
 
+sealed class RgbGroup
+{
+    public string Name { get; set; } = "Gruppe";
+    /// Abschnitte (Gerät#Kanal) in Reihenfolge
+    public List<string> Members { get; set; } = new();
+    public CustomEffect Effect { get; set; } = new();
+    /// Effekt läuft über alle Mitglieder hinweg (wie ein langer Streifen)
+    public bool Continuous { get; set; } = true;
+    public bool Open { get; set; } = true;
+    [System.Text.Json.Serialization.JsonIgnore] public bool Keep;
+}
+
 sealed class RgbSettings
 {
     public const int TempMode = 100;
@@ -433,6 +445,8 @@ sealed class RgbSettings
     public int NightLevel { get; set; } = 20;
     /// Nollie 8: LEDs je Kanal (0 = Kanal aus)
     public List<int> NollieLeds { get; set; } = new() { 30, 30, 30, 30, 30, 30, 30, 30 };
+    /// Gruppen: Kanäle/Zonen mit eigenem Effekt
+    public List<RgbGroup> Groups { get; set; } = new();
     /// Nollie-Speicher: was der Nollie ohne Toast Temperatur und beim Hochfahren zeigt
     public NollieHwSettings NollieHw { get; set; } = new();
     /// Mainboard-Beleuchtung ganz aus (z. B. wenn alle Lüfter am Nollie hängen)
@@ -884,7 +898,7 @@ sealed class RgbService
         if (!hw.Enabled || _nolWriting || (DateTime.Now - _nolChecked).TotalSeconds < 3) return;
         _nolChecked = DateTime.Now;
         if (MemoryNollie is not NollieTarget nol) return;
-        var cmds = NollieHw.Build(hw, Settings.Effect, Settings.NollieLeds);
+        var cmds = NollieHw.Build(hw, Settings.Effect, Settings.NollieLeds, NollieChannelEffect);
         if (cmds.Count == 0) return;
         string sig = NollieHw.Signature(cmds);
         if (sig == hw.LastWritten) { _nolPending = null; return; }
@@ -893,11 +907,18 @@ sealed class RgbService
         WriteNollie(nol, cmds, sig);
     }
 
+    /// Effekt eines Nollie-Kanals: aus seiner Gruppe, sonst der Haupt-Effekt
+    CustomEffect NollieChannelEffect(int ch)
+    {
+        string key = $"nollie8#ch{ch + 1}";
+        return Settings.Groups.FirstOrDefault(g => g.Members.Contains(key))?.Effect ?? Settings.Effect;
+    }
+
     /// Sofort schreiben (Knopf)
     public void WriteNollieNow()
     {
         if (MemoryNollie is not NollieTarget nol) { NollieStatus = "Kein Nollie mit neuer Firmware gefunden."; return; }
-        var cmds = NollieHw.Build(Settings.NollieHw, Settings.Effect, Settings.NollieLeds);
+        var cmds = NollieHw.Build(Settings.NollieHw, Settings.Effect, Settings.NollieLeds, NollieChannelEffect);
         if (cmds.Count == 0) { NollieStatus = "Kein Kanal hat LEDs – bitte LED-Zahlen eintragen."; return; }
         WriteNollie(nol, cmds, NollieHw.Signature(cmds));
     }
@@ -1107,7 +1128,7 @@ sealed class RgbView : FlowLayoutPanel
         top.Buttons(("Geräte neu suchen", () => _svc.FullRescan()));
         Add(top);
 
-        if (st.Custom || _svc.Device == null) BuildCustom();
+        if (st.Custom || _svc.Device == null) { BuildCustom(); BuildGroups(targets); }
         if (!st.Custom && _svc.Device != null) BuildHardware();
         BuildExtras();
         BuildNollieMemory(targets);
@@ -1325,25 +1346,31 @@ sealed class RgbView : FlowLayoutPanel
         }
     }
 
-    void BuildCustom()
+    void BuildCustom() => BuildCustom(_svc.Settings.Effect, "Haupt-Effekt", e => _svc.Settings.Effect = e, main: true);
+
+    /// Effekt-Einstellungen – für den Haupt-Effekt oder den Effekt einer Gruppe
+    void BuildCustom(CustomEffect fx, string title, Action<CustomEffect> replace, bool main)
     {
         var st = _svc.Settings;
-        var fx = st.Effect;
         void Save()
         {
             st.Save();
-            if (_svc.BoardNative && _svc.Device != null) Debounce(() => Task.Run(_svc.ApplyBoardFromCustom));
+            if (main && _svc.BoardNative && _svc.Device != null) Debounce(() => Task.Run(_svc.ApplyBoardFromCustom));
         }
 
-        Add(new SectionHeader("Eigener Effekt", Theme.Muted) { Height = S(34), Margin = new Padding(S(6), S(10), S(6), S(2)) });
-        Add(new LedPreview(_svc.Engine) { Height = S(46), Margin = new Padding(S(6), S(2), S(6), S(4)) });
+        if (main)
+        {
+            Add(new SectionHeader(st.Groups.Count > 0 ? "Haupt-Effekt (alles, was keiner Gruppe zugeordnet ist)" : "Eigener Effekt", Theme.Muted)
+                { Height = S(34), Margin = new Padding(S(6), S(10), S(6), S(2)) });
+            Add(new LedPreview(_svc.Engine) { Height = S(46), Margin = new Padding(S(6), S(2), S(6), S(4)) });
+        }
 
         var c = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
         var presetNames = new[] { "– Voreinstellung wählen –" }.Concat(CustomEffect.Presets.Select(p => p.Name)).ToArray();
         c.Combo("Voreinstellung:", presetNames, 0, i =>
         {
             if (i <= 0) return;
-            st.Effect = CustomEffect.Presets[i - 1].Effect.Clone();
+            replace(CustomEffect.Presets[i - 1].Effect.Clone());
             Save();
             RebuildSoon();
         });
@@ -1405,8 +1432,75 @@ sealed class RgbView : FlowLayoutPanel
             p.Combo("Temperatur von:", new[] { "CPU", "Grafikkarte", "GPU-Hot-Spot", "Höchster Wert von CPU und GPU" },
                 Array.IndexOf(sources, st.TempSource), i => { st.TempSource = sources[i]; Save(); });
         }
-        p.Note("Eigene Effekte laufen, solange Toast Temperatur läuft. Beim Beenden übernimmt das Mainboard mit den Mainboard-Effekten.");
+        if (main) p.Note("Eigene Effekte laufen, solange Toast Temperatur läuft. Ohne Toast Temperatur: siehe Nollie-Speicher.");
         Add(p);
+    }
+
+    /// Gruppen wie in OpenRGB: Anschlüsse/Kanäle zusammenfassen, jede Gruppe mit eigenem Effekt
+    void BuildGroups(List<IRgbTarget> targets)
+    {
+        var st = _svc.Settings;
+        var list = targets.Where(t => t is not PolychromeTarget && _svc.IsEnabled(t)).ToList();
+        if (list.Sum(t => t.Segments.Length) < 2 && st.Groups.Count == 0) return;
+
+        Add(new SectionHeader("Zonen & Gruppen", Color.FromArgb(244, 114, 182)) { Height = S(34), Margin = new Padding(S(6), S(10), S(6), S(2)) });
+        var c = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+        c.Note("Jeden Kanal bzw. jede Zone einer Gruppe zuordnen – jede Gruppe bekommt ihren eigenen Effekt. " +
+               "„Haupt-Effekt“ = nicht gruppiert. Reihenfolge in der Gruppe = Reihenfolge hier (für durchgehende Effekte).");
+        string[] Options() => new[] { "Haupt-Effekt" }.Concat(st.Groups.Select(g => g.Name)).Append("+ neue Gruppe").ToArray();
+        foreach (var t in list)
+        {
+            var names = t.SegmentNames;
+            for (int i = 0; i < t.Segments.Length; i++)
+            {
+                string key = t.SegmentKey(i);
+                int gi = st.Groups.FindIndex(g => g.Members.Contains(key));
+                string label = $"{t.Name}{(names[i].Length > 0 ? " · " + names[i] : "")} ({t.Segments[i]} LEDs):";
+                var box = c.Combo(label, Options(), gi + 1, sel =>
+                {
+                    foreach (var g in st.Groups) g.Members.Remove(key);
+                    if (sel == st.Groups.Count + 1)
+                    {
+                        var ng = new RgbGroup { Name = $"Gruppe {st.Groups.Count + 1}", Effect = st.Effect.Clone() };
+                        st.Groups.Add(ng);
+                        ng.Members.Add(key);
+                    }
+                    else if (sel >= 1) st.Groups[sel - 1].Members.Add(key);
+                    st.Groups.RemoveAll(g => g.Members.Count == 0 && !g.Keep);
+                    st.Save();
+                    RebuildSoon();
+                });
+                box.Width = S(170);
+            }
+        }
+        Add(c);
+
+        for (int gi = 0; gi < st.Groups.Count; gi++)
+        {
+            var g = st.Groups[gi];
+            const string hint = "";
+            string members = string.Join(", ", g.Members.Select(m => DescribeKey(list, m)));
+            var fold = Fold.Header($"{g.Name}: {CustomEffect.Name(g.Effect.Type)}   ·   {members}{hint}", g.Open, K);
+            Add(fold);
+            int start = Controls.Count;
+            var gc = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+            gc.Check("Durchgehend: der Effekt läuft über alle Kanäle dieser Gruppe hinweg (z. B. Welle von Lüfter zu Lüfter)", g.Continuous,
+                v => { g.Continuous = v; st.Save(); });
+            var gg = g;
+            gc.Buttons(("Gruppe auflösen", () => { st.Groups.Remove(gg); st.Save(); RebuildSoon(); }));
+            Add(gc);
+            BuildCustom(g.Effect, g.Name, e => gg.Effect = e, main: false);
+            string text = $"{g.Name}: {CustomEffect.Name(g.Effect.Type)}   ·   {members}";
+            Fold.Bind(fold, text, Controls.Cast<Control>().Skip(start).ToList(), g.Open, v => { gg.Open = v; st.Save(); });
+        }
+    }
+
+    static string DescribeKey(List<IRgbTarget> targets, string key)
+    {
+        foreach (var t in targets)
+            for (int i = 0; i < t.Segments.Length; i++)
+                if (t.SegmentKey(i) == key) return t.SegmentNames[i].Length > 0 ? t.SegmentNames[i] : t.Name;
+        return "(nicht verbunden)";
     }
 
     Control BuildZone(RgbZone z, bool all)
@@ -1873,6 +1967,30 @@ sealed class EffectEngine
 
                 List<IRgbTarget> targets;
                 lock (_svc.Targets) targets = _svc.Targets.ToList();
+                // Gruppen: Effekt je Abschnitt; „durchgehend“ = einmal über die Gesamtlänge rechnen und aufteilen
+                var groups = _svc.Settings.Groups;
+                var groupOf = new Dictionary<string, int>();
+                for (int gi = 0; gi < groups.Count; gi++) foreach (var m in groups[gi].Members) groupOf.TryAdd(m, gi);
+                Dictionary<int, (Color[] Strip, Dictionary<string, int> Offset)>? strips = null;
+                if (groupOf.Count > 0)
+                {
+                    var len = new Dictionary<string, int>();
+                    foreach (var tg in targets)
+                    {
+                        if (!_svc.IsEnabled(tg)) continue;
+                        var sg = tg.Segments;
+                        for (int i = 0; i < sg.Length; i++) len[tg.SegmentKey(i)] = sg[i];
+                    }
+                    strips = new();
+                    for (int gi = 0; gi < groups.Count; gi++)
+                    {
+                        if (!groups[gi].Continuous) continue;
+                        var off = new Dictionary<string, int>();
+                        int total = 0;
+                        foreach (var m in groups[gi].Members) if (len.TryGetValue(m, out int n)) { off[m] = total; total += n; }
+                        if (total > 0) strips[gi] = (EffectRenderer.Render(groups[gi].Effect, 500 + gi, total, t, temp), off);
+                    }
+                }
                 for (int ti = 0; ti < targets.Count; ti++)
                 {
                     var target = targets[ti];
@@ -1886,7 +2004,19 @@ sealed class EffectEngine
                     var segs = target.Segments;
                     var frame = new List<Color[]>(segs.Length);
                     for (int si = 0; si < segs.Length; si++)
-                        frame.Add(EffectRenderer.Render(fx, ti * 16 + si, segs[si], t, temp));
+                    {
+                        if (groupOf.Count > 0 && groupOf.TryGetValue(target.SegmentKey(si), out int gi))
+                        {
+                            if (strips != null && strips.TryGetValue(gi, out var st0) && st0.Offset.TryGetValue(target.SegmentKey(si), out int o))
+                            {
+                                var part = new Color[segs[si]];
+                                Array.Copy(st0.Strip, o, part, 0, Math.Min(part.Length, st0.Strip.Length - o));
+                                frame.Add(part);
+                            }
+                            else frame.Add(EffectRenderer.Render(groups[gi].Effect, ti * 16 + si, segs[si], t, temp));
+                        }
+                        else frame.Add(EffectRenderer.Render(fx, ti * 16 + si, segs[si], t, temp));
+                    }
                     if (_svc.Alarm)
                     {
                         // Warnlicht: weich rot pulsieren (nie ganz aus)

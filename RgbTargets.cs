@@ -16,6 +16,10 @@ interface IRgbTarget
     string Kind { get; }
     /// LED-Anzahl je Abschnitt (jeder Abschnitt bekommt den Effekt über seine eigene Länge)
     int[] Segments { get; }
+    /// Namen der Abschnitte (z. B. „Kanal 3“), leer = Gerät hat nur einen
+    string[] SegmentNames => Segments.Length == 1 ? new[] { "" } : Enumerable.Range(1, Segments.Length).Select(i => $"Abschnitt {i}").ToArray();
+    /// Dauerhafte Kennung eines Abschnitts (für Gruppen)
+    string SegmentKey(int i) => $"{Id}#{i}";
     void Begin();
     bool Write(IReadOnlyList<Color[]> segments);
     void End();
@@ -352,6 +356,15 @@ sealed class OpenRgbTarget : IRgbTarget
             return z.Length > 0 ? z : new[] { _dev.TotalLeds };
         }
     }
+    public string[] SegmentNames
+    {
+        get
+        {
+            var z = _dev.Zones.Where(x => x.Leds > 0).Select(x => x.Name).ToArray();
+            return z.Length > 1 ? z : new[] { "" };
+        }
+    }
+    public string SegmentKey(int i) { var z = _dev.Zones.Where(x => x.Leds > 0).ToList(); return i < z.Count ? $"{Id}#{z[i].Name}" : $"{Id}#{i}"; }
     DateTime _lastMode = DateTime.MinValue;
     public void Begin() { _client.CustomMode(_dev); _lastMode = DateTime.Now; }
     public bool Write(IReadOnlyList<Color[]> s)
@@ -674,6 +687,8 @@ sealed class NollieTarget : IRgbTarget, IDisposable
         }
     }
 
+    public string[] SegmentNames => Active().Select(c => $"Kanal {c + 1}").ToArray();
+    public string SegmentKey(int i) { var a = Active(); return i < a.Length ? $"{Id}#ch{a[i] + 1}" : $"{Id}#{i}"; }
     public void Begin() { _last = null; _fails = 0; }
 
     readonly object _io = new();
