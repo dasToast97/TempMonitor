@@ -426,6 +426,12 @@ sealed class MainForm : Form
                 catch { }
             };
             _fans.Discover(_computer);
+            if (_fans.BiosWarnings.FirstOrDefault() is string bw)
+                BeginInvoke(async () =>
+                {
+                    await Task.Delay(4000);
+                    try { _tray.ShowBalloonTip(20000, "Lüfter ohne Toast Temperatur aus", bw, ToolTipIcon.Warning); } catch { }
+                });
             FanController.Current = _fans;
             Program.Step($"{_fans.Channels.Count} Lüfter gefunden");
             StartOasis(_fans);

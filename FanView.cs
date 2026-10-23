@@ -152,6 +152,15 @@ sealed class FanView : FlowLayoutPanel
                 });
             }
         }
+        var warns = _ctl.BiosWarnings.ToList();
+        if (warns.Count > 0)
+        {
+            var bw = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+            foreach (var w in warns) bw.Note("⚠ " + w, muted: false);
+            bw.Note("Solange Toast Temperatur läuft, regelt es diese Lüfter selbst. Beim Beenden bekommen sie eine sichere feste Leistung, " +
+                    "damit sie bis zum nächsten Neustart nicht stehen.");
+            AddFull(bw);
+        }
         if (_ctl.Channels.Count == 0)
         {
             var hint = new Label

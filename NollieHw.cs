@@ -12,9 +12,10 @@ sealed class NollieFx
 {
     public int Effect { get; set; } = 12;     // Index der eingebauten Effekte
     public int Brightness { get; set; } = 100; // 0–100
-    public int Step { get; set; } = 3;          // Tempo 1–10
+    public int Step { get; set; } = 1;          // Tempo 1–10 (Schrittweite je Bild)
     public int Size { get; set; } = 10;         // Größe 0–50
-    public int Delay { get; set; } = 0;         // Verzögerung 0–8
+    public int Delay { get; set; } = 4;         // Verzögerung 0–8 (höher = ruhiger)
+    public int FrameMs { get; set; } = 50;      // Zeit je Bild in ms (höher = langsamer), 10–255
     public int Color1 { get; set; } = Color.FromArgb(0, 120, 255).ToArgb();
     public int Color2 { get; set; } = Color.FromArgb(160, 0, 255).ToArgb();
     public int Color3 { get; set; } = Color.FromArgb(0, 255, 160).ToArgb();
@@ -34,7 +35,7 @@ sealed class NollieHwSettings
     /// Start-Effekt beim Einschalten (-1 = keiner)
     public int BootEffect { get; set; } = -1;
     public int BootColor { get; set; } = Color.FromArgb(0, 120, 255).ToArgb();
-    public int BootStep { get; set; } = 3;
+    public int BootStep { get; set; } = 1;
     /// Sekunden, bis der Nollie nach dem letzten Bild von Toast Temperatur selbst übernimmt (0 = Standard, ca. 3 s)
     public int IdleSeconds { get; set; }
     /// Zuletzt geschriebener Stand (es wird nur bei Änderungen geschrieben – schont den Speicher)
@@ -93,14 +94,16 @@ static class NollieHw
             _ => 12,   // Welle, Lavalampe, Meeresrauschen, Nordlicht, Temperatur-Welle
         };
         if (fx.Type == EffectType.TempWave) pal = new() { Color.FromArgb(40, 120, 255), Color.FromArgb(40, 220, 90) };
-        float sp = Math.Clamp(fx.Speed, 0, 100) / 100f * (calm ? 0.5f : 1f);
+        // Der Nollie ist schon bei kleinen Werten flott: Tempo 1–4, langsamer über Verzögerung und Bildzeit
+        float sp = Math.Clamp(fx.Speed, 0, 100) / 100f * (calm ? 0.4f : 1f);
         return new NollieFx
         {
             Effect = effect,
             Brightness = Math.Clamp(fx.Brightness, 0, 100),
-            Step = Math.Clamp((int)Math.Round(1 + sp * 9), 1, 10),
+            Step = Math.Clamp((int)Math.Round(1 + sp * 3), 1, 4),
             Size = Math.Clamp(fx.Width, 0, 50),
-            Delay = 0,
+            Delay = Math.Clamp((int)Math.Round((1 - sp) * 6), 0, 8),
+            FrameMs = Math.Clamp((int)Math.Round(33 + (1 - sp) * 70), 20, 120),
             Color1 = P(0).ToArgb(),
             Color2 = (pal.Count > 2 ? P(2) : Color.FromArgb(10, 10, 30)).ToArgb(),
             Color3 = P(1).ToArgb(),
@@ -109,7 +112,7 @@ static class NollieHw
 
     const byte SetEffect = 0xFA, SetCore = 0xF6;
     const byte ItemParams = 0x02, ItemMap = 0x03, ItemLen = 0x04, ItemStartLen = 0x05, ItemLedNum = 0x08,
-               ItemStartMap = 0x0B, ItemBoot = 0x13, CoreIdle = 0x16;
+               ItemStartMap = 0x0B, ItemFrameDelay = 0x12, ItemBoot = 0x13, CoreIdle = 0x16;
     const int FwChannels = 16, MapLen = 32, BootCanvas = 14;
 
     static byte[] Rgb(int argb) { var c = Color.FromArgb(argb); return new[] { c.R, c.G, c.B }; }
@@ -161,11 +164,16 @@ static class NollieHw
         for (int i = 0; i < canvases.Count; i++) cmds.Add(Params(i, canvases[i].Fx, canvases[i].Chans.Count));
         cmds.Add(Map(ItemMap, canvases.SelectMany(x => x.Chans)));
         cmds.Add(new byte[] { SetEffect, ItemLen, (byte)canvases.Count });
+        // Bildzeit je Canvas (16 Werte, Index 14 = Start-Effekt)
+        var fd = new byte[16];
+        for (int i = 0; i < 16; i++) fd[i] = 33;
+        for (int i = 0; i < canvases.Count && i < 14; i++) fd[i] = (byte)Math.Clamp(canvases[i].Fx.FrameMs, 10, 255);
+        cmds.Add(new byte[] { SetEffect, ItemFrameDelay }.Concat(fd).ToArray());
 
         // Start-Effekt beim Einschalten
         if (s.BootEffect >= 0)
         {
-            var bf = new NollieFx { Effect = Math.Clamp(s.BootEffect, 0, 7), Brightness = 100, Step = s.BootStep, Size = 10, Color1 = s.BootColor, Color2 = s.BootColor, Color3 = s.BootColor };
+            var bf = new NollieFx { Effect = Math.Clamp(s.BootEffect, 0, 7), Brightness = 100, Step = s.BootStep, Size = 10, Delay = 2, Color1 = s.BootColor, Color2 = s.BootColor, Color3 = s.BootColor };
             cmds.Add(Params(BootCanvas, bf, active.Count));
             cmds.Add(Map(ItemStartMap, active));
             cmds.Add(new byte[] { SetEffect, ItemStartLen, 1 });

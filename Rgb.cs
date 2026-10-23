@@ -409,6 +409,9 @@ sealed class RgbGroup
     public CustomEffect Effect { get; set; } = new();
     /// Effekt läuft über alle Mitglieder hinweg (wie ein langer Streifen)
     public bool Continuous { get; set; } = true;
+    /// Ablauf: 0 = jeder Kanal für sich, 1 = durchgehend LED für LED, 2 = Lüfter für Lüfter (Lauflicht durch den PC); -1 = aus Continuous
+    public int Flow { get; set; } = -1;
+    [System.Text.Json.Serialization.JsonIgnore] public int Mode => Flow >= 0 ? Flow : (Continuous ? 1 : 0);
     public bool Open { get; set; } = true;
     [System.Text.Json.Serialization.JsonIgnore] public bool Keep;
 }
@@ -447,6 +450,8 @@ sealed class RgbSettings
     public List<int> NollieLeds { get; set; } = new() { 30, 30, 30, 30, 30, 30, 30, 30 };
     /// Eigene Namen für Kanäle/Zonen (Schlüssel wie bei den Gruppen, z. B. „nollie8#ch3“)
     public Dictionary<string, string> Names { get; set; } = new();
+    /// Wie viele Lüfter hängen an einem Kanal (für „Lüfter für Lüfter“), Standard 1
+    public Dictionary<string, int> FanCount { get; set; } = new();
     /// Gruppen: Kanäle/Zonen mit eigenem Effekt
     public List<RgbGroup> Groups { get; set; } = new();
     /// Nollie-Speicher: was der Nollie ohne Toast Temperatur und beim Hochfahren zeigt
@@ -1199,7 +1204,13 @@ sealed class RgbView : FlowLayoutPanel
             c.Buttons(("Jetzt in den Nollie schreiben", () => { _svc.WriteNollieNow(); status.Text = "Wird geschrieben …"; }));
             c.Note("Geschrieben wird nur bei Änderungen (schont den Speicher). Firmware und Bootloader werden nie angefasst.");
         }
-        else c.Note(NollieHw.Describe(hw, st.Effect));
+        else
+        {
+            c.Note(NollieHw.Describe(hw, st.Effect));
+            if (hw.LastWritten.Length > 0)
+                c.Note("Hinweis: Im Nollie liegt noch der früher von Toast Temperatur gespeicherte Effekt. Zum Ändern einschalten (z. B. „Aus“ oder ruhiger Effekt) – " +
+                       "oder mit NollieRGB überschreiben.", muted: false);
+        }
         Add(c);
     }
 
@@ -1219,6 +1230,7 @@ sealed class RgbView : FlowLayoutPanel
         if (u.Size) nums.Add(("Größe", f.Size, 0, 50, "", v => { f.Size = (int)v; st.Save(); }));
         if (u.Delay) nums.Add(("Verzögerung", f.Delay, 0, 8, "", v => { f.Delay = (int)v; st.Save(); }));
         c.Numbers(nums.ToArray());
+        if (u.Step) c.Numbers(("      Bildzeit (höher = langsamer)", f.FrameMs, 10, 255, "ms", (Action<float>)(v => { f.FrameMs = (int)v; st.Save(); })));
         var cols = new List<(string, int, Action<int>)>();
         if (u.Colors1) cols.Add(("Farbe 1", f.Color1, v => f.Color1 = v));
         if (u.Color2) cols.Add(("Farbe 2", f.Color2, v => f.Color2 = v));
@@ -1457,6 +1469,7 @@ sealed class RgbView : FlowLayoutPanel
             p.Numbers(("Breite (LEDs je Welle / Schweif)", (float)fx.Width, 2, 100, "", (Action<float>)(v => { fx.Width = (int)v; Save(); })));
         p.Check("Richtung umkehren", fx.Reverse, v => { fx.Reverse = v; Save(); });
         p.Check("Von der Mitte aus (gespiegelt)", fx.Mirror, v => { fx.Mirror = v; Save(); });
+        if (fx.Type == EffectType.Comet) p.Check("Hin und her (statt immer in eine Richtung)", fx.Bounce, v => { fx.Bounce = v; Save(); });
         if (fx.Type == EffectType.TempWave)
         {
             string[] sources = { "CPU", "GPU", "Hotspot", "Max" };
@@ -1483,8 +1496,8 @@ sealed class RgbView : FlowLayoutPanel
     {
         var st = _svc.Settings;
         var c = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
-        c.Note("Jedem Kanal einen Namen geben (z. B. „Radiator“, „Front oben“) und einer Gruppe zuordnen → jede Gruppe bekommt ihren eigenen Effekt (darunter). " +
-               "„Haupt-Effekt“ = nicht gruppiert.");
+        c.Note("Jedem Kanal einen Namen geben (z. B. „Radiator“, „Front oben“), angeben wie viele Lüfter daran hängen, und einer Gruppe zuordnen → " +
+               "jede Gruppe bekommt ihren eigenen Effekt (darunter). „Haupt-Effekt“ = nicht gruppiert.");
         string[] Options() => new[] { "Haupt-Effekt" }.Concat(st.Groups.Select(g => g.Name)).Append("+ neue Gruppe").ToArray();
         foreach (var t in list)
         {
@@ -1509,7 +1522,7 @@ sealed class RgbView : FlowLayoutPanel
                     st.Groups.RemoveAll(g => g.Members.Count == 0 && !g.Keep);
                     st.Save();
                     RebuildSoon();
-                });
+                }, st.FanCount.GetValueOrDefault(key, 1), v => { if (v <= 1) st.FanCount.Remove(key); else st.FanCount[key] = v; st.Save(); });
             }
         }
         Add(c);
@@ -1527,9 +1540,31 @@ sealed class RgbView : FlowLayoutPanel
             Add(fold);
             int start = Controls.Count;
             var gc = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
-            gc.Check("Durchgehend: der Effekt läuft über alle Kanäle dieser Gruppe hinweg (z. B. Welle von Lüfter zu Lüfter)", g.Continuous,
-                v => { g.Continuous = v; st.Save(); });
             var gg = g;
+            var flow = gc.Combo("Ablauf:", new[] { "Jeder Kanal für sich", "Durchgehend (LED für LED, ein langer Streifen)", "Lüfter für Lüfter (Lauflicht durch den PC)" },
+                g.Mode, i => { gg.Flow = i; gg.Continuous = i > 0; st.Save(); });
+            flow.Width = S(330);
+            if (g.Members.Count > 1)
+            {
+                gc.Note("Reihenfolge (z. B. von unten nach oben) – mit ▲ ▼ verschieben:", muted: false);
+                for (int mi = 0; mi < g.Members.Count; mi++)
+                {
+                    int idx = mi;
+                    string mk = g.Members[mi];
+                    gc.Buttons(($"▲  {mi + 1}. {DescribeKey(list, mk)}", () =>
+                    {
+                        if (idx == 0) return;
+                        (gg.Members[idx - 1], gg.Members[idx]) = (gg.Members[idx], gg.Members[idx - 1]);
+                        st.Save(); RebuildSoon();
+                    }), ("▼", () =>
+                    {
+                        if (idx >= gg.Members.Count - 1) return;
+                        (gg.Members[idx + 1], gg.Members[idx]) = (gg.Members[idx], gg.Members[idx + 1]);
+                        st.Save(); RebuildSoon();
+                    }));
+                }
+                gc.Note("Tipp Lauflicht: Effekt „Lauflicht (Komet)“, Ablauf „Lüfter für Lüfter“, Breite 2, bei Bedarf „Hin und her“.");
+            }
             gc.Buttons(("Gruppe auflösen", () => { st.Groups.Remove(gg); st.Save(); RebuildSoon(); }));
             Add(gc);
             BuildCustom(g.Effect, g.Name, e => gg.Effect = e, main: false);
@@ -1671,6 +1706,8 @@ sealed class CustomEffect
     public int Softness { get; set; } = 80;
     /// Von der Mitte nach außen (gespiegelt)
     public bool Mirror { get; set; }
+    /// Lauflicht: hin und her statt immer in eine Richtung
+    public bool Bounce { get; set; }
     /// Atmen: Zeiten in Millisekunden (0 = automatisch aus der Geschwindigkeit)
     public int FadeInMs { get; set; }
     public int HoldOnMs { get; set; }
@@ -1680,7 +1717,7 @@ sealed class CustomEffect
     public CustomEffect Clone() => new()
     {
         Type = Type, Colors = Colors.ToList(), Speed = Speed, Brightness = Brightness, Width = Width, Reverse = Reverse,
-        MinLevel = MinLevel, Softness = Softness, Mirror = Mirror,
+        MinLevel = MinLevel, Softness = Softness, Mirror = Mirror, Bounce = Bounce,
         FadeInMs = FadeInMs, HoldOnMs = HoldOnMs, FadeOutMs = FadeOutMs, HoldOffMs = HoldOffMs,
     };
 
@@ -1841,8 +1878,19 @@ static class EffectRenderer
                 {
                     float span = n + width;
                     float head = (float)((t * (3 + speed * 60)) % span);
-                    if (fx.Reverse) head = span - head;
-                    float d = fx.Reverse ? i - head : head - i;
+                    bool back = fx.Reverse;
+                    if (fx.Bounce)
+                    {
+                        // hin und her: Kopf läuft bis zum Ende und wieder zurück
+                        float bspan = Math.Max(1, n - 1);
+                        float ph = (float)((t * (3 + speed * 60)) % (2 * bspan));
+                        bool fwd = ph < bspan;
+                        head = fwd ? ph : 2 * bspan - ph;
+                        back = fx.Reverse ? fwd : !fwd;
+                        if (fx.Reverse) head = bspan - head;
+                    }
+                    else if (fx.Reverse) head = span - head;
+                    float d = back ? i - head : head - i;
                     float tail = d >= 0 && d < width ? 1 - d / width : 0;
                     tail = _soft < 0.3f ? (tail > 0 ? 1 : 0) : MathF.Pow(tail, 2.5f - _soft * 1.5f);
                     var bg = pal.Count > 1 ? Scale(pal[1], Math.Max(min, 0.02f)) : Scale(pal[0], min);
@@ -2026,13 +2074,37 @@ sealed class EffectEngine
                         for (int i = 0; i < sg.Length; i++) len[tg.SegmentKey(i)] = sg[i];
                     }
                     strips = new();
+                    var fanCount = _svc.Settings.FanCount;
                     for (int gi = 0; gi < groups.Count; gi++)
                     {
-                        if (!groups[gi].Continuous) continue;
+                        int mode = groups[gi].Mode;
+                        if (mode == 0) continue;
                         var off = new Dictionary<string, int>();
                         int total = 0;
-                        foreach (var m in groups[gi].Members) if (len.TryGetValue(m, out int n)) { off[m] = total; total += n; }
-                        if (total > 0) strips[gi] = (EffectRenderer.Render(groups[gi].Effect, 500 + gi, total, t, temp), off);
+                        if (mode == 1)
+                        {
+                            foreach (var m in groups[gi].Members) if (len.TryGetValue(m, out int n)) { off[m] = total; total += n; }
+                            if (total > 0) strips[gi] = (EffectRenderer.Render(groups[gi].Effect, 500 + gi, total, t, temp), off);
+                        }
+                        else
+                        {
+                            // Lüfter für Lüfter: jeder Lüfter ist ein „Punkt“, der Effekt läuft von Lüfter zu Lüfter
+                            var members = groups[gi].Members.Where(len.ContainsKey).ToList();
+                            int units = members.Sum(m => Math.Max(1, fanCount.GetValueOrDefault(m, 1)));
+                            if (units == 0) continue;
+                            var pts = EffectRenderer.Render(groups[gi].Effect, 500 + gi, units, t, temp);
+                            int ledTotal = members.Sum(m => len[m]);
+                            var strip = new Color[ledTotal];
+                            int u0 = 0, pos = 0;
+                            foreach (var m in members)
+                            {
+                                int f = Math.Max(1, fanCount.GetValueOrDefault(m, 1)), n = len[m];
+                                off[m] = pos;
+                                for (int j = 0; j < n; j++) strip[pos + j] = pts[Math.Min(units - 1, u0 + j * f / Math.Max(1, n))];
+                                u0 += f; pos += n;
+                            }
+                            strips[gi] = (strip, off);
+                        }
                     }
                 }
                 for (int ti = 0; ti < targets.Count; ti++)

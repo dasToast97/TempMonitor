@@ -508,7 +508,7 @@ sealed class SettingsCard : Panel
 
     /// Eine Zeile: feste Beschriftung, Namensfeld, Auswahl (z. B. Kanal · eigener Name · Gruppe)
     public (TextBox Name, ComboBox Box) NameCombo(string label, int labelWidth, string name, string placeholder, Action<string> setName,
-        string[] items, int selected, Action<int> set)
+        string[] items, int selected, Action<int> set, int? count = null, Action<int>? setCount = null)
     {
         var lbl = new Label { Text = label, ForeColor = Theme.Muted, AutoSize = false, AutoEllipsis = true,
             Location = new Point(S(14), _y + S(4)), Size = new Size(S(labelWidth), S(20)) };
@@ -525,6 +525,17 @@ sealed class SettingsCard : Panel
         tb.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; Commit(); } };
         Controls.Add(tb);
         x += tb.Width + S(10);
+        if (count is int cnt && setCount != null)
+        {
+            var nl = new Label { Text = "Lüfter", ForeColor = Theme.Muted, AutoSize = true, Location = new Point(x, _y + S(4)) };
+            Controls.Add(nl);
+            x += TextRenderer.MeasureText("Lüfter", nl.Font).Width + S(4);
+            var n = Ui.Number(cnt, 1, 20, new Point(x, _y), _k);
+            n.Width = S(52);
+            n.ValueChanged += (_, _) => setCount((int)n.Value);
+            Controls.Add(n);
+            x += n.Width + S(10);
+        }
         var c = new ComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat,

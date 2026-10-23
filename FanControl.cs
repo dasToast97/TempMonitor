@@ -503,6 +503,10 @@ sealed class FanChannel
     public float CalLastRun;
     /// Drehzahl beim Start von Toast Temperatur (stand der Lüfter da schon, ist der „Ausgangszustand“ kein echter BIOS-Zustand)
     public float? InitRpm;
+    /// Leistung, die das BIOS beim Programmstart vorgab
+    public float? InitPct;
+    /// Hinweis: ohne Toast Temperatur (nur BIOS) steht dieser Lüfter
+    public string? BiosWarning;
     /// Betrieb: Takte, in denen der Lüfter trotz Leistung stand (lernt die Untergrenze nach)
     public int LowStallTicks;
     public string? CalNote;
@@ -636,7 +640,23 @@ sealed class FanController
 
         foreach (var hw in computer.Hardware)
             AddChannels(hw, hw);
+
+        // Prüfen, ob das BIOS allein alle Lüfter zum Drehen bringt: stand ein bekannter Lüfter beim Start,
+        // obwohl das BIOS ihm Leistung gibt, reicht dessen Vorgabe nicht zum Anlaufen -> ohne Toast Temperatur bleibt er aus
+        foreach (var ch in Channels.Where(c => !c.IsGpu && c.Ext == null && c.Od8 == null && c.Kind == FanKind.Fan && !c.Cfg.NoTachSignal))
+        {
+            if (ch.InitRpm is not float r || r >= 100) continue;
+            string bios = ch.InitPct is float ip ? $"{ip:0} %" : "zu wenig";
+            string need = ch.Cfg.StartPercent is float sp ? $" – er läuft erst ab {sp:0} % an" : "";
+            ch.BiosWarning = $"Beim Start stand „{ch.DisplayName}“ still (BIOS-Vorgabe {bios}{need}). Ohne Toast Temperatur bleibt er so aus. " +
+                             "Abhilfe im BIOS (H/W Monitor): an diesem Anschluss „PWM“ (4-Pin) bzw. „DC“ (3-Pin) wählen und eine Lüfterkurve mit höherer " +
+                             "Mindestleistung (z. B. „Standard“ oder eigene Kurve ab 40–50 %).";
+            Program.Step("BIOS-Hinweis: " + ch.BiosWarning);
+            ErrorLog.Write("Lüfter-Hinweis: " + ch.BiosWarning);
+        }
     }
+
+    public IEnumerable<string> BiosWarnings => Channels.Where(c => c.BiosWarning != null).Select(c => c.BiosWarning!);
 
     void AddChannels(IHardware top, IHardware hw)
     {
@@ -732,6 +752,7 @@ sealed class FanController
             ControlSensor = sensor,
             Rpm = rpm,
             InitRpm = rpm?.Value,
+            InitPct = sensor.Value,
             Id = id,
             DefaultName = defName,
             HardwareName = top.Name,
