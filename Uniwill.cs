@@ -22,7 +22,7 @@ sealed class UniwillEc
     public static UniwillEc? Current { get; private set; }
 
     static readonly string LogPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "laptop.log");
+        AppPaths.Config, "laptop.log");
 
     readonly ManagementObject _obj;
     readonly string _method;

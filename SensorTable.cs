@@ -32,7 +32,7 @@ sealed class UiState
     }
 
     static readonly string FilePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "ui.json");
+        AppPaths.Config, "ui.json");
 
     public static UiState Instance { get; } = Load();
 

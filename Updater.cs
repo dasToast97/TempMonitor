@@ -22,7 +22,7 @@ static class Updater
             .FirstOrDefault(a => a.Key == "GitHubRepo")?.Value is { Length: > 0 } r ? r : null;
 
     static readonly string SettingsDir =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor");
+        Path.Combine(AppPaths.Config);
     static readonly string SkipFile = Path.Combine(SettingsDir, "skip-version.txt");
 
     static HttpClient CreateClient()

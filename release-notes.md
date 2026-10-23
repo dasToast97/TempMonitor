@@ -1,9 +1,8 @@
-## Neu in 2.13.0
+## Neu in 2.14.0
 
-- **Mainboard-Beleuchtung ausschalten** – Reiter RGB → „Mainboard-Beleuchtung“: *Folgt dem Effekt*, *Aus* oder *Eigener Effekt per Software*. „Aus“ schaltet die Mainboard-LEDs einmalig ab (schont den Controller) – praktisch, wenn alle Lüfter am Nollie hängen.
-- **Aufgeräumt** – selten Gebrauchtes steckt jetzt in zugeklappten „Erweiterten Einstellungen“:
-  - RGB: Steuerungsart, Rot/Grün-Tausch, OpenRGB, Mainboard-Anschlüsse
-  - Lüfter: leere Anschlüsse, Gruppen, Kalibrierung, Sicherheit
-  - Einstellungen: Sicherung, Diagnose-Paket, Fehler-Logbuch
-- RGB-Geräteliste übersichtlicher (Mainboard nur noch einmal, kürzere Hinweise).
-- Lüfter, die von Hand eingeblendet wurden, lassen sich mit „Entfernen“ wieder ausblenden.
+- **Installationsordner wählbar** – das Setup fragt jetzt nach dem Ordner. Updates landen automatisch wieder im gewählten Ordner.
+- **Speicherorte einstellbar** – Einstellungen → Erweiterte Einstellungen → *Speicherorte*:
+  - **Aufzeichnungen (CSV)** – eigener Ordner; bisherige Aufzeichnungen können mit verschoben werden.
+  - **Diagnose-Paket & Sicherungen** – statt Desktop/Dokumente ein eigener Ordner.
+  - **Einstellungen & Protokolle** – an einen anderen Ort kopieren (Neustart); ist der Ort später nicht erreichbar, wird automatisch der Standard genommen.
+- Außerdem aus 2.13: Mainboard-Beleuchtung ausschaltbar, aufgeräumte Reiter mit zugeklappten „Erweiterten Einstellungen“.

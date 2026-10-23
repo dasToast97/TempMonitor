@@ -19,7 +19,7 @@ sealed class TongfangLaptop
     public const int ModeBalanced = 0, ModePerformance = 1, ModeQuiet = 2, ModeFull = 3;
 
     static readonly string LogPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "laptop.log");
+        AppPaths.Config, "laptop.log");
 
     readonly ManagementObject _obj;
     readonly object _gate = new();

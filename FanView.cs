@@ -216,7 +216,7 @@ sealed class FanView : FlowLayoutPanel
                 v => { _ctl.Settings.LaptopControl = v; _ctl.Save(); });
             c.Buttons(("Protokoll öffnen", () =>
             {
-                var p = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "laptop.log");
+                var p = Path.Combine(AppPaths.Config, "laptop.log");
                 try { if (File.Exists(p)) System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(p) { UseShellExecute = true }); } catch { }
             }));
             AddFull(c);
@@ -328,7 +328,7 @@ sealed class FanView : FlowLayoutPanel
             }),
             ("Protokoll öffnen", () =>
             {
-                var p = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "oasis.log");
+                var p = Path.Combine(AppPaths.Config, "oasis.log");
                 try { if (File.Exists(p)) System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(p) { UseShellExecute = true }); } catch { }
             }));
         c.Check("Nach der XMG Oasis suchen (nach dem Ausschalten: Neustart)", st.OasisEnabled, v => { st.OasisEnabled = v; _ctl.Save(); });

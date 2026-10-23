@@ -13,7 +13,7 @@ namespace TempMonitor;
 static class ErrorLog
 {
     public static readonly string FilePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "fehler.log");
+        AppPaths.Config, "fehler.log");
 
     static readonly object Lock = new();
 
@@ -562,6 +562,64 @@ sealed class SettingsView : FlowLayoutPanel
         foreach (var c in _full) c.Width = w;
     }
 
+    static void OpenDir(string d)
+    {
+        try { Directory.CreateDirectory(d); Process.Start(new ProcessStartInfo("explorer.exe", $"\"{d}\"") { UseShellExecute = true }); } catch { }
+    }
+
+    string? PickFolder(string title, string current)
+    {
+        using var dlg = new FolderBrowserDialog { Description = title, UseDescriptionForTitle = true, ShowNewFolderButton = true };
+        if (current.Length > 0 && Directory.Exists(current)) dlg.InitialDirectory = current;
+        return dlg.ShowDialog(FindForm()) == DialogResult.OK ? dlg.SelectedPath : null;
+    }
+
+    /// Seite neu aufbauen (nach geändertem Speicherort)
+    void RebuildPage()
+    {
+        BeginInvoke(() =>
+        {
+            SuspendLayout();
+            foreach (Control c in Controls.Cast<Control>().ToList()) c.Dispose();
+            Controls.Clear();
+            _full.Clear();
+            Build();
+            ResumeLayout();
+        });
+    }
+
+    void ChangeDataFolder()
+    {
+        var s = AppSettings.Instance;
+        if (PickFolder("Ordner für die Aufzeichnungen (CSV) wählen", DataLogger.Folder) is not string d) return;
+        string old = DataLogger.Folder;
+        if (string.Equals(Path.GetFullPath(d).TrimEnd('\\'), Path.GetFullPath(old).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) return;
+        var files = Directory.Exists(old) ? Directory.GetFiles(old, "Toast-Temperatur_*.csv") : Array.Empty<string>();
+        if (files.Length > 0)
+        {
+            var r = MessageBox.Show(FindForm(), $"{files.Length} bisherige Aufzeichnungen in den neuen Ordner verschieben?\n\n" +
+                "Ja = verschieben (Verlauf bleibt vollständig) · Nein = alte Dateien bleiben, wo sie sind", "Aufzeichnungen",
+                MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+            if (r == DialogResult.Cancel) return;
+            if (r == DialogResult.Yes)
+            {
+                try
+                {
+                    Directory.CreateDirectory(d);
+                    foreach (var f in files)
+                    {
+                        string dst = Path.Combine(d, Path.GetFileName(f));
+                        if (!File.Exists(dst)) File.Move(f, dst);
+                    }
+                }
+                catch (Exception ex) { MessageBox.Show(FindForm(), "Verschieben teilweise fehlgeschlagen: " + ex.Message, "Aufzeichnungen"); }
+            }
+        }
+        s.DataFolder = d;
+        s.Save();
+        RebuildPage();
+    }
+
     void Build()
     {
         var s = AppSettings.Instance;
@@ -624,6 +682,46 @@ sealed class SettingsView : FlowLayoutPanel
         var fold = Fold.Header(advText, s.SettingsAdvanced, K);
         AddFull(fold);
         int advStart = Controls.Count;
+
+        // ----- Speicherorte -----
+        AddSection("Speicherorte", Color.FromArgb(56, 189, 248));
+        var sp = AddCard();
+        string installDir = Path.GetDirectoryName(Environment.ProcessPath ?? Application.ExecutablePath) ?? "";
+        sp.Note("Programm installiert in:  " + installDir, muted: false);
+        sp.Note("Anderen Installationsordner: Setup (TempMonitor-Setup.exe von GitHub) erneut ausführen – es fragt nach dem Ordner, " +
+                "Einstellungen bleiben erhalten. Updates landen danach automatisch im neuen Ordner.");
+        sp.Buttons(("Programmordner öffnen", () => OpenDir(installDir)));
+        sp.Space(6);
+        sp.Note("Aufzeichnungen (CSV):  " + DataLogger.Folder, muted: false);
+        sp.Buttons(("Ändern …", () => ChangeDataFolder()), ("Standard", () => { if (s.DataFolder.Length > 0) { s.DataFolder = ""; Save(); RebuildPage(); } }),
+                   ("Öffnen", DataLogger.OpenFolder));
+        sp.Space(6);
+        sp.Note("Diagnose-Paket & Sicherungen:  " + (s.ExportFolder.Length > 0 ? s.ExportFolder : "Desktop bzw. Dokumente (Standard)"), muted: false);
+        sp.Buttons(("Ändern …", () =>
+        {
+            if (PickFolder("Ordner für Diagnose-Paket und Sicherungen wählen", s.ExportFolder) is string d) { s.ExportFolder = d; Save(); RebuildPage(); }
+        }), ("Standard", () => { if (s.ExportFolder.Length > 0) { s.ExportFolder = ""; Save(); RebuildPage(); } }));
+        sp.Space(6);
+        sp.Note("Einstellungen & Protokolle:  " + AppPaths.Config, muted: false);
+        sp.Buttons(("Ändern …", () =>
+        {
+            if (PickFolder("Neuer Ordner für Einstellungen und Protokolle", AppPaths.Config) is not string d) return;
+            if (MessageBox.Show(FindForm(), $"Einstellungen und Protokolle nach\n{d}\nkopieren und künftig dort speichern?\n\n" +
+                    "Toast Temperatur startet danach neu. Der alte Ordner bleibt als Sicherung erhalten.\n" +
+                    "Ist der Ordner später nicht erreichbar (z. B. Laufwerk fehlt), nimmt Toast Temperatur wieder den Standard.",
+                    "Speicherort ändern", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+            try { AppPaths.MoveConfig(d); _restart(); }
+            catch (Exception ex)
+            {
+                SafeFile.Frozen = false;
+                MessageBox.Show(FindForm(), "Geht nicht: " + ex.Message, "Speicherort ändern", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }), ("Standard", () =>
+        {
+            if (AppPaths.Config == AppPaths.Default) return;
+            try { AppPaths.MoveConfig(AppPaths.Default); _restart(); }
+            catch (Exception ex) { SafeFile.Frozen = false; MessageBox.Show(FindForm(), "Geht nicht: " + ex.Message, "Speicherort ändern"); }
+        }), ("Öffnen", () => OpenDir(AppPaths.Config)));
         // ----- Sicherung & Diagnose -----
         AddSection("Sicherung & Diagnose", Color.FromArgb(129, 140, 248));
         var bk = AddCard();
@@ -737,7 +835,7 @@ static class SafeFile
 /// Einstellungen sichern/laden und Diagnose-Paket
 static class BackupTools
 {
-    static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor");
+    static readonly string Dir = Path.Combine(AppPaths.Config);
 
     public static void Export(IWin32Window? owner)
     {
@@ -748,7 +846,7 @@ static class BackupTools
                 Title = "Einstellungen sichern",
                 Filter = "Toast-Temperatur-Sicherung (*.zip)|*.zip",
                 FileName = $"ToastTemperatur-Einstellungen_{DateTime.Now:yyyy-MM-dd}.zip",
-                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                InitialDirectory = AppPaths.Export(desktop: false),
             };
             if (dlg.ShowDialog(owner) != DialogResult.OK) return;
             // aktuellen Stand erst auf die Platte schreiben
@@ -800,7 +898,7 @@ static class BackupTools
     {
         try
         {
-            string desk = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+            string desk = AppPaths.Export(desktop: true);
             string path = Path.Combine(desk, $"ToastTemperatur-Diagnose_{DateTime.Now:yyyy-MM-dd_HHmm}.zip");
             if (File.Exists(path)) File.Delete(path);
             using (var zip = System.IO.Compression.ZipFile.Open(path, System.IO.Compression.ZipArchiveMode.Create))
@@ -822,7 +920,7 @@ static class BackupTools
                 w.WriteLine($"Windows {Environment.OSVersion.Version} · {(Environment.Is64BitOperatingSystem ? "64" : "32")} Bit · {DateTime.Now:yyyy-MM-dd HH:mm}");
             }
             System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{path}\"");
-            MessageBox.Show(owner, "Diagnose-Paket liegt auf dem Desktop:\n" + Path.GetFileName(path) +
+            MessageBox.Show(owner, "Diagnose-Paket gespeichert:\n" + path +
                 "\n\nEs enthält nur Protokolle und Einstellungen von Toast Temperatur – keine persönlichen Dateien.",
                 "Diagnose-Paket", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }

@@ -125,7 +125,7 @@ sealed class AmdOd8Fan : IDisposable
     /// Ergebnis der letzten Einrichtung (für Anzeige und Diagnosedatei)
     public static string LastInitInfo { get; private set; } = "";
     public static readonly string LogFile = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "amd-od8.log");
+        AppPaths.Config, "amd-od8.log");
 
     /// Für eine AMD-Grafikkarte mit Overdrive 8 und Lüfterkurve – sonst null (Grund in LastInitInfo)
     public static AmdOd8Fan? TryCreate(IHardware gpu)

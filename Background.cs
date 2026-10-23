@@ -25,6 +25,9 @@ sealed class AppSettings
     public int HistoryRange { get; set; } = 1;
     /// Einstellungen: erweiterte Abschnitte aufgeklappt
     public bool SettingsAdvanced { get; set; }
+    /// Eigene Speicherorte (leer = Standard)
+    public string DataFolder { get; set; } = "";
+    public string ExportFolder { get; set; } = "";
 
     // ----- Warnungen (Windows-Benachrichtigung) -----
     public bool WarnEnabled { get; set; } = true;
@@ -50,7 +53,7 @@ sealed class AppSettings
     public List<string> HistorySeries { get; set; } = new();
 
     static readonly string FilePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "app.json");
+        AppPaths.Config, "app.json");
 
     public static AppSettings Instance { get; } = Load();
 
@@ -77,13 +80,63 @@ sealed class AppSettings
 }
 
 // ===========================================================================
+// Speicherorte: Einstellungen & Protokolle (Standard %AppData%\TempMonitor, umstellbar über eine
+// Verweis-Datei, die immer am Standardort liegt)
+// ===========================================================================
+static class AppPaths
+{
+    public static readonly string Default = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor");
+    static readonly string Pointer = Path.Combine(Default, "speicherort.txt");
+    public static readonly string Config = Resolve();
+
+    static string Resolve()
+    {
+        try
+        {
+            if (File.Exists(Pointer) && File.ReadAllText(Pointer).Trim() is { Length: > 0 } p)
+            {
+                Directory.CreateDirectory(p);
+                return p;
+            }
+        }
+        catch { }   // Laufwerk fehlt o. ä. -> Standard
+        return Default;
+    }
+
+    /// Ordner für Diagnose-Paket und Sicherungen (Standard: Desktop bzw. Dokumente)
+    public static string Export(bool desktop) => AppSettings.Instance.ExportFolder is { Length: > 0 } f && Directory.Exists(f) ? f
+        : Environment.GetFolderPath(desktop ? Environment.SpecialFolder.DesktopDirectory : Environment.SpecialFolder.MyDocuments);
+
+    /// Einstellungen & Protokolle an einen neuen Ort kopieren und den Verweis setzen (wirksam nach Neustart)
+    public static void MoveConfig(string target)
+    {
+        target = Path.GetFullPath(target);
+        Directory.CreateDirectory(target);
+        string test = Path.Combine(target, ".schreibtest");
+        File.WriteAllText(test, "ok");
+        File.Delete(test);
+        SafeFile.Frozen = true;   // ab jetzt nichts mehr an den alten Ort schreiben
+        foreach (var f in Directory.GetFiles(Config))
+        {
+            if (Path.GetFileName(f).Equals("speicherort.txt", StringComparison.OrdinalIgnoreCase)) continue;
+            try { File.Copy(f, Path.Combine(target, Path.GetFileName(f)), true); } catch { }
+        }
+        Directory.CreateDirectory(Default);
+        if (string.Equals(target.TrimEnd('\\'), Default.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) File.Delete(Pointer);
+        else File.WriteAllText(Pointer, target);
+    }
+}
+
+// ===========================================================================
 // Aufzeichnung: eine CSV-Datei pro Tag in "Dokumente\Toast Temperatur"
 // (Semikolon + deutsches Komma -> öffnet sich direkt sauber in Excel)
 // ===========================================================================
 sealed class DataLogger
 {
-    public static readonly string Folder = Path.Combine(
+    public static readonly string DefaultFolder = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Toast Temperatur");
+    /// Speicherort der Aufzeichnungen (in den Einstellungen änderbar)
+    public static string Folder => AppSettings.Instance.DataFolder is { Length: > 0 } f ? f : DefaultFolder;
 
     static readonly CultureInfo De = CultureInfo.GetCultureInfo("de-DE");
 

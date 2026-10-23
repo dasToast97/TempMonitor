@@ -17,7 +17,7 @@ static class Program
     {
         try
         {
-            var p = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "start.log");
+            var p = Path.Combine(AppPaths.Config, "start.log");
             Directory.CreateDirectory(Path.GetDirectoryName(p)!);
             File.AppendAllText(p, $"{DateTime.Now:HH:mm:ss.fff}  {what}{Environment.NewLine}");
         }
@@ -49,7 +49,7 @@ static class Program
 
         try
         {
-            var log = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "start.log");
+            var log = Path.Combine(AppPaths.Config, "start.log");
             if (File.Exists(log)) File.Delete(log);
         }
         catch { }

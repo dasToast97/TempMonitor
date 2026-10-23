@@ -241,7 +241,7 @@ sealed class FanSettings
     public float ZeroGpu { get; set; } = 50f;
 
     static readonly string Dir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor");
+        AppPaths.Config);
     static readonly string FilePath = Path.Combine(Dir, "fans.json");
     static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
 

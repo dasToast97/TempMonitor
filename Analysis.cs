@@ -1011,7 +1011,7 @@ sealed class CoolingResult
 sealed class CoolingTestPanel : Panel
 {
     static readonly string FilePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor", "kuehlungstest.json");
+        AppPaths.Config, "kuehlungstest.json");
 
     readonly IComputer _computer;
     readonly Func<KeySensors?> _keys;

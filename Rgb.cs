@@ -442,7 +442,7 @@ sealed class RgbSettings
     public bool Custom { get; set; } = true;
     public CustomEffect Effect { get; set; } = CustomEffect.Presets[0].Effect.Clone();
 
-    static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TempMonitor");
+    static readonly string Dir = Path.Combine(AppPaths.Config);
     static readonly string FilePath = Path.Combine(Dir, "rgb.json");
 
     public static void Log(string msg)
