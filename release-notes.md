@@ -1,7 +1,3 @@
-## Neu in 2.17.0
+## Neu in 2.17.1
 
-**Zonen & Gruppen (wie in OpenRGB)** – Reiter RGB:
-- Jeder Nollie-Kanal, jede OpenRGB-Zone (Tastatur, Maus …) lässt sich einer **Gruppe** zuordnen. Jede Gruppe hat ihren **eigenen Effekt** mit allen Einstellungen (Farben, Tempo, Helligkeit, Voreinstellungen …).
-- **Durchgehend:** der Effekt einer Gruppe läuft über alle ihre Kanäle hinweg – z. B. eine Welle von Lüfter zu Lüfter. Reihenfolge = Reihenfolge der Kanäle in der Liste.
-- Nicht zugeordnete Kanäle laufen mit dem Haupt-Effekt.
-- **Nollie-Speicher (automatisch)** übernimmt die Gruppen: jeder Kanal bekommt im Nollie den passenden eingebauten Effekt seiner Gruppe.
+- **RGB-Reiter übersichtlicher:** Zonen & Gruppen, Warnlicht & Nachtmodus und der Nollie-Speicher sind jetzt aufklappbare Bereiche. Die Kopfzeile zeigt jeweils kurz den aktuellen Stand (z. B. „Nollie-Speicher · an: passend zu deinem Effekt“) – aufklappen nur, wenn man etwas ändern will.

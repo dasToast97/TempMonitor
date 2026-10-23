@@ -453,6 +453,10 @@ sealed class RgbSettings
     public bool BoardOff { get; set; }
     /// Reiter RGB: erweiterte Einstellungen aufgeklappt
     public bool ShowAdvanced { get; set; }
+    /// Reiter RGB: aufgeklappte Bereiche
+    public bool OpenGroups { get; set; }
+    public bool OpenExtras { get; set; }
+    public bool OpenNollie { get; set; }
 
     /// true = eigene Effekte von Toast Temperatur (jede LED einzeln), false = Effekte des Mainboards
     public bool Custom { get; set; } = true;
@@ -1142,7 +1146,15 @@ sealed class RgbView : FlowLayoutPanel
         if (nol == null) return;
         var st = _svc.Settings;
         var hw = st.NollieHw;
-        Add(new SectionHeader("Nollie-Speicher – beim Hochfahren & ohne Toast Temperatur", Theme.Muted) { Height = S(34), Margin = new Padding(S(6), S(10), S(6), S(2)) });
+        string sum = "Nollie-Speicher (beim Hochfahren & ohne Toast Temperatur)   ·   " +
+            (!nol.SupportsMemory ? "alte Firmware" : !hw.Enabled ? "aus" : hw.Source == 2 ? "an: Beleuchtung aus" : hw.Source == 0 ? "an: passend zu deinem Effekt" : "an: eigener Nollie-Effekt");
+        Folded(sum, st.OpenNollie, v => { st.OpenNollie = v; st.Save(); }, () => BuildNollieMemoryContent(nol));
+    }
+
+    void BuildNollieMemoryContent(NollieTarget nol)
+    {
+        var st = _svc.Settings;
+        var hw = st.NollieHw;
         var c = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
         if (!nol.SupportsMemory)
         {
@@ -1303,10 +1315,26 @@ sealed class RgbView : FlowLayoutPanel
         }
     }
 
+    /// Zugeklappter Bereich: Kopfzeile mit Zusammenfassung, Inhalt erst beim Aufklappen sichtbar
+    void Folded(string text, bool open, Action<bool> save, Action build)
+    {
+        var h = Fold.Header(text, open, K);
+        Add(h);
+        int start = Controls.Count;
+        build();
+        Fold.Bind(h, text, Controls.Cast<Control>().Skip(start).ToList(), open, save);
+    }
+
     void BuildExtras()
     {
         var st = _svc.Settings;
-        Add(new SectionHeader("Warnlicht & Nachtmodus", Theme.Muted) { Height = S(34), Margin = new Padding(S(6), S(10), S(6), S(2)) });
+        string sum = $"Warnlicht & Nachtmodus   ·   Warnlicht {(st.WarnLight ? "an" : "aus")}, Nachtmodus {(st.NightDim ? $"{st.NightFrom}–{st.NightTo} Uhr" : "aus")}";
+        Folded(sum, st.OpenExtras, v => { st.OpenExtras = v; st.Save(); }, BuildExtrasContent);
+    }
+
+    void BuildExtrasContent()
+    {
+        var st = _svc.Settings;
         var c = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
         c.Check("Warnlicht: alles pulsiert rot, wenn es kritisch wird (Warngrenzen aus Einstellungen → Warnungen, Pumpenausfall)",
             st.WarnLight, v => { st.WarnLight = v; st.Save(); });
@@ -1443,10 +1471,16 @@ sealed class RgbView : FlowLayoutPanel
         var list = targets.Where(t => t is not PolychromeTarget && _svc.IsEnabled(t)).ToList();
         if (list.Sum(t => t.Segments.Length) < 2 && st.Groups.Count == 0) return;
 
-        Add(new SectionHeader("Zonen & Gruppen", Color.FromArgb(244, 114, 182)) { Height = S(34), Margin = new Padding(S(6), S(10), S(6), S(2)) });
+        string sum = "Zonen & Gruppen – Kanäle einzeln steuern   ·   " + (st.Groups.Count == 0 ? "alles läuft mit dem Haupt-Effekt" : $"{st.Groups.Count} Gruppe(n)");
+        Folded(sum, st.OpenGroups, v => { st.OpenGroups = v; st.Save(); }, () => BuildGroupAssign(list));
+        BuildGroupEditors(list);
+    }
+
+    void BuildGroupAssign(List<IRgbTarget> list)
+    {
+        var st = _svc.Settings;
         var c = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
-        c.Note("Jeden Kanal bzw. jede Zone einer Gruppe zuordnen – jede Gruppe bekommt ihren eigenen Effekt. " +
-               "„Haupt-Effekt“ = nicht gruppiert. Reihenfolge in der Gruppe = Reihenfolge hier (für durchgehende Effekte).");
+        c.Note("Kanal einer Gruppe zuordnen → die Gruppe bekommt ihren eigenen Effekt (darunter). „Haupt-Effekt“ = nicht gruppiert.");
         string[] Options() => new[] { "Haupt-Effekt" }.Concat(st.Groups.Select(g => g.Name)).Append("+ neue Gruppe").ToArray();
         foreach (var t in list)
         {
@@ -1474,7 +1508,11 @@ sealed class RgbView : FlowLayoutPanel
             }
         }
         Add(c);
+    }
 
+    void BuildGroupEditors(List<IRgbTarget> list)
+    {
+        var st = _svc.Settings;
         for (int gi = 0; gi < st.Groups.Count; gi++)
         {
             var g = st.Groups[gi];
