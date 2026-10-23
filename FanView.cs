@@ -371,7 +371,7 @@ sealed class FanView : FlowLayoutPanel
             foreach (var ch in cand)
             {
                 var fan = ch;
-                c.Check(fan.DisplayName + (fan.Cfg.StartPercent is float sp ? $"   (läuft ab {sp:0} % an)" : ""), fan.Cfg.AllowStop,
+                c.Check(fan.DisplayName + (fan.Cfg.StartPercent is float sp ? $"   (läuft ab {sp:0} % an" + (fan.Cfg.StopPercent is float sq ? $", hält bis {sq:0} %)" : ")") : ""), fan.Cfg.AllowStop,
                     v => { fan.Cfg.AllowStop = v; _ctl.Save(); });
             }
         }
@@ -1594,9 +1594,9 @@ sealed class CalibrationPanel : Panel
         _note = new Label
         {
             ForeColor = Theme.Muted, AutoSize = true, UseMnemonic = false,
-            Text = "Misst für jeden Mainboard-Lüfter die höchste Drehzahl und ab wie viel Prozent er sicher anläuft. " +
-                   "Diese Grenze wird danach als Untergrenze genutzt – so bleibt kein Lüfter bei niedriger Leistung stehen. " +
-                   "Dauert etwa 1–2 Minuten, am besten im Leerlauf. Pumpen werden nur bei 100 % gemessen und nie angehalten.",
+            Text = "Misst für jeden Mainboard-Lüfter die höchste Drehzahl, ab wie viel Prozent er aus dem Stand anläuft und bis wie weit herunter " +
+                   "er danach weiterdreht. Der Anlauf-Wert wird nur kurz zum Anschieben benutzt, danach regelt der Lüfter bis zur Weiterlauf-Grenze herunter. " +
+                   "Dauert etwa 2–4 Minuten, am besten im Leerlauf. Pumpen werden nur bei 100 % gemessen und nie angehalten.",
         };
         _btn = PageBar.Button("Alle Lüfter kalibrieren", K, 210);
         _btn.Click += (_, _) => Toggle();

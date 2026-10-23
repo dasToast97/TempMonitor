@@ -1,11 +1,7 @@
-## Neu in 2.15.0
+## Neu in 2.15.1
 
-**5 neue ruhige RGB-Effekte** (Reiter RGB → Effekt bzw. Voreinstellung):
-
-- **Lavalampe** – große, weiche Farbblasen treiben langsam hin und her und verschmelzen.
-- **Meeresrauschen** – ruhige Dünung wie Wellen am Strand, mit hellerem Wellenkamm.
-- **Glühwürmchen** – einzelne weiche Lichter glimmen auf, treiben ein Stück und verlöschen.
-- **Nordlicht-Schleier** – mehrere langsame Lichtschleier überlagern sich wie ein Polarlicht.
-- **Glut** – warme Glut, die ganz ruhig an- und abschwillt, jede LED etwas anders.
-
-Alle mit Farben, Tempo, Helligkeit, „Dunkelste Stufe“ und Breite einstellbar.
+**Kalibrierung überarbeitet**
+- Misst jetzt zwei Werte: **Anlauf** (ab wie viel % der Lüfter aus dem Stand anläuft, in feinen 3-%-Schritten mit mehr Zeit je Schritt) und **Weiterlauf** (bis wie weit herunter er danach weiterdreht).
+- Der Anlauf-Wert wird nur noch kurz zum Anschieben benutzt (nur so viel wie nötig, nicht mehr pauschal 50 %) – danach regelt der Lüfter bis zur Weiterlauf-Grenze herunter.
+- Bleibt ein Lüfter im Betrieb doch stehen, wird er sofort angeschoben und die Untergrenze lernt automatisch etwas nach.
+- Bereits kalibrierte Lüfter: Die Untergrenze wird vorerst aus dem alten Wert geschätzt. Für genaue Werte einmal neu kalibrieren (Lüfter → Erweiterte Einstellungen → Kalibrierung).

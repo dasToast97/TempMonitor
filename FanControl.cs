@@ -120,6 +120,9 @@ sealed class FanChannelSettings
     // ----- Kalibrierung -----
     /// Ab dieser Leistung läuft der Lüfter sicher an (wird als Untergrenze genutzt)
     public float? StartPercent { get; set; }
+    /// Darunter bleibt der laufende Lüfter stehen – das ist die eigentliche Untergrenze im Betrieb
+    /// (Anlaufen braucht mehr als Weiterlaufen; der Anlauf-Wert wird nur kurz zum Anschieben benutzt)
+    public float? StopPercent { get; set; }
     public float? MinRpm { get; set; }
     public float? MaxRpm { get; set; }
     public DateTime? CalibratedAt { get; set; }
@@ -493,6 +496,10 @@ sealed class FanChannel
     public int CalPhase;
     public DateTime CalNext;
     public float CalPct;
+    /// Kalibrierung: zuletzt gemessene Leistung, bei der er noch lief
+    public float CalLastRun;
+    /// Betrieb: Takte, in denen der Lüfter trotz Leistung stand (lernt die Untergrenze nach)
+    public int LowStallTicks;
     public string? CalNote;
 
     // Lüfter-Stopp im Leerlauf
@@ -1070,7 +1077,8 @@ sealed class FanController
             {
                 1 => "Kalibrierung: 100 % – höchste Drehzahl messen …",
                 2 => "Kalibrierung: 0 % – bleibt der Lüfter stehen?",
-                _ => $"Kalibrierung: {ch.CalPct:0} % – läuft er schon an?",
+                3 => $"Kalibrierung: {ch.CalPct:0} % – läuft er schon an?",
+                _ => $"Kalibrierung: {ch.CalPct:0} % – läuft er noch?",
             };
             return;
         }
@@ -1118,27 +1126,53 @@ sealed class FanController
                     return;
                 }
                 ch.CalPhase = 3;
-                ch.CalPct = 5;
-                ch.CalNext = DateTime.Now.AddSeconds(4);
+                ch.CalPct = 4;
+                ch.CalNext = DateTime.Now.AddSeconds(5);
                 break;
 
-            default:
+            case 3:
+                // Anlauf aus dem Stand: in kleinen Schritten hoch, je Schritt 5 s Zeit zum Anlaufen
                 if (rpm >= 150)
                 {
-                    ch.Cfg.MinRpm = rpm;
-                    ch.Cfg.StartPercent = Math.Min(100, ch.CalPct + 5);   // etwas Reserve
-                    Done($"läuft ab {ch.CalPct:0} % an (Untergrenze {ch.Cfg.StartPercent:0} %), höchstens {ch.Cfg.MaxRpm:N0} U/min");
-                    return;
+                    ch.Cfg.StartPercent = Math.Min(100, ch.CalPct + 3);   // kleine Reserve
+                    // jetzt läuft er: langsam herunterfahren, bis er stehen bleibt
+                    ch.CalLastRun = ch.CalPct;
+                    ch.CalPhase = 4;
+                    ch.CalNext = DateTime.Now.AddSeconds(4);
+                    break;
                 }
-                ch.CalPct += 5;
+                ch.CalPct += 3;
                 if (ch.CalPct > 70)
                 {
                     ch.Cfg.StartPercent = null;
+                    ch.Cfg.StopPercent = null;
                     Done("läuft erst über 70 % an – keine Untergrenze gesetzt");
                     return;
                 }
-                ch.CalNext = DateTime.Now.AddSeconds(4);
+                ch.CalNext = DateTime.Now.AddSeconds(5);
                 break;
+
+            default:
+                // Weiterlaufen: von der Anlauf-Leistung in 2-%-Schritten herunter, bis er stehen bleibt
+                if (rpm >= 150)
+                {
+                    ch.CalLastRun = ch.CalPct;
+                    ch.Cfg.MinRpm = rpm;
+                    ch.CalPct -= 2;
+                    if (ch.CalPct < 1)
+                    {
+                        ch.Cfg.StopPercent = 1;
+                        ch.KickUntil = DateTime.Now.AddSeconds(2);
+                        Done($"läuft ab {ch.Cfg.StartPercent:0} % an und läuft bis ganz unten weiter, höchstens {ch.Cfg.MaxRpm:N0} U/min");
+                        return;
+                    }
+                    ch.CalNext = DateTime.Now.AddSeconds(4);
+                    break;
+                }
+                ch.Cfg.StopPercent = Math.Min(ch.Cfg.StartPercent ?? 100, ch.CalLastRun + 3);   // kleine Reserve
+                ch.KickUntil = DateTime.Now.AddSeconds(3);   // steht jetzt – gleich wieder anschieben
+                Done($"läuft ab {ch.Cfg.StartPercent:0} % an, dreht danach bis {ch.Cfg.StopPercent:0} % weiter, höchstens {ch.Cfg.MaxRpm:N0} U/min");
+                return;
         }
         Write(ch, ch.CalPct);
         ch.Output = ch.CalPct;
@@ -1556,11 +1590,16 @@ sealed class FanController
         return ch.Faulted;
     }
 
+    /// Untergrenze im Betrieb: gemessene „läuft noch“-Leistung; alte Kalibrierungen (nur Anlauf-Wert) grob abgeschätzt –
+    /// bleibt er dabei stehen, lernt TickChannel nach
+    static float? RunFloor(FanChannel ch) =>
+        ch.Cfg.StopPercent ?? (ch.Cfg.StartPercent is float sp ? Math.Max(8f, sp - 12f) : null);
+
     (float Min, float Max) Limits(FanChannel ch, ProfileInfo prof)
     {
         float min = prof.MinPercent;
         if (ch.Kind == FanKind.Pump) min = Math.Max(min, _s.PumpMinPercent);
-        else if (ch.Cfg.StartPercent is float sp && prof.Profile != FanProfile.Max) min = Math.Max(min, sp);
+        else if (prof.Profile != FanProfile.Max && RunFloor(ch) is float fl) min = Math.Max(min, fl);
         min = Math.Max(min, ch.Control?.MinSoftwareValue ?? 0f);
         float max = Math.Min(100f, ch.Control is { MaxSoftwareValue: > 0 } c ? c.MaxSoftwareValue : 100f);
         return (Math.Min(min, max), max);
@@ -1795,10 +1834,29 @@ sealed class FanController
                 ch.KickUntil = DateTime.Now.AddSeconds(3);
                 ch.RestartedAt = DateTime.Now;
             }
+            // Steht der Lüfter, obwohl er laufen soll (z. B. Leistung unter der Anlauf-Grenze), kurz anschieben
+            if (DateTime.Now >= ch.KickUntil && next > 0 && !ch.Cfg.NoTachSignal && ch.Rpm?.Value is float rr && rr < 100
+                && ch.Cfg.StartPercent is float st0 && next < st0 && (DateTime.Now - ch.RestartedAt).TotalSeconds > 6)
+            {
+                if (++ch.LowStallTicks >= 3)
+                {
+                    // Hat er schon einmal mit dieser Leistung gestanden: Untergrenze etwas anheben (lernt nach)
+                    if ((DateTime.Now - ch.RestartedAt).TotalSeconds < 60 && RunFloor(ch) is float fl0)
+                    {
+                        ch.Cfg.StopPercent = Math.Min(st0, fl0 + 4);
+                        _s.Save();
+                    }
+                    ch.KickUntil = DateTime.Now.AddSeconds(3);
+                    ch.RestartedAt = DateTime.Now;
+                    ch.LowStallTicks = 0;
+                }
+            }
+            else ch.LowStallTicks = 0;
             if (DateTime.Now < ch.KickUntil)
             {
-                next = Math.Max(next, Math.Min(max, Math.Max(50f, (ch.Cfg.StartPercent ?? 30f) + 20f)));
-                ch.Status = "Läuft wieder an …";
+                // nur so viel wie zum Anlaufen nötig, danach regelt er wieder bis zur Untergrenze herunter
+                next = Math.Max(next, Math.Min(max, (ch.Cfg.StartPercent ?? 30f) + 8f));
+                ch.Status = "Läuft an …";
             }
         }
 
