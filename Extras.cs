@@ -291,18 +291,30 @@ static class TrayIconPainter
 // ===========================================================================
 sealed class OverlayForm : Form
 {
-    Font LabelFont => Dpi.F("Segoe UI", 9f, this);
-    Font ValueFont => Dpi.F("Segoe UI Semibold", 11f, this);
+    Font LabelFont => Dpi.F("Segoe UI", 9f * OvScale, this);
+    Font ValueFont => Dpi.F("Segoe UI Semibold", 11f * OvScale, this);
+    static float OvScale => Math.Clamp(AppSettings.Instance.OverlayScale, 70, 200) / 100f;
 
     readonly Func<KeySensors?> _keys;
     readonly Func<FanController?> _fans;
+    readonly Func<IComputer?> _computer;
     Point _dragStart;
     bool _dragging;
 
-    public OverlayForm(Func<KeySensors?> keys, Func<FanController?> fans)
+    /// Feste Einträge (immer verfügbar) – dazu kann jeder einzelne Sensor kommen ("s:" + Kennung)
+    public static readonly (string Id, string Name)[] Builtin =
+    {
+        ("cpu", "CPU-Temperatur + Auslastung"), ("gpu", "GPU-Temperatur + Auslastung"), ("hotspot", "GPU-Hot-Spot"),
+        ("board", "Mainboard-Temperatur"), ("fans", "Lüfter Ø (Mainboard)"), ("gpufan", "GPU-Lüfter"),
+        ("pump", "Pumpe"), ("profile", "Lüfter-Profil"), ("time", "Uhrzeit"),
+    };
+    public static readonly List<string> Defaults = new() { "cpu", "gpu", "hotspot", "fans", "gpufan" };
+
+    public OverlayForm(Func<KeySensors?> keys, Func<FanController?> fans, Func<IComputer?>? computer = null)
     {
         _keys = keys;
         _fans = fans;
+        _computer = computer ?? (() => null);
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
@@ -320,6 +332,16 @@ sealed class OverlayForm : Form
             : new Point(wa.Right - Width - 20, wa.Top + 20);
 
         var menu = new ContextMenuStrip();
+        menu.Items.Add("Werte auswählen …", null, (_, _) => OverlayPicker.Show(this, _computer()));
+        var size = new ToolStripMenuItem("Größe");
+        foreach (int pct in new[] { 80, 100, 125, 150, 200 })
+        {
+            int p = pct;
+            var it = new ToolStripMenuItem($"{pct} %") { Checked = s.OverlayScale == pct };
+            it.Click += (_, _) => { AppSettings.Instance.OverlayScale = p; AppSettings.Instance.Save(); Invalidate(); };
+            size.DropDownItems.Add(it);
+        }
+        menu.Items.Add(size);
         menu.Items.Add("Overlay ausblenden", null, (_, _) =>
         {
             AppSettings.Instance.OverlayEnabled = false;
@@ -361,47 +383,202 @@ sealed class OverlayForm : Form
         AppSettings.Instance.Save();
     }
 
+    /// Kurze Beschriftung eines Sensors fürs Overlay (eigener Name, sonst Bauteil + Sensorname)
+    public static string ShortLabel(ISensor s, IHardware top)
+    {
+        if (AppSettings.Instance.OverlayNames.TryGetValue("s:" + s.Identifier, out var n) && n.Length > 0) return n;
+        string cat = top.HardwareType switch
+        {
+            HardwareType.Cpu => "CPU", HardwareType.GpuAmd or HardwareType.GpuNvidia or HardwareType.GpuIntel => "GPU",
+            HardwareType.Motherboard or HardwareType.SuperIO => "Board", HardwareType.Memory => "RAM", HardwareType.Storage => "SSD",
+            HardwareType.Network => "Netz", _ => "",
+        };
+        string name = Hw.SensorLabel(s);
+        return cat.Length > 0 && !name.StartsWith(cat, StringComparison.OrdinalIgnoreCase) ? $"{cat} {name}" : name;
+    }
+
+    List<(string Label, string Value, Color Col)> Rows()
+    {
+        var rows = new List<(string, string, Color)>();
+        var keys = _keys();
+        var fc = _fans();
+        var items = AppSettings.Instance.OverlayItems is { Count: > 0 } l ? l : Defaults;
+        foreach (var id in items)
+        {
+            switch (id)
+            {
+                case "cpu": Temp("CPU", keys?.Cpu, keys?.CpuLoad); break;
+                case "gpu": Temp("GPU", keys?.Gpu, keys?.GpuLoad); break;
+                case "hotspot": Temp("Hot Spot", keys?.Hotspot, null); break;
+                case "board": Temp("Board", keys?.Board, null); break;
+                case "fans":
+                    var rpms = fc?.Channels.Where(c => c.Kind == FanKind.Fan && !c.IsGpu && c.Rpm?.Value is float).Select(c => c.Rpm!.Value ?? 0).ToList();
+                    if (rpms is { Count: > 0 }) rows.Add(("Lüfter Ø", $"{rpms.Average():N0} U/min", Theme.Text));
+                    break;
+                case "gpufan":
+                    if (fc?.Channels.FirstOrDefault(c => c.IsGpu)?.Rpm?.Value is float gf) rows.Add(("GPU-Lüfter", $"{gf:N0} U/min", Theme.Text));
+                    break;
+                case "pump":
+                    if (fc?.Channels.FirstOrDefault(c => c.Kind == FanKind.Pump)?.Rpm?.Value is float pr) rows.Add(("Pumpe", $"{pr:N0} U/min", pr < 300 ? Theme.Hot : Theme.Text));
+                    break;
+                case "profile":
+                    if (fc != null) rows.Add(("Profil", Profiles.Get(fc.Profile).Title, Theme.Text));
+                    break;
+                case "time": rows.Add(("Uhrzeit", DateTime.Now.ToString("HH:mm"), Theme.Text)); break;
+                default:
+                    if (id.StartsWith("s:") && _computer() is IComputer comp && Hw.FindSensor(comp, id[2..]) is { } f && f.Sensor.Value is float v)
+                    {
+                        var col = f.Sensor.SensorType == SensorType.Temperature ? Theme.ForTemp(v) : Theme.Text;
+                        string val = f.Sensor.SensorType == SensorType.Temperature ? $"{v:0}°" : SensorFormat.Value(f.Sensor.SensorType, v);
+                        rows.Add((ShortLabel(f.Sensor, f.Top), val, col));
+                    }
+                    break;
+            }
+        }
+        return rows;
+
+        void Temp(string label, ISensor? t, ISensor? load)
+        {
+            if (t?.Value is not float v) return;
+            string val = $"{v:0}°" + (load?.Value is float ld ? $"  ·  {ld:0} %" : "");
+            rows.Add((label, val, Theme.ForTemp(v)));
+        }
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        float k = Dpi.K(this);
+        float k = Dpi.K(this) * OvScale;
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
         g.Clear(Theme.Header);
         using (var border = new Pen(Theme.Border)) g.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
 
-        var keys = _keys();
-        var rows = new List<(string Label, string Value, Color Col)>();
-        void Temp(string label, ISensor? t, ISensor? load)
-        {
-            if (t?.Value is not float v) return;
-            string val = $"{v:0}°" + (load?.Value is float l ? $"  ·  {l:0} %" : "");
-            rows.Add((label, val, Theme.ForTemp(v)));
-        }
-        if (keys != null)
-        {
-            Temp("CPU", keys.Cpu, keys.CpuLoad);
-            Temp("GPU", keys.Gpu, keys.GpuLoad);
-            Temp("Hot Spot", keys.Hotspot, null);
-        }
-        if (_fans() is { Channels.Count: > 0 } fc)
-        {
-            var rpms = fc.Channels.Where(c => c.Kind == FanKind.Fan && !c.IsGpu && c.Rpm?.Value is float).Select(c => c.Rpm!.Value ?? 0).ToList();
-            if (rpms.Count > 0) rows.Add(("Lüfter Ø", $"{rpms.Average():N0} U/min", Theme.Text));
-            var gpuFan = fc.Channels.FirstOrDefault(c => c.IsGpu)?.Rpm?.Value;
-            if (gpuFan is float gf) rows.Add(("GPU-Lüfter", $"{gf:N0} U/min", Theme.Text));
-        }
-
-        int y = (int)(8 * k), rh = (int)(22 * k);
+        var rows = Rows();
+        if (rows.Count == 0) rows.Add(("Overlay", "Rechtsklick → Werte auswählen", Theme.Muted));
+        int labelW = rows.Max(r => TextRenderer.MeasureText(r.Label, LabelFont).Width);
+        int valueW = rows.Max(r => TextRenderer.MeasureText(r.Value, ValueFont).Width);
+        int pad = (int)(10 * k), gap = (int)(14 * k), rh = (int)(22 * k);
+        int y = (int)(8 * k);
         foreach (var (label, value, col) in rows)
         {
-            TextRenderer.DrawText(g, label, LabelFont, new Rectangle((int)(10 * k), y, (int)(80 * k), rh), Theme.Muted,
+            TextRenderer.DrawText(g, label, LabelFont, new Rectangle(pad, y, labelW + 2, rh), Theme.Muted,
                 TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-            TextRenderer.DrawText(g, value, ValueFont, new Rectangle((int)(80 * k), y, Width - (int)(90 * k), rh), col,
+            TextRenderer.DrawText(g, value, ValueFont, new Rectangle(pad + labelW + gap, y, valueW + 2, rh), col,
                 TextFormatFlags.NoPrefix | TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
             y += rh;
         }
-        int want = y + (int)(6 * k);
-        if (Math.Abs(Height - want) > 2) Height = want;
+        int wantH = y + (int)(6 * k), wantW = pad * 2 + labelW + gap + valueW + 4;
+        if (Math.Abs(Height - wantH) > 2 || Math.Abs(Width - wantW) > 2)
+        {
+            // rechte Kante festhalten, wenn das Overlay rechts am Bildschirm sitzt
+            var wa = Screen.FromControl(this).WorkingArea;
+            bool rightAligned = Right >= wa.Right - 60;
+            int right = Right;
+            Size = new Size(wantW, wantH);
+            if (rightAligned) Left = right - Width;
+        }
+    }
+}
+
+/// Auswahl der Overlay-Werte: feste Einträge + jeder Sensor, Reihenfolge per ▲ ▼, eigener Name per Doppelklick
+static class OverlayPicker
+{
+    public static void Show(IWin32Window? owner, IComputer? computer)
+    {
+        var s = AppSettings.Instance;
+        float k = owner is Control oc ? Dpi.K(oc) : 1f;
+        int S(float px) => (int)(px * k);
+        using var f = new Form
+        {
+            Text = "Overlay – Werte auswählen", StartPosition = FormStartPosition.CenterScreen, BackColor = Theme.Background, ForeColor = Theme.Text,
+            Size = new Size(S(560), S(620)), MinimizeBox = false, MaximizeBox = false, ShowInTaskbar = false, Font = new Font("Segoe UI", 9f),
+        };
+        DarkMode.TitleBar(f);
+        var hint = new Label
+        {
+            Text = "Haken = wird angezeigt. Reihenfolge mit ▲ ▼. Doppelklick auf einen Sensor = eigenen Namen vergeben.",
+            Dock = DockStyle.Top, Height = S(40), ForeColor = Theme.Muted, Padding = new Padding(S(8), S(6), S(8), 0),
+        };
+        var list = new CheckedListBox { Dock = DockStyle.Fill, BackColor = Theme.Card, ForeColor = Theme.Text, BorderStyle = BorderStyle.None, CheckOnClick = true, IntegralHeight = false };
+        DarkMode.Use(list);
+
+        // Einträge: zuerst die gewählten in ihrer Reihenfolge, dann alle übrigen
+        var all = new List<(string Id, string Text)>();
+        foreach (var (id, name) in OverlayForm.Builtin) all.Add((id, name));
+        if (computer != null)
+            foreach (var hw in computer.Hardware.OrderBy(h => MainForm.Order(h.HardwareType)))
+                foreach (var sen in MainForm.AllSensors(hw).Where(x => x.Value.HasValue && x.SensorType is SensorType.Temperature or SensorType.Load
+                             or SensorType.Fan or SensorType.Power or SensorType.Clock or SensorType.Control or SensorType.Voltage or SensorType.Throughput
+                             or SensorType.Data or SensorType.SmallData or SensorType.Flow or SensorType.Level))
+                {
+                    if (Hw.IsEmptyFanPort(sen)) continue;
+                    string own = s.OverlayNames.TryGetValue("s:" + sen.Identifier, out var on) ? $"  „{on}“" : "";
+                    all.Add(("s:" + sen.Identifier, $"{hw.Name} · {Hw.SensorLabel(sen)} ({SensorFormat.Label(sen.SensorType)}){own}"));
+                }
+        var chosen = s.OverlayItems is { Count: > 0 } l ? l.ToList() : OverlayForm.Defaults.ToList();
+        var ordered = chosen.Select(id => all.FirstOrDefault(a => a.Id == id)).Where(a => a.Id != null).ToList();
+        ordered.AddRange(all.Where(a => !chosen.Contains(a.Id)));
+        var ids = new List<string>();
+        foreach (var (id, text) in ordered) { ids.Add(id); list.Items.Add(text, chosen.Contains(id)); }
+
+        void Move(int dir)
+        {
+            int i = list.SelectedIndex, j = i + dir;
+            if (i < 0 || j < 0 || j >= list.Items.Count) return;
+            var txt = list.Items[i]; bool chk = list.GetItemChecked(i);
+            list.Items.RemoveAt(i); list.Items.Insert(j, txt); list.SetItemChecked(j, chk);
+            (ids[i], ids[j]) = (ids[j], ids[i]);
+            list.SelectedIndex = j;
+        }
+        list.DoubleClick += (_, _) =>
+        {
+            int i = list.SelectedIndex;
+            if (i < 0 || !ids[i].StartsWith("s:")) return;
+            string cur = s.OverlayNames.GetValueOrDefault(ids[i], "");
+            string? name = Prompt(f, "Eigener Name im Overlay (leer = automatisch):", cur);
+            if (name == null) return;
+            if (name.Trim().Length == 0) s.OverlayNames.Remove(ids[i]); else s.OverlayNames[ids[i]] = name.Trim();
+            string t = list.Items[i]!.ToString()!;
+            int q = t.IndexOf("  „", StringComparison.Ordinal);
+            if (q >= 0) t = t[..q];
+            list.Items[i] = name.Trim().Length > 0 ? $"{t}  „{name.Trim()}“" : t;
+        };
+
+        var bar = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = S(44), FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(S(6)), BackColor = Theme.Background };
+        Button B(string text, Action a) { var b = PageBar.Button(text, k, 110); b.Click += (_, _) => a(); bar.Controls.Add(b); return b; }
+        B("Übernehmen", () =>
+        {
+            s.OverlayItems = Enumerable.Range(0, list.Items.Count).Where(list.GetItemChecked).Select(i => ids[i]).ToList();
+            s.Save();
+            f.DialogResult = DialogResult.OK;
+        });
+        B("Standard", () =>
+        {
+            for (int i = 0; i < list.Items.Count; i++) list.SetItemChecked(i, OverlayForm.Defaults.Contains(ids[i]));
+        });
+        B("▼", () => Move(1));
+        B("▲", () => Move(-1));
+        f.Controls.Add(list);
+        f.Controls.Add(hint);
+        f.Controls.Add(bar);
+        f.ShowDialog(owner);
+    }
+
+    static string? Prompt(IWin32Window owner, string text, string value)
+    {
+        using var f = new Form
+        {
+            Text = "Name", StartPosition = FormStartPosition.CenterParent, BackColor = Theme.Background, ForeColor = Theme.Text,
+            Size = new Size(380, 150), FormBorderStyle = FormBorderStyle.FixedDialog, MinimizeBox = false, MaximizeBox = false, ShowInTaskbar = false,
+        };
+        DarkMode.TitleBar(f);
+        var l = new Label { Text = text, AutoSize = true, Location = new Point(12, 12), ForeColor = Theme.Muted };
+        var tb = new TextBox { Text = value, Location = new Point(12, 36), Width = 340, BackColor = Theme.CardHero, ForeColor = Theme.Text };
+        var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(196, 70), Width = 75 };
+        var cancel = new Button { Text = "Abbrechen", DialogResult = DialogResult.Cancel, Location = new Point(277, 70), Width = 75 };
+        f.Controls.AddRange(new Control[] { l, tb, ok, cancel });
+        f.AcceptButton = ok; f.CancelButton = cancel;
+        return f.ShowDialog(owner) == DialogResult.OK ? tb.Text : null;
     }
 }
 
@@ -560,6 +737,9 @@ sealed class SettingsView : FlowLayoutPanel
     float K => Dpi.K(this);
     int S(float px) => (int)(px * K);
 
+    /// Sensoren für die Overlay-Auswahl
+    public static Func<IComputer?>? OverlayComputer;
+
     /// Weitere Abschnitte (z. B. Automatik, Gesundheit) hängen sich hier ein
     public static event Action<SettingsView>? Extend;
 
@@ -691,7 +871,10 @@ sealed class SettingsView : FlowLayoutPanel
         t.Space(6);
         t.Check("Overlay anzeigen: kleines Fenster mit den wichtigsten Werten, immer im Vordergrund (verschiebbar)",
             s.OverlayEnabled, v => { s.OverlayEnabled = v; Save(); _overlayChanged(); });
-        t.Numbers(("Deckkraft", (float)s.OverlayOpacity, 30, 100, "%", (Action<float>)(v => { s.OverlayOpacity = (int)v; Save(); _overlayChanged(); })));
+        t.Numbers(("Deckkraft", (float)s.OverlayOpacity, 30, 100, "%", (Action<float>)(v => { s.OverlayOpacity = (int)v; Save(); _overlayChanged(); })),
+                  ("Größe", (float)s.OverlayScale, 70, 200, "%", (Action<float>)(v => { s.OverlayScale = (int)v; Save(); _overlayChanged(); })));
+        t.Buttons(("Overlay-Werte auswählen …", () => { OverlayPicker.Show(FindForm(), OverlayComputer?.Invoke()); _overlayChanged(); }));
+        t.Note("Auch per Rechtsklick auf das Overlay. Jeder Sensor ist wählbar, Reihenfolge und Namen frei.");
 
         // ----- Aufzeichnung & Autostart -----
         AddSection("Aufzeichnung & Autostart", Color.FromArgb(45, 212, 191));

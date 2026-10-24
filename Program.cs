@@ -386,6 +386,7 @@ sealed class MainForm : Form
         if (_loaded) return;   // kann beim Start mit /tray früh aufgerufen werden
         _loaded = true;
         Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        SettingsView.OverlayComputer = () => _computer;
         // RGB sofort starten (vor den Sensoren, die einige Sekunden brauchen) – damit die Beleuchtung nach dem
         // Hochfahren so früh wie möglich den eigenen Effekt zeigt
         StartRgb();
@@ -653,10 +654,11 @@ sealed class MainForm : Form
         {
             if (_overlay == null || _overlay.IsDisposed)
             {
-                _overlay = new OverlayForm(() => _keys, () => _fans);
+                _overlay = new OverlayForm(() => _keys, () => _fans, () => _computer);
                 _overlay.Show();
             }
             _overlay.Opacity = Math.Clamp(s.OverlayOpacity, 30, 100) / 100.0;
+            _overlay.Invalidate();
         }
         else if (_overlay != null && !_overlay.IsDisposed)
         {

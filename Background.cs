@@ -46,6 +46,10 @@ sealed class AppSettings
     public int OverlayX { get; set; } = -1;
     public int OverlayY { get; set; } = -1;
     public int OverlayOpacity { get; set; } = 85;
+    /// Overlay: angezeigte Werte in Reihenfolge (leer = Standard), Größe in %, eigene Namen
+    public List<string> OverlayItems { get; set; } = new();
+    public int OverlayScale { get; set; } = 100;
+    public Dictionary<string, string> OverlayNames { get; set; } = new();
 
     /// Welche CSV-Spalte welcher Hauptwert ist (Cpu, Gpu, Hotspot, Board, CpuLoad, GpuLoad, CpuPower)
     public Dictionary<string, string> LogKeys { get; set; } = new();
