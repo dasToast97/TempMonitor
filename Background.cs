@@ -49,6 +49,9 @@ sealed class AppSettings
     /// Overlay: angezeigte Werte in Reihenfolge (leer = Standard), Größe in %, eigene Namen
     public List<string> OverlayItems { get; set; } = new();
     public int OverlayScale { get; set; } = 100;
+    /// Temperatur-Farben: Grenzen je Bauteil (leer = Standard) und die vier Farben (leer = Standard)
+    public Dictionary<string, TempScale> TempScales { get; set; } = new();
+    public List<int> TempColors { get; set; } = new();
     public Dictionary<string, string> OverlayNames { get; set; } = new();
 
     /// Welche CSV-Spalte welcher Hauptwert ist (Cpu, Gpu, Hotspot, Board, CpuLoad, GpuLoad, CpuPower)
@@ -80,6 +83,87 @@ sealed class AppSettings
             SafeFile.Write(FilePath, JsonSerializer.Serialize(this));
         }
         catch { }
+    }
+}
+
+// ===========================================================================
+// Temperatur-Farben: ab welcher Temperatur „normal“, „warm“, „heiß“ – je Bauteil einstellbar
+// ===========================================================================
+sealed class TempScale
+{
+    public float Normal { get; set; }
+    public float Warm { get; set; }
+    public float Hot { get; set; }
+}
+
+static class TempScales
+{
+    public static readonly (string Key, string Name, float Normal, float Warm, float Hot)[] Defs =
+    {
+        ("default", "Allgemein", 50, 70, 85),
+        ("cpu", "Prozessor", 50, 70, 85),
+        ("gpu", "Grafikkarte", 50, 70, 85),
+        ("hotspot", "GPU-Hot-Spot / Speicher", 60, 85, 100),
+        ("delta", "GPU ΔT Hot Spot − Kern", 10, 20, 30),
+        ("board", "Mainboard", 40, 55, 70),
+        ("ssd", "SSD / Laufwerke", 40, 55, 70),
+        ("ram", "Arbeitsspeicher", 45, 60, 75),
+    };
+    public static readonly int[] DefaultColors =
+    {
+        System.Drawing.Color.FromArgb(74, 222, 128).ToArgb(), System.Drawing.Color.FromArgb(250, 204, 21).ToArgb(),
+        System.Drawing.Color.FromArgb(251, 146, 60).ToArgb(), System.Drawing.Color.FromArgb(248, 113, 113).ToArgb(),
+    };
+    public static readonly string[] LevelNames = { "Kühl", "Normal", "Warm", "Heiß" };
+
+    public static TempScale Get(string key)
+    {
+        if (AppSettings.Instance.TempScales.TryGetValue(key, out var s)) return s;
+        var d = Defs.FirstOrDefault(x => x.Key == key);
+        if (d.Key == null) d = Defs[0];
+        return new TempScale { Normal = d.Normal, Warm = d.Warm, Hot = d.Hot };
+    }
+
+    /// Einstellbare Grenzen (legt einen eigenen Eintrag an)
+    public static TempScale Edit(string key)
+    {
+        var all = AppSettings.Instance.TempScales;
+        if (!all.TryGetValue(key, out var s)) { s = Get(key); all[key] = s; }
+        return s;
+    }
+
+    public static int Level(float t, string key)
+    {
+        var s = Get(key);
+        return t < s.Normal ? 0 : t < s.Warm ? 1 : t < s.Hot ? 2 : 3;
+    }
+
+    public static System.Drawing.Color Color(int level)
+    {
+        var c = AppSettings.Instance.TempColors;
+        return System.Drawing.Color.FromArgb(c.Count == 4 ? c[level] : DefaultColors[level]);
+    }
+
+    /// Welche Grenzen für diesen Sensor gelten
+    public static string KeyFor(LibreHardwareMonitor.Hardware.ISensor? s)
+    {
+        if (s == null) return "default";
+        if (s is DeltaSensor) return "delta";
+        string n = s.Name;
+        bool gpu = s.Hardware.HardwareType is LibreHardwareMonitor.Hardware.HardwareType.GpuAmd
+            or LibreHardwareMonitor.Hardware.HardwareType.GpuNvidia or LibreHardwareMonitor.Hardware.HardwareType.GpuIntel;
+        if (gpu && (n.Contains("Hot Spot", StringComparison.OrdinalIgnoreCase) || n.Contains("Hotspot", StringComparison.OrdinalIgnoreCase)
+                    || n.Contains("Junction", StringComparison.OrdinalIgnoreCase) || n.Contains("Memory", StringComparison.OrdinalIgnoreCase)))
+            return "hotspot";
+        return s.Hardware.HardwareType switch
+        {
+            LibreHardwareMonitor.Hardware.HardwareType.Cpu => "cpu",
+            _ when gpu => "gpu",
+            LibreHardwareMonitor.Hardware.HardwareType.Motherboard or LibreHardwareMonitor.Hardware.HardwareType.SuperIO => "board",
+            LibreHardwareMonitor.Hardware.HardwareType.Storage => "ssd",
+            LibreHardwareMonitor.Hardware.HardwareType.Memory => "ram",
+            _ => "default",
+        };
     }
 }
 

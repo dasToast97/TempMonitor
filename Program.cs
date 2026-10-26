@@ -129,13 +129,19 @@ static class Theme
     public static readonly Color Muted      = Color.FromArgb(142, 152, 168);
     public static readonly Color Accent     = Color.FromArgb(96, 165, 250);
 
-    public static readonly Color Cool = Color.FromArgb(74, 222, 128);   // grün
-    public static readonly Color Ok   = Color.FromArgb(250, 204, 21);   // gelb
-    public static readonly Color Warm = Color.FromArgb(251, 146, 60);   // orange
-    public static readonly Color Hot  = Color.FromArgb(248, 113, 113);  // rot
+    // Temperatur-Farben (in den Einstellungen änderbar)
+    public static Color Cool => TempScales.Color(0);   // grün
+    public static Color Ok   => TempScales.Color(1);   // gelb
+    public static Color Warm => TempScales.Color(2);   // orange
+    public static Color Hot  => TempScales.Color(3);   // rot
 
-    public static Color ForTemp(float t) => t switch { < 50 => Cool, < 70 => Ok, < 85 => Warm, _ => Hot };
-    public static string Status(float t) => t switch { < 50 => "Kühl", < 70 => "Normal", < 85 => "Warm", _ => "Heiß" };
+    public static Color ForTemp(float t) => ForTemp(t, "default");
+    public static string Status(float t) => Status(t, "default");
+    public static Color ForTemp(float t, string key) => TempScales.Level(t, key) switch { 0 => Cool, 1 => Ok, 2 => Warm, _ => Hot };
+    public static string Status(float t, string key) => TempScales.Level(t, key) switch { 0 => "Kühl", 1 => "Normal", 2 => "Warm", _ => "Heiß" };
+    /// Farbe passend zum Bauteil des Sensors (CPU, GPU, Hot Spot, ΔT, SSD …)
+    public static Color ForTemp(float t, ISensor? s) => ForTemp(t, TempScales.KeyFor(s));
+    public static string Status(float t, ISensor? s) => Status(t, TempScales.KeyFor(s));
 
     /// Eigene Farbe je Bauteil – macht die Bereiche auf einen Blick unterscheidbar
     public static Color ForCategory(string cat) => cat switch
@@ -1281,10 +1287,10 @@ sealed class LegendBar : Panel
         int d = (int)(10 * k);
         var items = new (Color C, string T)[]
         {
-            (Theme.Cool, "unter 50 °C – kühl"),
-            (Theme.Ok,   "50–70 °C – normal"),
-            (Theme.Warm, "70–85 °C – warm"),
-            (Theme.Hot,  "über 85 °C – heiß"),
+            (Theme.Cool, $"unter {TempScales.Get("default").Normal:0} °C – kühl"),
+            (Theme.Ok,   $"{TempScales.Get("default").Normal:0}–{TempScales.Get("default").Warm:0} °C – normal"),
+            (Theme.Warm, $"{TempScales.Get("default").Warm:0}–{TempScales.Get("default").Hot:0} °C – warm"),
+            (Theme.Hot,  $"über {TempScales.Get("default").Hot:0} °C – heiß   (Grenzen je Bauteil: Einstellungen)"),
         };
         foreach (var (c, t) in items)
         {

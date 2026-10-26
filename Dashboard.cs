@@ -252,7 +252,7 @@ sealed class SensorTile : Control
         const TextFormatFlags R = TextFormatFlags.NoPrefix | TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding;
 
         float? cur = Display();
-        var valCol = cur is float c && IsTemp ? Theme.ForTemp(c) : Theme.Text;
+        var valCol = cur is float c && IsTemp ? Theme.ForTemp(c, Sensor) : Theme.Text;
         var titleCol = _component ? _accent : Theme.Text;
         float? load = Load?.Value;
 
@@ -273,7 +273,7 @@ sealed class SensorTile : Control
                 new Rectangle(S(12), S(54), S(220), S(50)), valCol, L);
 
             // rechte Spalte: Status, Last, Min/Max
-            if (cur is float vv && IsTemp) DrawBadge(g, Theme.Status(vv), Theme.ForTemp(vv), new Point(Width - S(16), S(58)), k);
+            if (cur is float vv && IsTemp) DrawBadge(g, Theme.Status(vv, Sensor), Theme.ForTemp(vv, Sensor), new Point(Width - S(16), S(58)), k);
             if (load is float ld)
                 TextRenderer.DrawText(g, $"{LoadLabel} {ld:0} %", BadgeFont, new Rectangle(Width - S(150), S(84), S(134), S(18)), Theme.Accent, R);
             if (Sensor.Min is float mn && Sensor.Max is float mx)
@@ -284,7 +284,7 @@ sealed class SensorTile : Control
                     TextFormatFlags.NoPrefix | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             }
 
-            DrawGraph(g, new Rectangle(S(16), S(124), Width - S(32), Height - S(136)), IsTemp && cur is float t ? Theme.ForTemp(t) : _accent, k);
+            DrawGraph(g, new Rectangle(S(16), S(124), Width - S(32), Height - S(136)), IsTemp && cur is float t ? Theme.ForTemp(t, Sensor) : _accent, k);
         }
 
         if (Dimmed)

@@ -476,7 +476,7 @@ sealed class SensorTable : Control
                 if (s.Hardware.Name != _hwName) name += $"   · {s.Hardware.Name}";
                 bool hid = IsHidden?.Invoke(s) ?? false;
                 if (hid) name += "   (ausgeblendet)";
-                var valCol = s.SensorType == SensorType.Temperature && s.Value is float tv ? Theme.ForTemp(tv) : Theme.Text;
+                var valCol = s.SensorType == SensorType.Temperature && s.Value is float tv ? Theme.ForTemp(tv, s) : Theme.Text;
                 TextRenderer.DrawText(g, name, RowFont, new Rectangle(pad + (int)(16 * k), y, nameW - (int)(16 * k), rh), hid ? Theme.Muted : Theme.Text, L);
                 TextRenderer.DrawText(g, SensorFormat.Value(s.SensorType, s.Value), RowFont, new Rectangle(xVal, y, colW, rh), valCol, R);
                 TextRenderer.DrawText(g, SensorFormat.Value(s.SensorType, s.Min), RowFont, new Rectangle(xMin, y, colW, rh), Theme.Muted, R);

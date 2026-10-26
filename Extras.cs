@@ -263,7 +263,7 @@ static class TrayIconPainter
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
             g.Clear(Color.Transparent);
-            var col = Theme.ForTemp(v);
+            var col = Theme.ForTemp(v, AppSettings.Instance.TrayTempSource switch { "CPU" => "cpu", "GPU" => "gpu", "Hotspot" => "hotspot", _ => "default" });
             using (var path = Gfx.RoundRect(new Rectangle(0, 0, size - 1, size - 1), size / 4))
             using (var b = new SolidBrush(Color.FromArgb(235, 20, 22, 28)))
                 g.FillPath(b, path);
@@ -428,7 +428,7 @@ sealed class OverlayForm : Form
                 default:
                     if (id.StartsWith("s:") && _computer() is IComputer comp && Hw.FindSensor(comp, id[2..]) is { } f && f.Sensor.Value is float v)
                     {
-                        var col = f.Sensor.SensorType == SensorType.Temperature ? Theme.ForTemp(v) : Theme.Text;
+                        var col = f.Sensor.SensorType == SensorType.Temperature ? Theme.ForTemp(v, f.Sensor) : Theme.Text;
                         string val = f.Sensor.SensorType == SensorType.Temperature ? $"{v:0}°" : SensorFormat.Value(f.Sensor.SensorType, v);
                         rows.Add((ShortLabel(f.Sensor, f.Top), val, col));
                     }
@@ -441,7 +441,7 @@ sealed class OverlayForm : Form
         {
             if (t?.Value is not float v) return;
             string val = $"{v:0}°" + (load?.Value is float ld ? $"  ·  {ld:0} %" : "");
-            rows.Add((label, val, Theme.ForTemp(v)));
+            rows.Add((label, val, Theme.ForTemp(v, t)));
         }
     }
 
@@ -862,6 +862,43 @@ sealed class SettingsView : FlowLayoutPanel
         w.Numbers(("Dieselbe Warnung höchstens alle", (float)s.WarnCooldownMinutes, 1, 240, "Minuten", (Action<float>)(v => { s.WarnCooldownMinutes = (int)v; Save(); })));
 
         // ----- Infobereich & Overlay -----
+        // ----- Temperatur-Farben -----
+        AddSection("Temperatur-Farben", Theme.Warm);
+        var tc = AddCard();
+        tc.Note("Ab welcher Temperatur ein Wert als normal, warm oder heiß gilt – je Bauteil. Gilt überall: Übersicht, Detailseiten, Overlay, Infobereich.");
+        void ColorRow()
+        {
+            tc.Buttons(Enumerable.Range(0, 4).Select(i => (TempScales.LevelNames[i], (Action)(() =>
+            {
+                using var dlg = new ColorDialog { Color = TempScales.Color(i), FullOpen = true };
+                if (dlg.ShowDialog(FindForm()) != DialogResult.OK) return;
+                var cols = s.TempColors.Count == 4 ? s.TempColors : TempScales.DefaultColors.ToList();
+                cols[i] = dlg.Color.ToArgb();
+                s.TempColors = cols;
+                Save();
+                RebuildPage();
+            }))).Append(("Standard-Farben", (Action)(() => { s.TempColors = new(); Save(); RebuildPage(); }))).ToArray());
+            var btns = tc.Controls.OfType<Button>().TakeLast(5).Take(4).ToList();
+            for (int i = 0; i < btns.Count; i++)
+            {
+                var c = TempScales.Color(i);
+                btns[i].BackColor = c;
+                btns[i].ForeColor = c.GetBrightness() > 0.55f ? Color.Black : Color.White;
+            }
+        }
+        ColorRow();
+        tc.Note("Grenzen in °C („normal ab“ / „warm ab“ / „heiß ab“ – darunter gilt „kühl“):", muted: false);
+        foreach (var d in TempScales.Defs)
+        {
+            var sc = TempScales.Get(d.Key);
+            string key = d.Key;
+            var nums = tc.Numbers(
+                ($"{d.Name}:  normal ab", sc.Normal, -20, 150, "", (Action<float>)(v => { TempScales.Edit(key).Normal = v; Save(); })),
+                ("warm ab", sc.Warm, -20, 150, "", (Action<float>)(v => { TempScales.Edit(key).Warm = v; Save(); })),
+                ("heiß ab", sc.Hot, -20, 150, "°C", (Action<float>)(v => { TempScales.Edit(key).Hot = v; Save(); })));
+        }
+        tc.Buttons(("Alle Grenzen auf Standard", () => { s.TempScales = new(); Save(); RebuildPage(); }));
+
         AddSection("Infobereich & Overlay", Theme.Accent);
         var t = AddCard();
         string[] sources = { "CPU", "GPU", "Hotspot", "Max" };
