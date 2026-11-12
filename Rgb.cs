@@ -1462,13 +1462,15 @@ sealed class RgbView : FlowLayoutPanel
         if (fx.Type == EffectType.Breathing)
         {
             p.Note("Atmen – Zeiten in Millisekunden (0 = automatisch aus der Geschwindigkeit):", muted: false);
+            p.NumberWidth = 80;
             var a = p.Numbers(
                 ("Einblenden", (float)fx.FadeInMs, 0, 20000, "ms", (Action<float>)(v => { fx.FadeInMs = (int)v; Save(); })),
                 ("Hell halten", (float)fx.HoldOnMs, 0, 20000, "ms", (Action<float>)(v => { fx.HoldOnMs = (int)v; Save(); })));
             var b = p.Numbers(
                 ("Ausblenden", (float)fx.FadeOutMs, 0, 20000, "ms", (Action<float>)(v => { fx.FadeOutMs = (int)v; Save(); })),
                 ("Dunkel halten", (float)fx.HoldOffMs, 0, 20000, "ms", (Action<float>)(v => { fx.HoldOffMs = (int)v; Save(); })));
-            foreach (var n in a.Concat(b)) { n.Increment = 100; n.Width = S(70); }
+            p.NumberWidth = 0;
+            foreach (var n in a.Concat(b)) n.Increment = 100;
             p.Note("Beispiel „nie ganz aus, höchstens 80 %“: Helligkeit 80 %, Dunkelste Stufe 30 %.");
         }
         else
@@ -1505,11 +1507,12 @@ sealed class RgbView : FlowLayoutPanel
                    "Pause: wie lange es nach einem Durchlauf (bei „Lüfter für Lüfter“: nach dem letzten Lüfter) dunkel bleibt.");
             p.Check("Hin und her (statt immer in eine Richtung)", fx.Bounce, v => { fx.Bounce = v; Save(); });
         }
-        if (fx.Type != EffectType.Breathing)
+        if (fx.Type is not (EffectType.Breathing or EffectType.Comet))
         {
             p.Check("Rhythmus: Effekt im Takt hell und dunkel werden lassen (Hell-/Dunkel-Welle)", fx.Rhythm, v => { fx.Rhythm = v; Save(); RebuildSoon(); });
             if (fx.Rhythm)
             {
+                p.NumberWidth = 80;
                 var r1 = p.Numbers(
                     ("Einblenden", fx.RhyInMs, 0, 60000, "ms", (Action<float>)(v => { fx.RhyInMs = v; Save(); })),
                     ("Hell halten", fx.RhyOnMs, 0, 60000, "ms", (Action<float>)(v => { fx.RhyOnMs = v; Save(); })));
@@ -1517,7 +1520,8 @@ sealed class RgbView : FlowLayoutPanel
                     ("Ausblenden", fx.RhyOutMs, 0, 60000, "ms", (Action<float>)(v => { fx.RhyOutMs = v; Save(); })),
                     ("Dunkel halten", fx.RhyOffMs, 0, 60000, "ms", (Action<float>)(v => { fx.RhyOffMs = v; Save(); })));
                 var r3 = p.Numbers(("Versatz je LED", fx.RhyShiftMs, 0, 5000, "ms", (Action<float>)(v => { fx.RhyShiftMs = v; Save(); })));
-                foreach (var nn in r1.Concat(r2).Concat(r3)) { nn.Increment = 50; nn.Width = S(70); }
+                p.NumberWidth = 0;
+                foreach (var nn in r1.Concat(r2).Concat(r3)) nn.Increment = 50;
                 float per = (fx.RhyInMs + fx.RhyOnMs + fx.RhyOutMs + fx.RhyOffMs) / 1000f;
                 p.Note($"Die Welle kommt alle {per:0.##} s und ist {(fx.RhyInMs + fx.RhyOnMs + fx.RhyOutMs) / 1000f:0.##} s zu sehen. " +
                        "Versatz je LED: 0 = alle gleichzeitig, höher = die Welle läuft langsamer durch (bei „Lüfter für Lüfter“ von Lüfter zu Lüfter). " +
@@ -2015,7 +2019,8 @@ static class EffectRenderer
         }
         float pf = (float)(ph % 100000.0);
 
-        bool rhythm = fx.Rhythm && fx.Type != EffectType.Breathing;
+        // Rhythmus nur bei Effekten ohne eigenen Takt – beim Lauflicht würden sich zwei Takte überlagern (wildes Pulsieren)
+        bool rhythm = fx.Rhythm && fx.Type is not (EffectType.Breathing or EffectType.Comet);
         double rIn = Math.Max(0, fx.RhyInMs) / 1000.0, rOn = Math.Max(0, fx.RhyOnMs) / 1000.0,
                rOut = Math.Max(0, fx.RhyOutMs) / 1000.0, rOff = Math.Max(0, fx.RhyOffMs) / 1000.0;
         double rPeriod = Math.Max(0.05, rIn + rOn + rOut + rOff), shift = Math.Max(0, fx.RhyShiftMs) / 1000.0;

@@ -625,6 +625,8 @@ sealed class SettingsCard : Panel
     /// Mehrere Zahlenfelder in einer Zeile: (Beschriftung, Wert, Min, Max, Einheit, Setzen)
     /// Schrittweite der folgenden Zahlenfelder (kleiner als 1 = mit Nachkommastelle)
     public decimal Step { get; set; } = 1;
+    /// Breite der folgenden Zahlenfelder (0 = Standard)
+    public int NumberWidth { get; set; }
 
     public List<NumericUpDown> Numbers(params (string Label, float Value, int Min, int Max, string Unit, Action<float> Set)[] items)
     {
@@ -644,6 +646,7 @@ sealed class SettingsCard : Panel
                 n.Value = Math.Clamp(Math.Round((decimal)it.Value, 1), n.Minimum, n.Maximum);
                 n.Width = S(68);
             }
+            if (NumberWidth > 0) n.Width = S(NumberWidth);
             var set = it.Set;
             n.ValueChanged += (_, _) => set((float)n.Value);
             Controls.Add(n);
