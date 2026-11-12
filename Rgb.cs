@@ -1495,7 +1495,16 @@ sealed class RgbView : FlowLayoutPanel
         }
         p.Check("Richtung umkehren", fx.Reverse, v => { fx.Reverse = v; Save(); });
         p.Check("Von der Mitte aus (gespiegelt)", fx.Mirror, v => { fx.Mirror = v; Save(); });
-        if (fx.Type == EffectType.Comet) p.Check("Hin und her (statt immer in eine Richtung)", fx.Bounce, v => { fx.Bounce = v; Save(); });
+        if (fx.Type == EffectType.Comet)
+        {
+            p.Step = 0.5m;
+            p.Numbers(("Vorderkante weich", fx.HeadSoft, 0, 30, "LEDs", (Action<float>)(v => { fx.HeadSoft = v; Save(); })),
+                      ("Pause zwischen Durchläufen", fx.GapSec, 0, 60, "s", (Action<float>)(v => { fx.GapSec = v; Save(); })));
+            p.Step = 1;
+            p.Note("Vorderkante: wie viele LEDs vor dem Kopf schon langsam angehen (0 = springt an). Schweif-Länge = „Breite“. " +
+                   "Pause: wie lange es nach einem Durchlauf (bei „Lüfter für Lüfter“: nach dem letzten Lüfter) dunkel bleibt.");
+            p.Check("Hin und her (statt immer in eine Richtung)", fx.Bounce, v => { fx.Bounce = v; Save(); });
+        }
         if (fx.Type == EffectType.TempWave)
         {
             string[] sources = { "CPU", "GPU", "Hotspot", "Max" };
@@ -1735,6 +1744,10 @@ sealed class CustomEffect
     public bool Mirror { get; set; }
     /// Dichte / Anzahl in % (Tropfen, Sterne, Funken, Glühwürmchen, Blasen) – 100 = Standard
     public float Density { get; set; } = 100;
+    /// Lauflicht: so viele LEDs vor dem Kopf glimmen schon an (0 = Kopf springt hart an)
+    public float HeadSoft { get; set; } = 2;
+    /// Lauflicht: Pause zwischen zwei Durchläufen in Sekunden
+    public float GapSec { get; set; }
     /// Lauflicht: hin und her statt immer in eine Richtung
     public bool Bounce { get; set; }
     /// Atmen: Zeiten in Millisekunden (0 = automatisch aus der Geschwindigkeit)
@@ -1757,7 +1770,7 @@ sealed class CustomEffect
     public CustomEffect Clone() => new()
     {
         Type = Type, Colors = Colors.ToList(), Speed = Speed, Brightness = Brightness, Width = Width, Reverse = Reverse,
-        MinLevel = MinLevel, Softness = Softness, Mirror = Mirror, Bounce = Bounce, Density = Density,
+        MinLevel = MinLevel, Softness = Softness, Mirror = Mirror, Bounce = Bounce, Density = Density, HeadSoft = HeadSoft, GapSec = GapSec,
         FadeInMs = FadeInMs, HoldOnMs = HoldOnMs, FadeOutMs = FadeOutMs, HoldOffMs = HoldOffMs,
     };
 
@@ -2017,16 +2030,14 @@ static class EffectRenderer
                     break;
                 case EffectType.Comet:
                 {
-                    float cspan = span + width;
-                    float head = (float)(ph % cspan);
-                    if (sequence)
-                    {
-                        // Lauflicht Lüfter für Lüfter: der Komet läuft erst durch Lüfter 1, dann 2, 3 … und beginnt von vorn
-                        int slot = fx.Reverse ? units - 1 - unit : unit;
-                        head = (float)(ph % (cspan * units)) - slot * cspan;
-                        if (head < 0 || head >= cspan) head = -1000;
-                    }
+                    // Vorderkante: so viele LEDs vor dem Kopf glimmen schon an (weiches Einblenden statt Anspringen)
+                    float lead = Math.Clamp(fx.HeadSoft, 0, 30);
+                    // Pause zwischen zwei Durchläufen (in LED-Schritten, damit sie zum Tempo passt)
+                    float gap = Math.Max(0, fx.GapSec) * (float)rate;
+                    float cspan = span + width + lead;          // ein Durchlauf: Einblenden, Durchlaufen, Schweif läuft aus
+                    float head;
                     bool back = fx.Reverse;
+                    int xi = i;
                     if (fx.Bounce)
                     {
                         // hin und her: Kopf läuft bis zum Ende und wieder zurück
@@ -2037,10 +2048,36 @@ static class EffectRenderer
                         back = fx.Reverse ? fwd : !fwd;
                         if (fx.Reverse) head = bspan - head;
                     }
-                    else if (fx.Reverse) head = cspan - head;
-                    float d = back ? i - head : head - i;
-                    float tail = d >= 0 && d < width ? 1 - d / width : 0;
-                    tail = _soft < 0.3f ? (tail > 0 ? 1 : 0) : MathF.Pow(tail, 2.5f - _soft * 1.5f);
+                    else
+                    {
+                        if (sequence)
+                        {
+                            // Lauflicht Lüfter für Lüfter: erst Lüfter 1, dann 2, 3 …, danach die Pause, dann von vorn
+                            int slot = fx.Reverse ? units - 1 - unit : unit;
+                            float p0 = (float)(ph % (cspan * units + gap));
+                            head = p0 >= slot * cspan && p0 < (slot + 1) * cspan ? p0 - slot * cspan - lead : -1e6f;
+                        }
+                        else
+                        {
+                            float p0 = (float)(ph % (cspan + gap));
+                            head = p0 < cspan ? p0 - lead : -1e6f;
+                        }
+                        if (fx.Reverse) { xi = span - 1 - i; back = false; }
+                    }
+                    float d = back ? xi - head : head - xi;     // > 0: im Schweif, < 0: vor dem Kopf
+                    float tail;
+                    if (head < -1e5f) tail = 0;
+                    else if (d >= 0 && d < width)
+                    {
+                        tail = 1 - d / width;
+                        tail = _soft < 0.3f ? 1 : MathF.Pow(tail, 2.5f - _soft * 1.5f);
+                    }
+                    else if (d < 0 && lead > 0 && d > -lead)
+                    {
+                        float u = 1 + d / lead;                 // 0 … 1, je näher der Kopf kommt
+                        tail = u * u * (3 - 2 * u);             // weich ansteigen
+                    }
+                    else tail = 0;
                     var bg = pal.Count > 1 ? Scale(pal[1], Math.Max(min, 0.02f)) : Scale(pal[0], min);
                     c = Lerp(bg, pal[0], tail);
                     break;
