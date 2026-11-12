@@ -841,7 +841,7 @@ sealed class RgbService
     {
         var fx = Settings.Effect;
         var c = fx.Colors.Count > 0 ? Color.FromArgb(fx.Colors[0]) : Color.FromArgb(0, 120, 255);
-        return $"{BoardMode().Name}, erste Farbe (#{c.R:X2}{c.G:X2}{c.B:X2}), Tempo {fx.Speed} %";
+        return $"{BoardMode().Name}, erste Farbe (#{c.R:X2}{c.G:X2}{c.B:X2}), Tempo {Math.Min(fx.Speed, 100):0.#} %";
     }
 
     /// Mischbetrieb: Mainboard-Effekt aus dem eigenen Effekt ableiten (Typ, erste Farbe × Helligkeit, Tempo)
@@ -864,7 +864,7 @@ sealed class RgbService
         foreach (var z in Device.Zones)
         {
             var s = Settings.For(z.Index);
-            s.Mode = mode; s.Color = c.ToArgb(); s.Speed = Math.Clamp(fx.Speed, 0, 100);
+            s.Mode = mode; s.Color = c.ToArgb(); s.Speed = (int)Math.Clamp(fx.Speed, 0, 100);
         }
         Settings.Save();
         ApplyAll();
@@ -1429,10 +1429,10 @@ sealed class RgbView : FlowLayoutPanel
             EffectType.Sparkle => "Zufällige LEDs funkeln auf. Letzte Farbe = Hintergrund (ab 3 Farben).",
             EffectType.ColorCycle => "Alle LEDs wechseln gemeinsam durch die Farben.",
             EffectType.Fire => "Flackern wie Feuer aus den gewählten Farben.",
-            EffectType.LavaLamp => "Große, weiche Farbblasen treiben langsam hin und her und verschmelzen ineinander.",
-            EffectType.Tide => "Wie Wellen am Strand: ein ruhiges Anschwellen läuft durch, mit hellerem Wellenkamm (Farbe 1 = Tiefe, letzte = Gischt).",
+            EffectType.LavaLamp => "Einzelne weiche Farbblasen (je Farbe eine) treiben langsam hin und her und verschmelzen, wo sie sich treffen. Breite = Größe der Blasen.",
+            EffectType.Tide => "Brandung: das Wasser läuft den Streifen hinauf und zieht sich wieder zurück, vorne der helle Kamm (Farbe 1 = Tiefe, letzte = Gischt).",
             EffectType.Fireflies => "Einzelne weiche Lichter glimmen langsam auf, treiben ein Stück und verlöschen wieder. Letzte Farbe = Hintergrund (ab 3 Farben).",
-            EffectType.Aurora => "Mehrere langsame Lichtschleier überlagern sich wie ein Polarlicht – Farben und Helligkeit wandern sanft.",
+            EffectType.Aurora => "Polarlicht: Farbbänder ziehen langsam in eine Richtung, helle Schleier wandern darüber hinweg – mit dunklen Lücken dazwischen.",
             EffectType.Ember => "Warme Glut, die ganz ruhig an- und abschwillt – jede LED ein wenig anders. Schön mit „Dunkelste Stufe“ 20–40 %.",
             _ => "Farbe zeigt die Temperatur (blau → rot), dazu eine sanfte Welle.",
         });
@@ -1445,14 +1445,16 @@ sealed class RgbView : FlowLayoutPanel
         }
 
         var p = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
+        p.Step = 0.5m;   // fein einstellbar: Pfeile = 0,5er-Schritte, eintippen auf 0,1 genau
         p.Numbers(
-            ("Helligkeit", (float)fx.Brightness, 5, 100, "%", (Action<float>)(v => { fx.Brightness = (int)v; Save(); })),
-            ("Dunkelste Stufe", (float)fx.MinLevel, 0, 100, "%", (Action<float>)(v => { fx.MinLevel = (int)v; Save(); })));
-        p.Note("Dunkelste Stufe: 0 % = geht ganz aus, höher = wird nur gedimmt.");
+            ("Geschwindigkeit", fx.Speed, 0, 500, "%", (Action<float>)(v => { fx.Speed = v; Save(); })),
+            ("Helligkeit", fx.Brightness, 1, 100, "%", (Action<float>)(v => { fx.Brightness = v; Save(); })));
         p.Numbers(
-            ("Weichheit / Fade", (float)fx.Softness, 0, 100, "%", (Action<float>)(v => { fx.Softness = (int)v; Save(); })),
-            ("Geschwindigkeit", (float)fx.Speed, 0, 100, "%", (Action<float>)(v => { fx.Speed = (int)v; Save(); })));
-        p.Note("Weichheit: 0 % = harte Wechsel / Blinken, 100 % = ganz weiche Übergänge.");
+            ("Dunkelste Stufe", fx.MinLevel, 0, 100, "%", (Action<float>)(v => { fx.MinLevel = v; Save(); })),
+            ("Weichheit / Fade", fx.Softness, 0, 100, "%", (Action<float>)(v => { fx.Softness = v; Save(); })));
+        p.Step = 1;
+        p.Note("Geschwindigkeit: 100 % = Grundtempo, bis 500 % für ruhige Effekte. Dunkelste Stufe: 0 % = geht ganz aus. " +
+               "Weichheit: 0 % = harte Wechsel, 100 % = ganz weich.");
         if (fx.Type == EffectType.Breathing)
         {
             p.Note("Atmen – Zeiten in Millisekunden (0 = automatisch aus der Geschwindigkeit):", muted: false);
@@ -1466,7 +1468,12 @@ sealed class RgbView : FlowLayoutPanel
             p.Note("Beispiel „nie ganz aus, höchstens 80 %“: Helligkeit 80 %, Dunkelste Stufe 30 %.");
         }
         else
-            p.Numbers(("Breite (LEDs je Welle / Schweif)", (float)fx.Width, 2, 100, "", (Action<float>)(v => { fx.Width = (int)v; Save(); })));
+        {
+            p.Step = 0.5m;
+            p.Numbers(("Breite (LEDs je Welle / Schweif / Blase)", fx.Width, 1, 300, "LEDs", (Action<float>)(v => { fx.Width = v; Save(); })));
+            p.Step = 1;
+            p.Note("Die Breite wird höchstens so groß wie der Streifen gerechnet (z. B. ein Lüfter mit 8 LEDs) – bei „Durchgehend“ zählt die Gesamtlänge.");
+        }
         p.Check("Richtung umkehren", fx.Reverse, v => { fx.Reverse = v; Save(); });
         p.Check("Von der Mitte aus (gespiegelt)", fx.Mirror, v => { fx.Mirror = v; Save(); });
         if (fx.Type == EffectType.Comet) p.Check("Hin und her (statt immer in eine Richtung)", fx.Bounce, v => { fx.Bounce = v; Save(); });
@@ -1541,7 +1548,7 @@ sealed class RgbView : FlowLayoutPanel
             int start = Controls.Count;
             var gc = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
             var gg = g;
-            var flow = gc.Combo("Ablauf:", new[] { "Jeder Kanal für sich", "Durchgehend (LED für LED, ein langer Streifen)", "Lüfter für Lüfter (Lauflicht durch den PC)" },
+            var flow = gc.Combo("Ablauf:", new[] { "Jeder Kanal für sich", "Durchgehend (LED für LED, ein langer Streifen)", "Lüfter für Lüfter (jeder Lüfter eine Farbe, wandert durch den PC)" },
                 g.Mode, i => { gg.Flow = i; gg.Continuous = i > 0; st.Save(); });
             flow.Width = S(330);
             if (g.Members.Count > 1)
@@ -1563,7 +1570,7 @@ sealed class RgbView : FlowLayoutPanel
                         st.Save(); RebuildSoon();
                     }));
                 }
-                gc.Note("Tipp Lauflicht: Effekt „Lauflicht (Komet)“, Ablauf „Lüfter für Lüfter“, Breite 2, bei Bedarf „Hin und her“.");
+                gc.Note("Tipp Lauflicht: Effekt „Lauflicht (Komet)“, Ablauf „Lüfter für Lüfter“, Breite = LEDs von 1–2 Lüftern (z. B. 8–16), bei Bedarf „Hin und her“.");
             }
             gc.Buttons(("Gruppe auflösen", () => { st.Groups.Remove(gg); st.Save(); RebuildSoon(); }));
             Add(gc);
@@ -1696,14 +1703,14 @@ sealed class CustomEffect
 {
     public EffectType Type { get; set; } = EffectType.Wave;
     public List<int> Colors { get; set; } = new();
-    public int Speed { get; set; } = 50;        // 1–100
-    public int Brightness { get; set; } = 100;  // 5–100
-    public int Width { get; set; } = 20;        // LEDs je Wellenlänge / Schweif
+    public float Speed { get; set; } = 50;        // 0–500 %
+    public float Brightness { get; set; } = 100;  // 1–100
+    public float Width { get; set; } = 20;        // LEDs je Wellenlänge / Schweif
     public bool Reverse { get; set; }
     /// Dunkelste Stufe 0–100 (0 = geht ganz aus)
-    public int MinLevel { get; set; }
+    public float MinLevel { get; set; }
     /// Weichheit / Fade 0–100 (0 = harte Wechsel, 100 = ganz weich)
-    public int Softness { get; set; } = 80;
+    public float Softness { get; set; } = 80;
     /// Von der Mitte nach außen (gespiegelt)
     public bool Mirror { get; set; }
     /// Lauflicht: hin und her statt immer in eine Richtung
@@ -1713,6 +1720,17 @@ sealed class CustomEffect
     public int HoldOnMs { get; set; }
     public int FadeOutMs { get; set; }
     public int HoldOffMs { get; set; }
+
+    double _clockT = double.NaN, _clockPhase;
+    /// Laufende Phase des Effekts: wächst mit „rate“ pro Sekunde. Wird die Geschwindigkeit verstellt, läuft der
+    /// Effekt von der aktuellen Stelle aus schneller/langsamer weiter, statt zu springen.
+    public double Clock(double t, double rate)
+    {
+        if (double.IsNaN(_clockT) || t < _clockT || t - _clockT > 2) _clockT = t;
+        _clockPhase += (t - _clockT) * rate;
+        _clockT = t;
+        return _clockPhase;
+    }
 
     public CustomEffect Clone() => new()
     {
@@ -1816,14 +1834,47 @@ static class EffectRenderer
         var res = new Color[Math.Max(1, count)];
         var pal = fx.Colors.Select(Color.FromArgb).ToList();
         if (pal.Count == 0) pal.Add(Color.FromArgb(0, 120, 255));
-        float speed = Math.Clamp(fx.Speed, 1, 100) / 100f;
-        float width = Math.Max(2, fx.Width);
-        float bright = Math.Clamp(fx.Brightness, 5, 100) / 100f;
+        int n = res.Length;
+        // Geschwindigkeit 0–500 % (100 % = Grundtempo des Effekts)
+        float speed = Math.Clamp(fx.Speed, 0, 500) / 100f;
+        // Länge, über die der Effekt läuft (gespiegelt: halber Streifen)
+        int span = fx.Mirror ? (n + 1) / 2 : n;
+        // Breite nie größer als der Streifen: sonst sähe man auf kurzen Streifen (z. B. ein Lüfter mit 8 LEDs)
+        // nur eine einzige Farbe und alle Effekte wirkten gleich
+        float width = Math.Clamp(fx.Width, 1, Math.Max(1, span));
+        float bright = Math.Clamp(fx.Brightness, 1, 100) / 100f;
         float dir = fx.Reverse ? -1 : 1;
         float min = Math.Clamp(fx.MinLevel, 0, 100) / 100f;
         _soft = Math.Clamp(fx.Softness, 0, 100) / 100f;
-        int n = res.Length;
         float Level(float l) => min + (1 - min) * Math.Clamp(l, 0, 1);
+
+        // Atmen: Einblenden – hell halten – Ausblenden – dunkel halten (frei einstellbar, sonst aus der Geschwindigkeit)
+        float auto = Math.Max(0.12f, (9f - Math.Min(speed, 1f) * 7.5f) / 2f / Math.Max(1f, speed));
+        float fin = fx.FadeInMs > 0 ? fx.FadeInMs / 1000f : auto;
+        float hon = fx.HoldOnMs / 1000f;
+        float fout = fx.FadeOutMs > 0 ? fx.FadeOutMs / 1000f : auto;
+        float hoff = fx.HoldOffMs / 1000f;
+        float period = Math.Max(0.1f, fin + hon + fout + hoff);
+
+        // Tempo des Effekts; die Phase läuft stetig weiter, auch wenn man die Geschwindigkeit verstellt (kein Springen)
+        double rate = fx.Type switch
+        {
+            EffectType.Breathing => 1.0 / period,
+            EffectType.Wave => 0.05 + speed * 1.2,
+            EffectType.RainbowWave => 20 + speed * 300,
+            EffectType.Gradient => speed * 0.15,
+            EffectType.Comet => 3 + speed * 60,
+            EffectType.ColorCycle => 0.02 + speed * 0.3,
+            EffectType.Fire => 3 + speed * 9,
+            EffectType.LavaLamp => 0.06 + speed * 0.5,
+            EffectType.Tide => 0.10 + speed * 0.9,
+            EffectType.Fireflies => 0.15 + speed * 0.8,
+            EffectType.Aurora => 0.06 + speed * 0.5,
+            EffectType.Ember => 0.1 + speed * 0.7,
+            _ => 1 + speed * 6,
+        };
+        double ph = fx.Clock(t, rate);
+        float pf = (float)(ph % 100000.0);
 
         for (int idx = 0; idx < n; idx++)
         {
@@ -1835,16 +1886,8 @@ static class EffectRenderer
             {
                 case EffectType.Breathing:
                 {
-                    // Einblenden – hell halten – Ausblenden – dunkel halten (frei einstellbar, sonst aus der Geschwindigkeit)
-                    float auto = (9f - speed * 7.5f) / 2f;
-                    float fin = fx.FadeInMs > 0 ? fx.FadeInMs / 1000f : auto;
-                    float hon = fx.HoldOnMs / 1000f;
-                    float fout = fx.FadeOutMs > 0 ? fx.FadeOutMs / 1000f : auto;
-                    float hoff = fx.HoldOffMs / 1000f;
-                    float period = Math.Max(0.1f, fin + hon + fout + hoff);
-                    double cycle = t / period;
-                    int k = (int)Math.Floor(cycle);
-                    float x = (float)(cycle - k) * period;
+                    int k = (int)Math.Floor(ph);
+                    float x = (float)(ph - k) * period;
                     float level;
                     if (x < fin) level = x / Math.Max(0.001f, fin);
                     else if (x < fin + hon) level = 1;
@@ -1866,30 +1909,31 @@ static class EffectRenderer
                     break;
                 }
                 case EffectType.Wave:
-                    c = Palette(pal, pos - dir * (float)(t * (0.05 + speed * 1.2)));
+                    c = Palette(pal, pos - dir * (float)(ph % 1000.0));
                     break;
                 case EffectType.RainbowWave:
-                    c = Hue(pos * 360f - dir * (float)(t * (20 + speed * 300)));
+                    c = Hue(pos * 360f - dir * (float)(ph % 360.0));
                     break;
                 case EffectType.Gradient:
-                    c = Palette(pal, (float)i / Math.Max(1, n - 1) * 0.999f - dir * (float)(t * speed * 0.15), cyclic: speed > 0.05f);
+                    // Farbverlauf einmal über den ganzen Streifen; steht bei Geschwindigkeit 0, sonst wandert er langsam
+                    c = Palette(pal, (float)i / Math.Max(1, span - 1) * 0.999f - dir * (float)(ph % 1000.0), cyclic: speed > 0.004f);
                     break;
                 case EffectType.Comet:
                 {
-                    float span = n + width;
-                    float head = (float)((t * (3 + speed * 60)) % span);
+                    float cspan = span + width;
+                    float head = (float)(ph % cspan);
                     bool back = fx.Reverse;
                     if (fx.Bounce)
                     {
                         // hin und her: Kopf läuft bis zum Ende und wieder zurück
-                        float bspan = Math.Max(1, n - 1);
-                        float ph = (float)((t * (3 + speed * 60)) % (2 * bspan));
-                        bool fwd = ph < bspan;
-                        head = fwd ? ph : 2 * bspan - ph;
+                        float bspan = Math.Max(1, span - 1);
+                        float bp = (float)(ph % (2 * bspan));
+                        bool fwd = bp < bspan;
+                        head = fwd ? bp : 2 * bspan - bp;
                         back = fx.Reverse ? fwd : !fwd;
                         if (fx.Reverse) head = bspan - head;
                     }
-                    else if (fx.Reverse) head = span - head;
+                    else if (fx.Reverse) head = cspan - head;
                     float d = back ? i - head : head - i;
                     float tail = d >= 0 && d < width ? 1 - d / width : 0;
                     tail = _soft < 0.3f ? (tail > 0 ? 1 : 0) : MathF.Pow(tail, 2.5f - _soft * 1.5f);
@@ -1903,7 +1947,7 @@ static class EffectRenderer
                     var key = (zone, idx);
                     Sparks.TryGetValue(key, out float lvl);
                     // Weichheit = wie langsam ein Funke verglimmt
-                    lvl = Math.Max(0, lvl - (0.02f + (1 - _soft) * 0.25f) - speed * 0.05f);
+                    lvl = Math.Max(0, lvl - (0.02f + (1 - _soft) * 0.25f) - Math.Min(speed, 2f) * 0.05f);
                     if (Rnd.NextDouble() < 0.004 + speed * 0.03) lvl = 1;
                     Sparks[key] = lvl;
                     var sparkCol = pal[(i * 7 + zone) % Math.Max(1, pal.Count > 2 ? pal.Count - 1 : pal.Count)];
@@ -1911,44 +1955,54 @@ static class EffectRenderer
                     break;
                 }
                 case EffectType.ColorCycle:
-                    c = Palette(pal, (float)(t * (0.02 + speed * 0.3)));
+                    c = Palette(pal, (float)(ph % 1000.0));
                     break;
                 case EffectType.Fire:
                 {
-                    float noise = (float)(Math.Sin(i * 1.7 + t * (3 + speed * 9)) * 0.5 + Math.Sin(i * 0.6 - t * (2 + speed * 5)) * 0.3
-                                          + Rnd.NextDouble() * 0.4);
+                    float noise = (float)(Math.Sin(i * 1.7 + pf) * 0.5 + Math.Sin(i * 0.6 - pf * 0.6) * 0.3 + Rnd.NextDouble() * 0.4);
                     c = Scale(Palette(pal, Math.Clamp(noise * 0.5f + 0.4f, 0, 0.999f), cyclic: false), Level(0.3f + noise * 0.6f));
                     break;
                 }
                 case EffectType.LavaLamp:
                 {
-                    // Drei große Blasen mit unterschiedlichen, sehr langsamen Bahnen; ihre Mischung ergibt Farbe und Helligkeit
-                    float tt = (float)t * (0.03f + speed * 0.25f);
-                    float x = pos * 0.6f;
-                    float a1 = 0.5f + 0.5f * MathF.Sin(x * 2.1f + tt * 1.00f + zone * 0.7f);
-                    float a2 = 0.5f + 0.5f * MathF.Sin(x * 1.3f - tt * 0.73f + 2.0f + zone * 1.3f);
-                    float a3 = 0.5f + 0.5f * MathF.Sin(x * 3.2f + tt * 0.51f + 4.1f);
-                    float sum = a1 + a2 + a3;
-                    Color col = pal.Count == 1 ? pal[0]
-                        : Lerp(Lerp(pal[0], pal[1 % pal.Count], a2 / Math.Max(0.01f, a1 + a2)), pal[^1], a3 * a3 * 0.8f);
-                    float lvl = Math.Clamp((sum - 0.6f) / 1.8f, 0, 1);
-                    c = Scale(col, Level((1 - MathF.Cos(lvl * MathF.PI)) / 2));
+                    // Einzelne weiche Farbblasen (je Farbe eine) treiben gemächlich hin und her, „atmen“ dabei und
+                    // verschmelzen, wo sie sich treffen. Dazwischen bleibt es dunkel bzw. auf der dunkelsten Stufe.
+                    int blobs = Math.Clamp(pal.Count, 2, 4);
+                    float len = Math.Max(1, span - 1);
+                    float radius = Math.Max(1.1f, width / 4f);
+                    float wsum = 0, cr = 0, cg = 0, cb = 0;
+                    for (int j = 0; j < blobs; j++)
+                    {
+                        float seed = j * 2.399f + zone * 0.9f;
+                        float center = (0.5f + 0.5f * MathF.Sin(pf * (0.6f + 0.27f * j) + seed * 3.1f)) * len;
+                        float size = radius * (0.85f + 0.35f * MathF.Sin(pf * 0.31f + seed));
+                        float d = (i - center) / size;
+                        float w = MathF.Exp(-d * d);
+                        var bc = pal[j % pal.Count];
+                        cr += bc.R * w; cg += bc.G * w; cb += bc.B * w; wsum += w;
+                    }
+                    var mix = wsum > 0.0001f ? Color.FromArgb((int)Math.Min(255, cr / wsum), (int)Math.Min(255, cg / wsum), (int)Math.Min(255, cb / wsum)) : pal[0];
+                    c = Scale(mix, Level(Math.Min(1f, wsum)));
                     break;
                 }
                 case EffectType.Tide:
                 {
-                    // Lange, ruhige Dünung: Phase läuft langsam, der Kamm ist hell und etwas weißlich
-                    float tt = (float)t * (0.05f + speed * 0.6f);
-                    float ph = pos * 0.5f - dir * tt;
-                    float swell = 0.5f + 0.5f * MathF.Sin(ph * MathF.PI * 2);
-                    float swell2 = 0.5f + 0.5f * MathF.Sin(ph * MathF.PI * 1.3f + 1.7f);
-                    float lvl = swell * 0.75f + swell2 * 0.25f;
-                    lvl = (1 - MathF.Cos(lvl * MathF.PI)) / 2;
+                    // Brandung: die Wasserkante läuft den Streifen hinauf und zieht sich wieder zurück (zwei überlagerte
+                    // Rhythmen, damit keine Welle der anderen gleicht). Vorne der helle Kamm, dahinter tiefes Wasser.
+                    float surge = 0.5f + 0.38f * MathF.Sin(pf) + 0.12f * MathF.Sin(pf * 2.3f + 1.1f + zone);
+                    float front = surge * (span + 1) - 1f;
+                    float x = fx.Reverse ? span - 1 - i : i;
+                    float d = front - x;                       // > 0: im Wasser, < 0: trockener Strand
                     var deep = pal[0];
                     var crest = pal[^1];
-                    var mid = pal.Count > 2 ? pal[pal.Count / 2] : Lerp(deep, crest, 0.5f);
-                    Color col = lvl < 0.6f ? Lerp(deep, mid, lvl / 0.6f) : Lerp(mid, crest, (lvl - 0.6f) / 0.4f);
-                    c = Scale(col, Level(0.15f + 0.85f * lvl));
+                    var mid = pal.Count > 2 ? pal[pal.Count / 2] : Lerp(deep, crest, 0.45f);
+                    if (d >= 0)
+                    {
+                        float depth = Math.Clamp(d / Math.Max(1f, width * 0.6f), 0, 1);
+                        var col = depth < 0.35f ? Lerp(crest, mid, depth / 0.35f) : Lerp(mid, deep, (depth - 0.35f) / 0.65f);
+                        c = Scale(col, Level(1f - 0.6f * depth));
+                    }
+                    else c = Scale(crest, Level(MathF.Exp(d / (0.6f + _soft))));   // Gischt läuft kurz aus
                     break;
                 }
                 case EffectType.Fireflies:
@@ -1956,19 +2010,18 @@ static class EffectRenderer
                     // Feste Anzahl Glühwürmchen je Zone; jedes hat eigene Bahn, eigenes Tempo und eigenen Leuchtrhythmus
                     var bg = Scale(pal.Count > 2 ? pal[^1] : Color.FromArgb(0, 20, 8), Math.Max(min, 0.04f));
                     int flies = Math.Max(1, n / 7);
-                    float glowW = Math.Max(0.8f, width / 2f);
-                    float tt = (float)t * (0.15f + speed * 0.8f);
+                    float glowW = Math.Max(0.8f, Math.Min(width, 6f) / 2f);
                     float best = 0; Color fc = pal[0];
                     for (int j = 0; j < flies; j++)
                     {
                         float seed = j * 12.9898f + zone * 78.233f;
                         float h = MathF.Abs(MathF.Sin(seed) * 43758.5453f) % 1f;
-                        float center = (h + 0.18f * MathF.Sin(tt * (0.11f + h * 0.07f) + seed)) % 1f;
+                        float center = (h + 0.18f * MathF.Sin(pf * (0.11f + h * 0.07f) + seed)) % 1f;
                         if (center < 0) center += 1;
                         float cx = center * (n - 1);
                         float d = (i - cx) / glowW;
                         float glow = MathF.Exp(-d * d);
-                        float pulse = MathF.Sin(tt * (0.35f + h * 0.3f) + seed * 3f);
+                        float pulse = MathF.Sin(pf * (0.35f + h * 0.3f) + seed * 3f);
                         pulse = pulse > 0 ? MathF.Pow(pulse, 3) : 0;   // lange Pausen, sanftes Aufglimmen
                         float v = glow * pulse;
                         if (v > best) { best = v; fc = pal[j % Math.Max(1, pal.Count > 2 ? pal.Count - 1 : pal.Count)]; }
@@ -1978,34 +2031,32 @@ static class EffectRenderer
                 }
                 case EffectType.Aurora:
                 {
-                    // Überlagerte, langsam wandernde Schleier: Farbe wandert entlang der Palette, Helligkeit in weichen Bändern
-                    float tt = (float)t * (0.04f + speed * 0.35f);
-                    float x = pos;
-                    float band1 = 0.5f + 0.5f * MathF.Sin(x * 2.4f - dir * tt * 1.3f + zone);
-                    float band2 = 0.5f + 0.5f * MathF.Sin(x * 4.1f + dir * tt * 0.9f + 1.9f);
-                    float band3 = 0.5f + 0.5f * MathF.Sin(x * 0.9f - tt * 0.4f + 3.3f);
-                    float lvl = band1 * 0.5f + band2 * 0.3f + band3 * 0.2f;
-                    lvl = MathF.Pow(lvl, 1.6f);
-                    var col = Palette(pal, x * 0.25f + band3 * 0.5f - tt * 0.1f);
+                    // Polarlicht: Farbbänder ziehen langsam in eine Richtung, zwei Helligkeits-Schleier schneller in
+                    // entgegengesetzte Richtungen, dazu ein langsames gemeinsames Schimmern – mit dunklen Lücken dazwischen
+                    float x = pos * MathF.PI * 2;
+                    float curtain1 = 0.5f + 0.5f * MathF.Sin(x - dir * pf * 1.7f + zone);
+                    float curtain2 = 0.5f + 0.5f * MathF.Sin(x * 2.3f + dir * pf * 1.1f + 1.9f);
+                    float shimmer = 0.5f + 0.5f * MathF.Sin(pf * 0.6f + 3.3f);
+                    float lvl = MathF.Pow(curtain1 * 0.6f + curtain2 * 0.4f, 2.2f) * (0.7f + 0.3f * shimmer);
+                    var col = Palette(pal, pos * 0.5f + pf * 0.08f + curtain2 * 0.15f);
                     c = Scale(col, Level(lvl));
                     break;
                 }
                 case EffectType.Ember:
                 {
                     // Glut: jede LED mit eigener, sehr langsamer Atmung; selten ein leichtes Aufflackern
-                    float tt = (float)t * (0.1f + speed * 0.7f);
                     float seed = (i * 0.618f + zone * 0.31f) * MathF.PI * 2;
-                    float lvl = 0.55f + 0.25f * MathF.Sin(tt * 0.9f + seed) + 0.15f * MathF.Sin(tt * 0.37f + seed * 1.7f)
-                                + 0.05f * MathF.Sin(tt * 2.3f + seed * 2.9f);
+                    float lvl = 0.55f + 0.25f * MathF.Sin(pf * 0.9f + seed) + 0.15f * MathF.Sin(pf * 0.37f + seed * 1.7f)
+                                + 0.05f * MathF.Sin(pf * 2.3f + seed * 2.9f);
                     lvl = Math.Clamp(lvl, 0, 1);
-                    var col = Palette(pal, 0.5f + 0.45f * MathF.Sin(tt * 0.2f + seed), cyclic: false);
+                    var col = Palette(pal, 0.5f + 0.45f * MathF.Sin(pf * 0.2f + seed), cyclic: false);
                     c = Scale(col, Level(lvl * lvl));
                     break;
                 }
                 default:   // Temperatur-Welle
                 {
                     var tc = RgbService.TempColor(temp ?? 50);
-                    float wave = 0.5f + 0.5f * MathF.Sin(pos * MathF.PI * 2 - dir * (float)(t * (1 + speed * 6)));
+                    float wave = 0.5f + 0.5f * MathF.Sin(pos * MathF.PI * 2 - dir * pf);
                     c = Scale(tc, Level(_soft >= 0.98f ? wave : Shape(wave)));
                     break;
                 }
@@ -2081,30 +2132,29 @@ sealed class EffectEngine
                         if (mode == 0) continue;
                         var off = new Dictionary<string, int>();
                         int total = 0;
-                        if (mode == 1)
+                        foreach (var m in groups[gi].Members) if (len.TryGetValue(m, out int n)) { off[m] = total; total += n; }
+                        if (total == 0) continue;
+                        // Immer als ein langer Streifen rechnen (gleiche Breite, gleiches Tempo wie „Durchgehend“) …
+                        var strip = EffectRenderer.Render(groups[gi].Effect, 500 + gi, total, t, temp);
+                        if (mode == 2)
                         {
-                            foreach (var m in groups[gi].Members) if (len.TryGetValue(m, out int n)) { off[m] = total; total += n; }
-                            if (total > 0) strips[gi] = (EffectRenderer.Render(groups[gi].Effect, 500 + gi, total, t, temp), off);
-                        }
-                        else
-                        {
-                            // Lüfter für Lüfter: jeder Lüfter ist ein „Punkt“, der Effekt läuft von Lüfter zu Lüfter
-                            var members = groups[gi].Members.Where(len.ContainsKey).ToList();
-                            int units = members.Sum(m => Math.Max(1, fanCount.GetValueOrDefault(m, 1)));
-                            if (units == 0) continue;
-                            var pts = EffectRenderer.Render(groups[gi].Effect, 500 + gi, units, t, temp);
-                            int ledTotal = members.Sum(m => len[m]);
-                            var strip = new Color[ledTotal];
-                            int u0 = 0, pos = 0;
-                            foreach (var m in members)
+                            // … bei „Lüfter für Lüfter“ bekommt jeder Lüfter eine Farbe: den Mittelwert seiner LEDs.
+                            // So wandert der Effekt sichtbar von Lüfter zu Lüfter statt um jeden Ring herum.
+                            foreach (var (m, o) in off)
                             {
-                                int f = Math.Max(1, fanCount.GetValueOrDefault(m, 1)), n = len[m];
-                                off[m] = pos;
-                                for (int j = 0; j < n; j++) strip[pos + j] = pts[Math.Min(units - 1, u0 + j * f / Math.Max(1, n))];
-                                u0 += f; pos += n;
+                                int n = len[m], f = Math.Clamp(fanCount.GetValueOrDefault(m, 1), 1, Math.Max(1, n));
+                                for (int k = 0; k < f; k++)
+                                {
+                                    int a0 = o + k * n / f, a1 = o + (k + 1) * n / f;
+                                    if (a1 <= a0) continue;
+                                    long r = 0, g = 0, b2 = 0;
+                                    for (int j = a0; j < a1; j++) { r += strip[j].R; g += strip[j].G; b2 += strip[j].B; }
+                                    var avg = Color.FromArgb((int)(r / (a1 - a0)), (int)(g / (a1 - a0)), (int)(b2 / (a1 - a0)));
+                                    for (int j = a0; j < a1; j++) strip[j] = avg;
+                                }
                             }
-                            strips[gi] = (strip, off);
                         }
+                        strips[gi] = (strip, off);
                     }
                 }
                 for (int ti = 0; ti < targets.Count; ti++)

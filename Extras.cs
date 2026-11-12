@@ -623,6 +623,9 @@ sealed class SettingsCard : Panel
     }
 
     /// Mehrere Zahlenfelder in einer Zeile: (Beschriftung, Wert, Min, Max, Einheit, Setzen)
+    /// Schrittweite der folgenden Zahlenfelder (kleiner als 1 = mit Nachkommastelle)
+    public decimal Step { get; set; } = 1;
+
     public List<NumericUpDown> Numbers(params (string Label, float Value, int Min, int Max, string Unit, Action<float> Set)[] items)
     {
         var list = new List<NumericUpDown>();
@@ -633,6 +636,14 @@ sealed class SettingsCard : Panel
             Controls.Add(lbl);
             x += TextRenderer.MeasureText(it.Label, lbl.Font).Width + S(6);
             var n = Ui.Number(it.Value, it.Min, it.Max, new Point(x, _y), _k);
+            if (Step < 1)
+            {
+                // feine Werte: eine Nachkommastelle, Pfeile in „Step“-Schritten
+                n.DecimalPlaces = 1;
+                n.Increment = Step;
+                n.Value = Math.Clamp(Math.Round((decimal)it.Value, 1), n.Minimum, n.Maximum);
+                n.Width = S(68);
+            }
             var set = it.Set;
             n.ValueChanged += (_, _) => set((float)n.Value);
             Controls.Add(n);

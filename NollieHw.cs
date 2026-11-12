@@ -99,9 +99,9 @@ static class NollieHw
         return new NollieFx
         {
             Effect = effect,
-            Brightness = Math.Clamp(fx.Brightness, 0, 100),
+            Brightness = (int)Math.Clamp(fx.Brightness, 0, 100),
             Step = Math.Clamp((int)Math.Round(1 + sp * 3), 1, 4),
-            Size = Math.Clamp(fx.Width, 0, 50),
+            Size = (int)Math.Clamp(fx.Width, 0, 50),
             Delay = Math.Clamp((int)Math.Round((1 - sp) * 6), 0, 8),
             FrameMs = Math.Clamp((int)Math.Round(33 + (1 - sp) * 70), 20, 120),
             Color1 = P(0).ToArgb(),
