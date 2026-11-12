@@ -81,14 +81,16 @@ static class NollieHw
         var pal = fx.Colors.Select(Color.FromArgb).ToList();
         if (pal.Count == 0) pal.Add(Color.FromArgb(0, 120, 255));
         Color P(int i) => pal[Math.Min(i, pal.Count - 1)];
-        bool calm = fx.Type is EffectType.LavaLamp or EffectType.Tide or EffectType.Aurora or EffectType.Ember or EffectType.Fireflies;
+        bool calm = fx.Type is EffectType.LavaLamp or EffectType.Tide or EffectType.Aurora or EffectType.Ember or EffectType.Fireflies
+            or EffectType.Stars or EffectType.Rain or EffectType.Mist or EffectType.Pendulum;
         int effect = fx.Type switch
         {
             EffectType.Breathing or EffectType.Ember => 2,
             EffectType.RainbowWave => 10,
             EffectType.ColorCycle => 5,
             EffectType.Comet => 6,
-            EffectType.Sparkle or EffectType.Fireflies => 7,
+            EffectType.Sparkle or EffectType.Fireflies or EffectType.Stars or EffectType.Rain => 7,
+            EffectType.Pendulum => 3,
             EffectType.Fire => 13,
             EffectType.Gradient when Math.Clamp(fx.Speed, 0, 100) < 5 => 1,
             _ => 12,   // Welle, Lavalampe, Meeresrauschen, Nordlicht, Temperatur-Welle

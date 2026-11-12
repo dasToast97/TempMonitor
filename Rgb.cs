@@ -1433,6 +1433,10 @@ sealed class RgbView : FlowLayoutPanel
             EffectType.Tide => "Brandung: das Wasser läuft den Streifen hinauf und zieht sich wieder zurück, vorne der helle Kamm (Farbe 1 = Tiefe, letzte = Gischt).",
             EffectType.Fireflies => "Einzelne weiche Lichter glimmen langsam auf, treiben ein Stück und verlöschen wieder. Letzte Farbe = Hintergrund (ab 3 Farben).",
             EffectType.Aurora => "Polarlicht: Farbbänder ziehen langsam in eine Richtung, helle Schleier wandern darüber hinweg – mit dunklen Lücken dazwischen.",
+            EffectType.Stars => "Dunkler Himmel, einzelne Sterne funkeln langsam auf und verblassen wieder. Letzte Farbe = Himmel (ab 2 Farben).",
+            EffectType.Rain => "Tropfen fallen an zufälligen Stellen, von jedem läuft ein Lichtring nach beiden Seiten und verklingt. Breite = wie weit die Ringe laufen.",
+            EffectType.Mist => "Farbschwaden ziehen wie Nebel durch die LEDs – organisch, ohne erkennbares Muster.",
+            EffectType.Pendulum => "Ein weiches Licht schwingt wie ein Pendel hin und her und wechselt dabei die Farbe. Breite = Größe des Lichts.",
             EffectType.Ember => "Warme Glut, die ganz ruhig an- und abschwillt – jede LED ein wenig anders. Schön mit „Dunkelste Stufe“ 20–40 %.",
             _ => "Farbe zeigt die Temperatur (blau → rot), dazu eine sanfte Welle.",
         });
@@ -1697,7 +1701,7 @@ sealed class RgbView : FlowLayoutPanel
 // Eigene Effekte (laufen in Toast Temperatur, jede LED einzeln)
 // ===========================================================================
 // Neue Effekte immer hinten anhängen (gespeichert wird die Nummer)
-enum EffectType { Breathing, Wave, RainbowWave, Gradient, Comet, Sparkle, ColorCycle, Fire, TempWave, LavaLamp, Tide, Fireflies, Aurora, Ember }
+enum EffectType { Breathing, Wave, RainbowWave, Gradient, Comet, Sparkle, ColorCycle, Fire, TempWave, LavaLamp, Tide, Fireflies, Aurora, Ember, Stars, Rain, Mist, Pendulum }
 
 sealed class CustomEffect
 {
@@ -1754,6 +1758,10 @@ sealed class CustomEffect
         EffectType.Fireflies => "Glühwürmchen (ruhig)",
         EffectType.Aurora => "Nordlicht-Schleier (ruhig)",
         EffectType.Ember => "Glut (ruhig)",
+        EffectType.Stars => "Sternenhimmel (ruhig)",
+        EffectType.Rain => "Regentropfen (ruhig)",
+        EffectType.Mist => "Farbnebel (ruhig)",
+        EffectType.Pendulum => "Pendel (ruhig)",
         _ => "Temperatur-Welle",
     };
 
@@ -1775,6 +1783,10 @@ sealed class CustomEffect
         ("Meeresrauschen", new() { Type = EffectType.Tide, Colors = { C(0, 20, 120), C(0, 140, 255), C(150, 240, 255) }, Speed = 30, Width = 30, MinLevel = 10 }),
         ("Glühwürmchen", new() { Type = EffectType.Fireflies, Colors = { C(200, 255, 60), C(255, 200, 40), C(0, 30, 10) }, Speed = 35, Width = 3 }),
         ("Nordlicht-Schleier", new() { Type = EffectType.Aurora, Colors = { C(0, 255, 140), C(0, 160, 255), C(160, 40, 255) }, Speed = 30, Width = 30, MinLevel = 8 }),
+        ("Sternenhimmel", new() { Type = EffectType.Stars, Colors = { C(255, 255, 255), C(170, 200, 255), C(0, 0, 40) }, Speed = 40, Width = 10 }),
+        ("Regentropfen", new() { Type = EffectType.Rain, Colors = { C(0, 180, 255), C(120, 80, 255), C(0, 10, 40) }, Speed = 40, Width = 12 }),
+        ("Farbnebel", new() { Type = EffectType.Mist, Colors = { C(255, 0, 120), C(90, 0, 255), C(0, 160, 255) }, Speed = 40, Width = 12, MinLevel = 20 }),
+        ("Pendel", new() { Type = EffectType.Pendulum, Colors = { C(255, 120, 0), C(255, 0, 90) }, Speed = 40, Width = 9, MinLevel = 4 }),
         ("Glut", new() { Type = EffectType.Ember, Colors = { C(255, 70, 0), C(255, 25, 0), C(255, 140, 20) }, Speed = 30, Width = 10, MinLevel = 25 }),
     };
 }
@@ -1784,16 +1796,62 @@ static class EffectRenderer
     static readonly Random Rnd = new();
     static readonly Dictionary<(int, int), float> Sparks = new();
 
-    static Color Lerp(Color a, Color b, float f)
+    /// Farbe mit Nachkommastellen (0–255 je Kanal): gerechnet wird durchgehend genau, erst ganz am Ende wird auf die
+    /// 256 Stufen der LEDs gerundet – sonst entstehen bei langsamen Übergängen sichtbare Helligkeits-Sprünge
+    readonly record struct Rgbf(float R, float G, float B)
     {
-        f = Math.Clamp(f, 0, 1);
-        return Color.FromArgb((int)(a.R + (b.R - a.R) * f), (int)(a.G + (b.G - a.G) * f), (int)(a.B + (b.B - a.B) * f));
+        public static implicit operator Rgbf(Color c) => new(c.R, c.G, c.B);
     }
 
-    static Color Scale(Color c, float f)
+    static Rgbf Lerp(Rgbf a, Rgbf b, float f)
     {
         f = Math.Clamp(f, 0, 1);
-        return Color.FromArgb((int)(c.R * f), (int)(c.G * f), (int)(c.B * f));
+        return new(a.R + (b.R - a.R) * f, a.G + (b.G - a.G) * f, a.B + (b.B - a.B) * f);
+    }
+
+    static Rgbf Scale(Rgbf c, float f)
+    {
+        f = Math.Clamp(f, 0, 1);
+        return new(c.R * f, c.G * f, c.B * f);
+    }
+
+    static float Hash(float x)
+    {
+        float v = MathF.Abs(MathF.Sin(x * 12.9898f) * 43758.5453f);
+        return v - MathF.Floor(v);
+    }
+
+    /// Weiches Rauschen in Ort und Zeit (0..1)
+    static float Noise(float x, float y)
+    {
+        int ix = (int)MathF.Floor(x), iy = (int)MathF.Floor(y);
+        float fx = x - ix, fy = y - iy;
+        fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy);
+        float H(int a, int b) => Hash(a * 57.31f + b * 131.7f + 0.37f);
+        float top = H(ix, iy) + (H(ix + 1, iy) - H(ix, iy)) * fx;
+        float bot = H(ix, iy + 1) + (H(ix + 1, iy + 1) - H(ix, iy + 1)) * fx;
+        return top + (bot - top) * fy;
+    }
+
+    // Zeitliches Glätten der Rundung: der Rundungsrest einer LED wird ins nächste Bild mitgenommen, so entstehen
+    // Zwischenstufen (z. B. 12,5 = abwechselnd 12 und 13) und langsame Übergänge wirken stufenlos
+    static readonly Dictionary<(int, int), (float R, float G, float B)> Residue = new();
+
+    static Color Quantize(int zone, int idx, Rgbf c)
+    {
+        Residue.TryGetValue((zone, idx), out var e);
+        int Q(float v, ref float err)
+        {
+            v = Math.Clamp(v, 0, 255);
+            if (v < 1.5f) { err = 0; return (int)MathF.Round(v); }   // ganz unten nicht flimmern lassen
+            float want = v + err;
+            int o = Math.Clamp((int)MathF.Round(want), 0, 255);
+            err = Math.Clamp(want - o, -1f, 1f);
+            return o;
+        }
+        int r = Q(c.R, ref e.R), g = Q(c.G, ref e.G), b = Q(c.B, ref e.B);
+        Residue[(zone, idx)] = e;
+        return Color.FromArgb(r, g, b);
     }
 
     static float _soft = 0.8f;
@@ -1806,7 +1864,7 @@ static class EffectRenderer
     }
 
     /// Farbe an Position p (0..1, zyklisch) im Farbverlauf der Palette
-    static Color Palette(List<Color> pal, float p, bool cyclic = true)
+    static Rgbf Palette(List<Rgbf> pal, float p, bool cyclic = true)
     {
         if (pal.Count == 0) return Color.White;
         if (pal.Count == 1) return pal[0];
@@ -1832,7 +1890,7 @@ static class EffectRenderer
     public static Color[] Render(CustomEffect fx, int zone, int count, double t, float? temp)
     {
         var res = new Color[Math.Max(1, count)];
-        var pal = fx.Colors.Select(Color.FromArgb).ToList();
+        var pal = fx.Colors.Select(a => (Rgbf)Color.FromArgb(a)).ToList();
         if (pal.Count == 0) pal.Add(Color.FromArgb(0, 120, 255));
         int n = res.Length;
         // Geschwindigkeit 0–500 % (100 % = Grundtempo des Effekts)
@@ -1871,6 +1929,10 @@ static class EffectRenderer
             EffectType.Fireflies => 0.15 + speed * 0.8,
             EffectType.Aurora => 0.06 + speed * 0.5,
             EffectType.Ember => 0.1 + speed * 0.7,
+            EffectType.Stars => 0.15 + speed * 1.0,
+            EffectType.Rain => 0.08 + speed * 0.6,
+            EffectType.Mist => 0.04 + speed * 0.4,
+            EffectType.Pendulum => 0.2 + speed * 1.6,
             _ => 1 + speed * 6,
         };
         double ph = fx.Clock(t, rate);
@@ -1881,7 +1943,7 @@ static class EffectRenderer
             // Von der Mitte aus: beide Hälften laufen gespiegelt
             int i = fx.Mirror ? (int)MathF.Round(MathF.Abs(idx - (n - 1) / 2f)) : idx;
             float pos = i / width;
-            Color c;
+            Rgbf c;
             switch (fx.Type)
             {
                 case EffectType.Breathing:
@@ -1947,8 +2009,8 @@ static class EffectRenderer
                     var key = (zone, idx);
                     Sparks.TryGetValue(key, out float lvl);
                     // Weichheit = wie langsam ein Funke verglimmt
-                    lvl = Math.Max(0, lvl - (0.02f + (1 - _soft) * 0.25f) - Math.Min(speed, 2f) * 0.05f);
-                    if (Rnd.NextDouble() < 0.004 + speed * 0.03) lvl = 1;
+                    lvl = Math.Max(0, lvl - ((0.02f + (1 - _soft) * 0.25f) + Math.Min(speed, 2f) * 0.05f) * 0.5f);
+                    if (Rnd.NextDouble() < (0.004 + speed * 0.03) * 0.5) lvl = 1;
                     Sparks[key] = lvl;
                     var sparkCol = pal[(i * 7 + zone) % Math.Max(1, pal.Count > 2 ? pal.Count - 1 : pal.Count)];
                     c = Lerp(bg, sparkCol, lvl);
@@ -1981,7 +2043,7 @@ static class EffectRenderer
                         var bc = pal[j % pal.Count];
                         cr += bc.R * w; cg += bc.G * w; cb += bc.B * w; wsum += w;
                     }
-                    var mix = wsum > 0.0001f ? Color.FromArgb((int)Math.Min(255, cr / wsum), (int)Math.Min(255, cg / wsum), (int)Math.Min(255, cb / wsum)) : pal[0];
+                    var mix = wsum > 0.0001f ? new Rgbf(cr / wsum, cg / wsum, cb / wsum) : pal[0];
                     c = Scale(mix, Level(Math.Min(1f, wsum)));
                     break;
                 }
@@ -2011,7 +2073,7 @@ static class EffectRenderer
                     var bg = Scale(pal.Count > 2 ? pal[^1] : Color.FromArgb(0, 20, 8), Math.Max(min, 0.04f));
                     int flies = Math.Max(1, n / 7);
                     float glowW = Math.Max(0.8f, Math.Min(width, 6f) / 2f);
-                    float best = 0; Color fc = pal[0];
+                    float best = 0; var fc = pal[0];
                     for (int j = 0; j < flies; j++)
                     {
                         float seed = j * 12.9898f + zone * 78.233f;
@@ -2053,6 +2115,58 @@ static class EffectRenderer
                     c = Scale(col, Level(lvl * lvl));
                     break;
                 }
+                case EffectType.Stars:
+                {
+                    // Jede LED ist ein möglicher Stern mit eigenem Rhythmus; die meiste Zeit ist sie dunkel
+                    Rgbf sky = pal.Count > 1 ? pal[^1] : (Rgbf)Color.FromArgb(0, 0, 40);
+                    var bg = Scale(sky, Math.Max(min, 0.04f));
+                    float h = Hash(idx * 1.37f + zone * 17.3f);
+                    float tw = MathF.Sin(pf * (0.45f + h * 1.3f) + h * 40f);
+                    tw = tw > 0 ? MathF.Pow(tw, 5) : 0;
+                    int starCols = Math.Max(1, pal.Count > 1 ? pal.Count - 1 : 1);
+                    c = Lerp(bg, pal[(int)(h * 97) % starCols], Hash(idx * 3.7f + zone) < 0.7f ? tw : 0);
+                    break;
+                }
+                case EffectType.Rain:
+                {
+                    // Tropfen: jeder „Platz“ lässt nacheinander Tropfen an wechselnden Stellen fallen; vom Einschlag läuft
+                    // ein Ring nach beiden Seiten und wird dabei schwächer
+                    Rgbf water = pal.Count > 2 ? pal[^1] : (Rgbf)Color.FromArgb(0, 8, 30);
+                    var bg = Scale(water, Math.Max(min, 0.05f));
+                    int slots = Math.Max(1, span / 6);
+                    int dropCols = Math.Max(1, pal.Count > 2 ? pal.Count - 1 : pal.Count);
+                    float reach = Math.Max(1.5f, width * 0.5f);
+                    float best = 0; var dc = pal[0];
+                    for (int j = 0; j < slots; j++)
+                    {
+                        float hj = Hash(j * 7.1f + zone * 3.3f);
+                        float local = pf * (0.7f + 0.5f * hj) + hj * 10f;
+                        float cyc = MathF.Floor(local), u = local - cyc;
+                        float center = Hash(j * 13.7f + cyc * 3.31f + zone) * Math.Max(1, span - 1);
+                        float d = (MathF.Abs(i - center) - u * reach) / 0.9f;
+                        float v = MathF.Exp(-d * d) * MathF.Pow(1 - u, 1.5f) * Math.Min(1f, u * 12f);
+                        if (v > best) { best = v; dc = pal[(j + (int)cyc) % dropCols]; }
+                    }
+                    c = Lerp(bg, dc, best);
+                    break;
+                }
+                case EffectType.Mist:
+                {
+                    // Zwei Schichten weiches Rauschen: eine bestimmt die Farbe, die andere die Helligkeit
+                    float x = pos * 2f + zone * 5f;
+                    float hue = Noise(x, pf) * 0.7f + Noise(x * 2.1f + 40f, pf * 1.6f) * 0.3f;
+                    float lvl = Noise(x * 1.3f + 90f, pf * 1.3f + 7f);
+                    c = Scale(Palette(pal, Math.Clamp((hue - 0.2f) / 0.6f, 0, 0.999f), cyclic: false), Level((1 - MathF.Cos(lvl * MathF.PI)) / 2));
+                    break;
+                }
+                case EffectType.Pendulum:
+                {
+                    // Pendel: schwingt weich hin und her (an den Enden langsam, in der Mitte schnell)
+                    float swing = 0.5f + 0.5f * MathF.Sin(pf + zone * 0.4f);
+                    float d = (i - swing * Math.Max(1, span - 1)) / Math.Max(1f, width / 3f);
+                    c = Scale(Palette(pal, swing * 0.999f, cyclic: false), Level(MathF.Exp(-d * d)));
+                    break;
+                }
                 default:   // Temperatur-Welle
                 {
                     var tc = RgbService.TempColor(temp ?? 50);
@@ -2061,7 +2175,7 @@ static class EffectRenderer
                     break;
                 }
             }
-            res[idx] = Scale(c, bright);
+            res[idx] = Quantize(zone, idx, Scale(c, bright));
         }
         return res;
     }
@@ -2210,7 +2324,7 @@ sealed class EffectEngine
                 foreach (var gone in active.Where(a => !targets.Contains(a)).ToList()) active.Remove(gone);
             }
             catch (Exception ex) { RgbSettings.Log("Effekt: " + ex.Message); }
-            int wait = 50 - (int)(sw.ElapsedMilliseconds - start);
+            int wait = 25 - (int)(sw.ElapsedMilliseconds - start);   // ca. 40 Bilder/s: flüssiger, feinere Zwischenstufen
             if (wait > 0) Thread.Sleep(wait);
         }
         foreach (var a in active) { try { a.End(); } catch { } }
