@@ -1505,13 +1505,13 @@ sealed class RgbView : FlowLayoutPanel
         {
             p.Step = 0.1m;
             p.Numbers(("Ein Durchlauf dauert", fx.CometPassSec, 0, 120, "s", (Action<float>)(v => { fx.CometPassSec = Math.Max(0.2f, v); Save(); })),
-                      ("Pause danach", fx.GapSec, 0, 120, "s", (Action<float>)(v => { fx.GapSec = v; Save(); })));
+                      ("Abstand zur nächsten Welle", fx.GapSec, 0, 120, "s", (Action<float>)(v => { fx.GapSec = v; Save(); })));
             p.Numbers(("Eine LED leuchtet nach", fx.CometTailSec, 0, 30, "s", (Action<float>)(v => { fx.CometTailSec = v; Save(); })),
                       ("glimmt vorher an", fx.CometHeadSec, 0, 10, "s", (Action<float>)(v => { fx.CometHeadSec = v; Save(); })));
             p.Step = 1;
-            float every = fx.CometPassSec + fx.GapSec;
-            p.Note($"Das Lauflicht kommt alle {every:0.#} s. „Leuchtet nach“ = wie lange der Schweif an einer Stelle zu sehen ist, " +
-                   "„glimmt vorher an“ = weiches Anlaufen (0 = springt an). Bei „Lüfter für Lüfter“ gilt der Durchlauf je Lüfter, die Pause nach dem letzten.");
+            p.Note("Abstand: so viele Sekunden nach der ersten Welle kommt die zweite hinterher (0 = erst, wenn die erste ganz durch ist) – " +
+                   "kleiner als der Durchlauf = mehrere Wellen gleichzeitig. „Leuchtet nach“ = wie lange der Schweif an einer Stelle zu sehen ist, " +
+                   "„glimmt vorher an“ = weiches Anlaufen (0 = springt an). Bei „Lüfter für Lüfter“ gilt der Durchlauf je Lüfter.");
             p.Check("Hin und her (statt immer in eine Richtung)", fx.Bounce, v => { fx.Bounce = v; Save(); });
         }
         if (fx.Type == EffectType.Wipe)
@@ -2112,52 +2112,59 @@ static class EffectRenderer
                     float ledsPerSec = span / Math.Max(0.1f, fx.CometPassSec);
                     width = Math.Max(0.5f, fx.CometTailSec * ledsPerSec);       // Nachleuchten
                     float lead = Math.Max(0, fx.CometHeadSec * ledsPerSec);     // Anglühen vor dem Kopf
-                    float gap = Math.Max(0, fx.GapSec) * ledsPerSec;            // Pause
                     double cph = ph * ledsPerSec;
-                    float cspan = span + width + lead;          // ein Durchlauf: Einblenden, Durchlaufen, Schweif läuft aus
-                    float head;
-                    bool back = fx.Reverse;
-                    int xi = i;
+                    float cspan = span + width + lead;          // ein Durchlauf: Anglühen, Durchlaufen, Schweif läuft aus
+                    // Helligkeit an einer LED, deren Abstand zum Kopf d ist (> 0: im Schweif, < 0: vor dem Kopf)
+                    float Glow(float d)
+                    {
+                        if (d >= 0 && d < width)
+                        {
+                            float tl = 1 - d / width;
+                            return _soft < 0.3f ? 1 : MathF.Pow(tl, 2.5f - _soft * 1.5f);
+                        }
+                        if (d < 0 && lead > 0 && d > -lead)
+                        {
+                            float u = 1 + d / lead;             // 0 … 1, je näher der Kopf kommt
+                            return u * u * (3 - 2 * u);         // weich ansteigen
+                        }
+                        return 0;
+                    }
+                    float tail = 0;
                     if (fx.Bounce)
                     {
                         // hin und her: Kopf läuft bis zum Ende und wieder zurück
                         float bspan = Math.Max(1, span - 1);
                         float bp = (float)(cph % (2 * bspan));
                         bool fwd = bp < bspan;
-                        head = fwd ? bp : 2 * bspan - bp;
-                        back = fx.Reverse ? fwd : !fwd;
+                        float head = fwd ? bp : 2 * bspan - bp;
+                        bool back = fx.Reverse ? fwd : !fwd;
                         if (fx.Reverse) head = bspan - head;
+                        tail = Glow(back ? i - head : head - i);
                     }
                     else
                     {
-                        if (sequence)
+                        // Abstand zur nächsten Welle: so viele Sekunden nach der ersten startet die zweite (0 = erst wenn die erste
+                        // ganz durch ist). Es können mehrere Wellen gleichzeitig unterwegs sein.
+                        float length = sequence ? cspan * units : cspan;    // ganze Strecke (bei Lüfter für Lüfter über alle Lüfter)
+                        float spacing = fx.GapSec > 0 ? Math.Max(0.5f, fx.GapSec * ledsPerSec) : length;
+                        int xi = fx.Reverse ? span - 1 - i : i;
+                        // Lage dieser LED auf der ganzen Strecke
+                        float xg = sequence ? (fx.Reverse ? units - 1 - unit : unit) * cspan + lead + xi : lead + xi;
+                        float h0 = (float)(cph % spacing);
+                        for (float hd = h0; hd < length + spacing; hd += spacing)
                         {
-                            // Lauflicht Lüfter für Lüfter: erst Lüfter 1, dann 2, 3 …, danach die Pause, dann von vorn
-                            int slot = fx.Reverse ? units - 1 - unit : unit;
-                            float p0 = (float)(cph % (cspan * units + gap));
-                            head = p0 >= slot * cspan && p0 < (slot + 1) * cspan ? p0 - slot * cspan - lead : -1e6f;
+                            if (hd > length) break;
+                            float local = hd;
+                            if (sequence)
+                            {
+                                // der Kopf ist gerade in einem bestimmten Lüfter – nur der leuchtet für diese Welle
+                                int slotNow = (int)(hd / cspan);
+                                int mySlot = fx.Reverse ? units - 1 - unit : unit;
+                                if (slotNow != mySlot) continue;
+                            }
+                            tail = Math.Max(tail, Glow(local - xg + (sequence ? 0 : 0)));
                         }
-                        else
-                        {
-                            float p0 = (float)(cph % (cspan + gap));
-                            head = p0 < cspan ? p0 - lead : -1e6f;
-                        }
-                        if (fx.Reverse) { xi = span - 1 - i; back = false; }
                     }
-                    float d = back ? xi - head : head - xi;     // > 0: im Schweif, < 0: vor dem Kopf
-                    float tail;
-                    if (head < -1e5f) tail = 0;
-                    else if (d >= 0 && d < width)
-                    {
-                        tail = 1 - d / width;
-                        tail = _soft < 0.3f ? 1 : MathF.Pow(tail, 2.5f - _soft * 1.5f);
-                    }
-                    else if (d < 0 && lead > 0 && d > -lead)
-                    {
-                        float u = 1 + d / lead;                 // 0 … 1, je näher der Kopf kommt
-                        tail = u * u * (3 - 2 * u);             // weich ansteigen
-                    }
-                    else tail = 0;
                     var bg = pal.Count > 1 ? Scale(pal[1], Math.Max(min, 0.02f)) : Scale(pal[0], min);
                     c = Lerp(bg, pal[0], tail);
                     break;
