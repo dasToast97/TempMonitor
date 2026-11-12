@@ -1505,6 +1505,25 @@ sealed class RgbView : FlowLayoutPanel
                    "Pause: wie lange es nach einem Durchlauf (bei „Lüfter für Lüfter“: nach dem letzten Lüfter) dunkel bleibt.");
             p.Check("Hin und her (statt immer in eine Richtung)", fx.Bounce, v => { fx.Bounce = v; Save(); });
         }
+        if (fx.Type != EffectType.Breathing)
+        {
+            p.Check("Rhythmus: Effekt im Takt hell und dunkel werden lassen (Hell-/Dunkel-Welle)", fx.Rhythm, v => { fx.Rhythm = v; Save(); RebuildSoon(); });
+            if (fx.Rhythm)
+            {
+                var r1 = p.Numbers(
+                    ("Einblenden", fx.RhyInMs, 0, 60000, "ms", (Action<float>)(v => { fx.RhyInMs = v; Save(); })),
+                    ("Hell halten", fx.RhyOnMs, 0, 60000, "ms", (Action<float>)(v => { fx.RhyOnMs = v; Save(); })));
+                var r2 = p.Numbers(
+                    ("Ausblenden", fx.RhyOutMs, 0, 60000, "ms", (Action<float>)(v => { fx.RhyOutMs = v; Save(); })),
+                    ("Dunkel halten", fx.RhyOffMs, 0, 60000, "ms", (Action<float>)(v => { fx.RhyOffMs = v; Save(); })));
+                var r3 = p.Numbers(("Versatz je LED", fx.RhyShiftMs, 0, 5000, "ms", (Action<float>)(v => { fx.RhyShiftMs = v; Save(); })));
+                foreach (var nn in r1.Concat(r2).Concat(r3)) { nn.Increment = 50; nn.Width = S(70); }
+                float per = (fx.RhyInMs + fx.RhyOnMs + fx.RhyOutMs + fx.RhyOffMs) / 1000f;
+                p.Note($"Die Welle kommt alle {per:0.##} s und ist {(fx.RhyInMs + fx.RhyOnMs + fx.RhyOutMs) / 1000f:0.##} s zu sehen. " +
+                       "Versatz je LED: 0 = alle gleichzeitig, höher = die Welle läuft langsamer durch (bei „Lüfter für Lüfter“ von Lüfter zu Lüfter). " +
+                       "Dunkel = „Dunkelste Stufe“.");
+            }
+        }
         if (fx.Type == EffectType.TempWave)
         {
             string[] sources = { "CPU", "GPU", "Hotspot", "Max" };
@@ -1744,6 +1763,15 @@ sealed class CustomEffect
     public bool Mirror { get; set; }
     /// Dichte / Anzahl in % (Tropfen, Sterne, Funken, Glühwürmchen, Blasen) – 100 = Standard
     public float Density { get; set; } = 100;
+    /// Rhythmus (für alle Effekte außer Atmen): der Effekt wird in einem festen Takt ein- und ausgeblendet.
+    /// Je LED zeitlich versetzt -> eine Hell-Dunkel-Welle läuft durch. Zeiten in ms.
+    public bool Rhythm { get; set; }
+    public float RhyInMs { get; set; } = 800;
+    public float RhyOnMs { get; set; } = 1000;
+    public float RhyOutMs { get; set; } = 800;
+    public float RhyOffMs { get; set; } = 2000;
+    /// Versatz je LED in ms (0 = alle LEDs gleichzeitig)
+    public float RhyShiftMs { get; set; } = 120;
     /// Lauflicht: so viele LEDs vor dem Kopf glimmen schon an (0 = Kopf springt hart an)
     public float HeadSoft { get; set; } = 2;
     /// Lauflicht: Pause zwischen zwei Durchläufen in Sekunden
@@ -1771,6 +1799,7 @@ sealed class CustomEffect
     {
         Type = Type, Colors = Colors.ToList(), Speed = Speed, Brightness = Brightness, Width = Width, Reverse = Reverse,
         MinLevel = MinLevel, Softness = Softness, Mirror = Mirror, Bounce = Bounce, Density = Density, HeadSoft = HeadSoft, GapSec = GapSec,
+        Rhythm = Rhythm, RhyInMs = RhyInMs, RhyOnMs = RhyOnMs, RhyOutMs = RhyOutMs, RhyOffMs = RhyOffMs, RhyShiftMs = RhyShiftMs,
         FadeInMs = FadeInMs, HoldOnMs = HoldOnMs, FadeOutMs = FadeOutMs, HoldOffMs = HoldOffMs,
     };
 
@@ -1985,6 +2014,11 @@ static class EffectRenderer
             ph += (fx.Reverse ? units - 1 - unit : unit) * cycle / units;
         }
         float pf = (float)(ph % 100000.0);
+
+        bool rhythm = fx.Rhythm && fx.Type != EffectType.Breathing;
+        double rIn = Math.Max(0, fx.RhyInMs) / 1000.0, rOn = Math.Max(0, fx.RhyOnMs) / 1000.0,
+               rOut = Math.Max(0, fx.RhyOutMs) / 1000.0, rOff = Math.Max(0, fx.RhyOffMs) / 1000.0;
+        double rPeriod = Math.Max(0.05, rIn + rOn + rOut + rOff), shift = Math.Max(0, fx.RhyShiftMs) / 1000.0;
 
         for (int idx = 0; idx < n; idx++)
         {
@@ -2253,6 +2287,21 @@ static class EffectRenderer
                     c = Scale(tc, Level(_soft >= 0.98f ? wave : Shape(wave)));
                     break;
                 }
+            }
+            if (rhythm)
+            {
+                // Hüllkurve: Einblenden – hell – Ausblenden – dunkel; jede LED (und jeder Lüfter) etwas später
+                int li = fx.Reverse ? span - 1 - i : i;
+                double tl = t - (unit * span + li) * shift;
+                double x = tl - Math.Floor(tl / rPeriod) * rPeriod;
+                float e;
+                if (x < rIn) e = (float)(x / Math.Max(0.001, rIn));
+                else if (x < rIn + rOn) e = 1;
+                else if (x < rIn + rOn + rOut) e = 1 - (float)((x - rIn - rOn) / Math.Max(0.001, rOut));
+                else e = 0;
+                e = (1 - MathF.Cos(e * MathF.PI)) / 2;      // weiche Kurve
+                e *= e;                                     // gleichmäßig fürs Auge
+                c = Scale(c, min + (1 - min) * e);
             }
             res[idx] = Quantize(zone, idx, Scale(c, bright));
         }
