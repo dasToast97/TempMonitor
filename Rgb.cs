@@ -1436,6 +1436,8 @@ sealed class RgbView : FlowLayoutPanel
             EffectType.Stars => "Dunkler Himmel, einzelne Sterne funkeln langsam auf und verblassen wieder. Letzte Farbe = Himmel (ab 2 Farben).",
             EffectType.Rain => "Tropfen fallen an zufälligen Stellen, von jedem läuft ein Lichtring nach beiden Seiten und verklingt. Breite = wie weit die Ringe laufen.",
             EffectType.Mist => "Farbschwaden ziehen wie Nebel durch die LEDs – organisch, ohne erkennbares Muster.",
+            EffectType.Wipe => "Eine Lichtfront läuft durch und schaltet alles an, danach eine dunkle Front, die alles wieder ausmacht – mit „Durchgehend“ " +
+                                "z. B. erst die ganze Tastatur, dann weiter zur Maus und durch den PC. Mehrere Farben = jede neue Welle in der nächsten Farbe.",
             EffectType.Pendulum => "Ein weiches Licht schwingt wie ein Pendel hin und her und wechselt dabei die Farbe. Breite = Größe des Lichts.",
             EffectType.Ember => "Warme Glut, die ganz ruhig an- und abschwillt – jede LED ein wenig anders. Schön mit „Dunkelste Stufe“ 20–40 %.",
             _ => "Farbe zeigt die Temperatur (blau → rot), dazu eine sanfte Welle.",
@@ -1450,7 +1452,9 @@ sealed class RgbView : FlowLayoutPanel
 
         var p = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
         p.Step = 0.5m;   // fein einstellbar: Pfeile = 0,5er-Schritte, eintippen auf 0,1 genau
-        p.Numbers(
+        bool timed = fx.Type is EffectType.Comet or EffectType.Wipe;
+        if (timed) p.Numbers(("Helligkeit", fx.Brightness, 1, 100, "%", (Action<float>)(v => { fx.Brightness = v; Save(); })));
+        else p.Numbers(
             ("Geschwindigkeit", fx.Speed, 0, 500, "%", (Action<float>)(v => { fx.Speed = v; Save(); })),
             ("Helligkeit", fx.Brightness, 1, 100, "%", (Action<float>)(v => { fx.Brightness = v; Save(); })));
         p.Numbers(
@@ -1473,7 +1477,7 @@ sealed class RgbView : FlowLayoutPanel
             foreach (var n in a.Concat(b)) n.Increment = 100;
             p.Note("Beispiel „nie ganz aus, höchstens 80 %“: Helligkeit 80 %, Dunkelste Stufe 30 %.");
         }
-        else
+        else if (!timed)
         {
             p.Step = 0.5m;
             p.Numbers(("Breite (LEDs je Welle / Schweif / Blase)", fx.Width, 1, 300, "LEDs", (Action<float>)(v => { fx.Width = v; Save(); })));
@@ -1499,15 +1503,32 @@ sealed class RgbView : FlowLayoutPanel
         p.Check("Von der Mitte aus (gespiegelt)", fx.Mirror, v => { fx.Mirror = v; Save(); });
         if (fx.Type == EffectType.Comet)
         {
-            p.Step = 0.5m;
-            p.Numbers(("Vorderkante weich", fx.HeadSoft, 0, 30, "LEDs", (Action<float>)(v => { fx.HeadSoft = v; Save(); })),
-                      ("Pause zwischen Durchläufen", fx.GapSec, 0, 60, "s", (Action<float>)(v => { fx.GapSec = v; Save(); })));
+            p.Step = 0.1m;
+            p.Numbers(("Ein Durchlauf dauert", fx.CometPassSec, 0, 120, "s", (Action<float>)(v => { fx.CometPassSec = Math.Max(0.2f, v); Save(); })),
+                      ("Pause danach", fx.GapSec, 0, 120, "s", (Action<float>)(v => { fx.GapSec = v; Save(); })));
+            p.Numbers(("Eine LED leuchtet nach", fx.CometTailSec, 0, 30, "s", (Action<float>)(v => { fx.CometTailSec = v; Save(); })),
+                      ("glimmt vorher an", fx.CometHeadSec, 0, 10, "s", (Action<float>)(v => { fx.CometHeadSec = v; Save(); })));
             p.Step = 1;
-            p.Note("Vorderkante: wie viele LEDs vor dem Kopf schon langsam angehen (0 = springt an). Schweif-Länge = „Breite“. " +
-                   "Pause: wie lange es nach einem Durchlauf (bei „Lüfter für Lüfter“: nach dem letzten Lüfter) dunkel bleibt.");
+            float every = fx.CometPassSec + fx.GapSec;
+            p.Note($"Das Lauflicht kommt alle {every:0.#} s. „Leuchtet nach“ = wie lange der Schweif an einer Stelle zu sehen ist, " +
+                   "„glimmt vorher an“ = weiches Anlaufen (0 = springt an). Bei „Lüfter für Lüfter“ gilt der Durchlauf je Lüfter, die Pause nach dem letzten.");
             p.Check("Hin und her (statt immer in eine Richtung)", fx.Bounce, v => { fx.Bounce = v; Save(); });
         }
-        if (fx.Type is not (EffectType.Breathing or EffectType.Comet))
+        if (fx.Type == EffectType.Wipe)
+        {
+            p.Step = 0.1m;
+            p.NumberWidth = 72;
+            p.Numbers(("Hell-Teil", fx.WipeOnPct, 1, 400, "%", (Action<float>)(v => { fx.WipeOnPct = v; Save(); })),
+                      ("Dunkel-Teil", fx.WipeOffPct, 0, 400, "%", (Action<float>)(v => { fx.WipeOffPct = v; Save(); })));
+            p.Numbers(("Front braucht für alles", fx.WipePassSec, 0, 120, "s", (Action<float>)(v => { fx.WipePassSec = Math.Max(0.2f, v); Save(); })),
+                      ("Kante weich", fx.WipeEdgePct, 0, 100, "%", (Action<float>)(v => { fx.WipeEdgePct = v; Save(); })));
+            p.NumberWidth = 0;
+            p.Step = 1;
+            float cyc = fx.WipePassSec * (fx.WipeOnPct + fx.WipeOffPct) / 100f;
+            p.Note($"Längen in % des Streifens (bei „Durchgehend“: der ganzen Gruppe). 100 % hell + 100 % dunkel = erst geht alles an, dann alles aus. " +
+                   $"20 % hell + 80 % dunkel = ein Fünftel leuchtet und wandert. Eine Runde dauert {cyc:0.#} s, jede LED ist {fx.WipePassSec * fx.WipeOnPct / 100f:0.#} s hell.");
+        }
+        if (CustomEffect.RhythmFits(fx.Type))
         {
             p.Check("Rhythmus: Effekt im Takt hell und dunkel werden lassen (Hell-/Dunkel-Welle)", fx.Rhythm, v => { fx.Rhythm = v; Save(); RebuildSoon(); });
             if (fx.Rhythm)
@@ -1749,7 +1770,7 @@ sealed class RgbView : FlowLayoutPanel
 // Eigene Effekte (laufen in Toast Temperatur, jede LED einzeln)
 // ===========================================================================
 // Neue Effekte immer hinten anhängen (gespeichert wird die Nummer)
-enum EffectType { Breathing, Wave, RainbowWave, Gradient, Comet, Sparkle, ColorCycle, Fire, TempWave, LavaLamp, Tide, Fireflies, Aurora, Ember, Stars, Rain, Mist, Pendulum }
+enum EffectType { Breathing, Wave, RainbowWave, Gradient, Comet, Sparkle, ColorCycle, Fire, TempWave, LavaLamp, Tide, Fireflies, Aurora, Ember, Stars, Rain, Mist, Pendulum, Wipe }
 
 sealed class CustomEffect
 {
@@ -1776,6 +1797,15 @@ sealed class CustomEffect
     public float RhyOffMs { get; set; } = 2000;
     /// Versatz je LED in ms (0 = alle LEDs gleichzeitig)
     public float RhyShiftMs { get; set; } = 120;
+    /// Lauflicht in Sekunden: ein Durchlauf dauert …, eine LED leuchtet … nach, glimmt … vorher an
+    public float CometPassSec { get; set; } = 3;
+    public float CometTailSec { get; set; } = 0.8f;
+    public float CometHeadSec { get; set; } = 0.15f;
+    /// Lichtwelle (an/aus): Länge des hellen und des dunklen Teils in % der Streifenlänge, Durchlauf in s, weiche Kante in %
+    public float WipeOnPct { get; set; } = 100;
+    public float WipeOffPct { get; set; } = 100;
+    public float WipePassSec { get; set; } = 4;
+    public float WipeEdgePct { get; set; } = 15;
     /// Lauflicht: so viele LEDs vor dem Kopf glimmen schon an (0 = Kopf springt hart an)
     public float HeadSoft { get; set; } = 2;
     /// Lauflicht: Pause zwischen zwei Durchläufen in Sekunden
@@ -1799,10 +1829,16 @@ sealed class CustomEffect
         return _clockPhase;
     }
 
+    /// Rhythmus nur bei Effekten ohne eigenen Hell-Dunkel-Takt (sonst überlagern sich zwei Takte)
+    public static bool RhythmFits(EffectType t) =>
+        t is EffectType.Wave or EffectType.Gradient or EffectType.ColorCycle or EffectType.Fire or EffectType.Ember;
+
     public CustomEffect Clone() => new()
     {
         Type = Type, Colors = Colors.ToList(), Speed = Speed, Brightness = Brightness, Width = Width, Reverse = Reverse,
         MinLevel = MinLevel, Softness = Softness, Mirror = Mirror, Bounce = Bounce, Density = Density, HeadSoft = HeadSoft, GapSec = GapSec,
+        CometPassSec = CometPassSec, CometTailSec = CometTailSec, CometHeadSec = CometHeadSec,
+        WipeOnPct = WipeOnPct, WipeOffPct = WipeOffPct, WipePassSec = WipePassSec, WipeEdgePct = WipeEdgePct,
         Rhythm = Rhythm, RhyInMs = RhyInMs, RhyOnMs = RhyOnMs, RhyOutMs = RhyOutMs, RhyOffMs = RhyOffMs, RhyShiftMs = RhyShiftMs,
         FadeInMs = FadeInMs, HoldOnMs = HoldOnMs, FadeOutMs = FadeOutMs, HoldOffMs = HoldOffMs,
     };
@@ -1826,6 +1862,7 @@ sealed class CustomEffect
         EffectType.Rain => "Regentropfen (ruhig)",
         EffectType.Mist => "Farbnebel (ruhig)",
         EffectType.Pendulum => "Pendel (ruhig)",
+        EffectType.Wipe => "Lichtwelle (an / aus)",
         _ => "Temperatur-Welle",
     };
 
@@ -1851,6 +1888,7 @@ sealed class CustomEffect
         ("Regentropfen", new() { Type = EffectType.Rain, Colors = { C(0, 180, 255), C(120, 80, 255), C(0, 10, 40) }, Speed = 40, Width = 12 }),
         ("Farbnebel", new() { Type = EffectType.Mist, Colors = { C(255, 0, 120), C(90, 0, 255), C(0, 160, 255) }, Speed = 40, Width = 12, MinLevel = 20 }),
         ("Pendel", new() { Type = EffectType.Pendulum, Colors = { C(255, 120, 0), C(255, 0, 90) }, Speed = 40, Width = 9, MinLevel = 4 }),
+        ("Lichtwelle an/aus", new() { Type = EffectType.Wipe, Colors = { C(255, 0, 40), C(255, 90, 0) }, WipeOnPct = 100, WipeOffPct = 100, WipePassSec = 4, WipeEdgePct = 15 }),
         ("Glut", new() { Type = EffectType.Ember, Colors = { C(255, 70, 0), C(255, 25, 0), C(255, 140, 20) }, Speed = 30, Width = 10, MinLevel = 25 }),
     };
 }
@@ -1988,7 +2026,7 @@ static class EffectRenderer
             EffectType.Wave => 0.05 + speed * 1.2,
             EffectType.RainbowWave => 20 + speed * 300,
             EffectType.Gradient => speed * 0.15,
-            EffectType.Comet => 3 + speed * 60,
+            EffectType.Comet or EffectType.Wipe => 1,   // läuft in Sekunden (eigene Zeiten)
             EffectType.ColorCycle => 0.02 + speed * 0.3,
             EffectType.Fire => 3 + speed * 9,
             EffectType.LavaLamp => 0.06 + speed * 0.5,
@@ -2012,7 +2050,8 @@ static class EffectRenderer
             {
                 EffectType.Breathing or EffectType.Wave or EffectType.Gradient or EffectType.ColorCycle => 1,
                 EffectType.RainbowWave => 360,
-                EffectType.Comet => 2 * Math.Max(1, span - 1),
+                EffectType.Comet => Math.Max(0.1, fx.CometPassSec),
+                EffectType.Wipe => Math.Max(0.1, fx.WipePassSec) * (fx.WipeOnPct + fx.WipeOffPct) / 100.0,
                 _ => Math.PI * 2,
             };
             ph += (fx.Reverse ? units - 1 - unit : unit) * cycle / units;
@@ -2020,7 +2059,7 @@ static class EffectRenderer
         float pf = (float)(ph % 100000.0);
 
         // Rhythmus nur bei Effekten ohne eigenen Takt – beim Lauflicht würden sich zwei Takte überlagern (wildes Pulsieren)
-        bool rhythm = fx.Rhythm && fx.Type is not (EffectType.Breathing or EffectType.Comet);
+        bool rhythm = fx.Rhythm && CustomEffect.RhythmFits(fx.Type);
         double rIn = Math.Max(0, fx.RhyInMs) / 1000.0, rOn = Math.Max(0, fx.RhyOnMs) / 1000.0,
                rOut = Math.Max(0, fx.RhyOutMs) / 1000.0, rOff = Math.Max(0, fx.RhyOffMs) / 1000.0;
         double rPeriod = Math.Max(0.05, rIn + rOn + rOut + rOff), shift = Math.Max(0, fx.RhyShiftMs) / 1000.0;
@@ -2069,10 +2108,12 @@ static class EffectRenderer
                     break;
                 case EffectType.Comet:
                 {
-                    // Vorderkante: so viele LEDs vor dem Kopf glimmen schon an (weiches Einblenden statt Anspringen)
-                    float lead = Math.Clamp(fx.HeadSoft, 0, 30);
-                    // Pause zwischen zwei Durchläufen (in LED-Schritten, damit sie zum Tempo passt)
-                    float gap = Math.Max(0, fx.GapSec) * (float)rate;
+                    // Alles in Sekunden: ein Durchlauf über den Streifen dauert CometPassSec
+                    float ledsPerSec = span / Math.Max(0.1f, fx.CometPassSec);
+                    width = Math.Max(0.5f, fx.CometTailSec * ledsPerSec);       // Nachleuchten
+                    float lead = Math.Max(0, fx.CometHeadSec * ledsPerSec);     // Anglühen vor dem Kopf
+                    float gap = Math.Max(0, fx.GapSec) * ledsPerSec;            // Pause
+                    double cph = ph * ledsPerSec;
                     float cspan = span + width + lead;          // ein Durchlauf: Einblenden, Durchlaufen, Schweif läuft aus
                     float head;
                     bool back = fx.Reverse;
@@ -2081,7 +2122,7 @@ static class EffectRenderer
                     {
                         // hin und her: Kopf läuft bis zum Ende und wieder zurück
                         float bspan = Math.Max(1, span - 1);
-                        float bp = (float)(ph % (2 * bspan));
+                        float bp = (float)(cph % (2 * bspan));
                         bool fwd = bp < bspan;
                         head = fwd ? bp : 2 * bspan - bp;
                         back = fx.Reverse ? fwd : !fwd;
@@ -2093,12 +2134,12 @@ static class EffectRenderer
                         {
                             // Lauflicht Lüfter für Lüfter: erst Lüfter 1, dann 2, 3 …, danach die Pause, dann von vorn
                             int slot = fx.Reverse ? units - 1 - unit : unit;
-                            float p0 = (float)(ph % (cspan * units + gap));
+                            float p0 = (float)(cph % (cspan * units + gap));
                             head = p0 >= slot * cspan && p0 < (slot + 1) * cspan ? p0 - slot * cspan - lead : -1e6f;
                         }
                         else
                         {
-                            float p0 = (float)(ph % (cspan + gap));
+                            float p0 = (float)(cph % (cspan + gap));
                             head = p0 < cspan ? p0 - lead : -1e6f;
                         }
                         if (fx.Reverse) { xi = span - 1 - i; back = false; }
@@ -2231,6 +2272,26 @@ static class EffectRenderer
                     lvl = Math.Clamp(lvl, 0, 1);
                     var col = Palette(pal, 0.5f + 0.45f * MathF.Sin(pf * 0.2f + seed), cyclic: false);
                     c = Scale(col, Level(lvl * lvl));
+                    break;
+                }
+                case EffectType.Wipe:
+                {
+                    // Helles und dunkles Stück (in % der Streifenlänge) wandern zusammen durch: erst geht alles an, dann wieder aus
+                    float lOn = Math.Max(0.5f, fx.WipeOnPct / 100f * span), lOff = Math.Max(0, fx.WipeOffPct / 100f * span);
+                    float per = lOn + lOff;
+                    float edge = Math.Min(Math.Max(0, fx.WipeEdgePct / 100f * span), Math.Min(lOn, lOff > 0 ? lOff : lOn));
+                    float v = span / Math.Max(0.1f, fx.WipePassSec);
+                    int xi = fx.Reverse ? span - 1 - i : i;
+                    float q = (float)(ph * v) - xi;                 // wie weit die Front schon an dieser LED vorbei ist
+                    float k = MathF.Floor(q / per);
+                    float u = q - k * per;                          // 0 … lOn: hell, danach dunkel
+                    float lvl;
+                    if (lOff <= 0) lvl = 1;
+                    else if (u < lOn) lvl = edge > 0 ? Math.Min(1, u / edge) : 1;
+                    else lvl = edge > 0 ? Math.Max(0, 1 - (u - lOn) / edge) : 0;
+                    lvl = lvl * lvl * (3 - 2 * lvl);
+                    int ci = ((int)k % pal.Count + pal.Count) % pal.Count;
+                    c = Scale(pal[ci], Level(lvl));
                     break;
                 }
                 case EffectType.Stars:

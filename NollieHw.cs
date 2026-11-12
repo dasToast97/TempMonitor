@@ -91,6 +91,7 @@ static class NollieHw
             EffectType.Comet => 6,
             EffectType.Sparkle or EffectType.Fireflies or EffectType.Stars or EffectType.Rain => 7,
             EffectType.Pendulum => 3,
+            EffectType.Wipe => 9,
             EffectType.Fire => 13,
             EffectType.Gradient when Math.Clamp(fx.Speed, 0, 100) < 5 => 1,
             _ => 12,   // Welle, Lavalampe, Meeresrauschen, Nordlicht, Temperatur-Welle
