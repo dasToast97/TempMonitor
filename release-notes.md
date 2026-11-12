@@ -1,10 +1,8 @@
-## Neu in 2.22.0
+## Neu in 2.23.0
 
-**Weichere Übergänge**
-- Bei langsamen Effekten (z. B. 10 % Geschwindigkeit) waren Helligkeitsänderungen als kleine „Ticks“ sichtbar. Die Effekte werden jetzt durchgehend mit Nachkommastellen gerechnet und erst ganz am Ende auf die 256 Stufen der LEDs gebracht; Zwischenstufen werden zeitlich gemischt. Dazu ca. 40 statt 20 Bilder pro Sekunde.
+**Lüfter für Lüfter**
+- Bei „Lüfter für Lüfter“ sind die LEDs jedes Lüfters wieder einzeln: jeder Lüfter spielt den Effekt auf seinem eigenen Ring, zeitlich versetzt – so wandert der Effekt von Lüfter zu Lüfter. Das Lauflicht (Komet) läuft erst durch Lüfter 1, dann 2, 3 … und beginnt von vorn.
+- Die einfarbige Variante (jeder Lüfter eine Farbe) gibt es weiterhin als eigene Auswahl „Lüfter für Lüfter (jeder Lüfter einfarbig)“.
 
-**4 neue ruhige Effekte**
-- **Sternenhimmel** – dunkler Himmel, einzelne Sterne funkeln langsam auf und verblassen.
-- **Regentropfen** – Tropfen fallen an zufälligen Stellen, von jedem läuft ein Lichtring nach beiden Seiten und verklingt.
-- **Farbnebel** – Farbschwaden ziehen organisch durch die LEDs, ohne erkennbares Muster.
-- **Pendel** – ein weiches Licht schwingt hin und her und wechselt dabei die Farbe.
+**Effekte feiner justieren**
+- Neue Einstellung **Dichte / Anzahl** (5–500 %): Tropfen-Dichte beim Regen, Sterne-Dichte, Funken-Dichte, Anzahl Glühwürmchen, Anzahl Blasen der Lavalampe.

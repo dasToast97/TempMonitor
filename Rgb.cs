@@ -1478,6 +1478,21 @@ sealed class RgbView : FlowLayoutPanel
             p.Step = 1;
             p.Note("Die Breite wird höchstens so groß wie der Streifen gerechnet (z. B. ein Lüfter mit 8 LEDs) – bei „Durchgehend“ zählt die Gesamtlänge.");
         }
+        string? dens = fx.Type switch
+        {
+            EffectType.Rain => "Tropfen-Dichte",
+            EffectType.Stars => "Sterne-Dichte",
+            EffectType.Sparkle => "Funken-Dichte",
+            EffectType.Fireflies => "Anzahl Glühwürmchen",
+            EffectType.LavaLamp => "Anzahl Blasen",
+            _ => null,
+        };
+        if (dens != null)
+        {
+            p.Step = 0.5m;
+            p.Numbers((dens, fx.Density, 5, 500, "%  (100 = Standard)", (Action<float>)(v => { fx.Density = v; Save(); })));
+            p.Step = 1;
+        }
         p.Check("Richtung umkehren", fx.Reverse, v => { fx.Reverse = v; Save(); });
         p.Check("Von der Mitte aus (gespiegelt)", fx.Mirror, v => { fx.Mirror = v; Save(); });
         if (fx.Type == EffectType.Comet) p.Check("Hin und her (statt immer in eine Richtung)", fx.Bounce, v => { fx.Bounce = v; Save(); });
@@ -1552,9 +1567,10 @@ sealed class RgbView : FlowLayoutPanel
             int start = Controls.Count;
             var gc = new SettingsCard(K) { Margin = new Padding(S(6), S(2), S(6), S(4)) };
             var gg = g;
-            var flow = gc.Combo("Ablauf:", new[] { "Jeder Kanal für sich", "Durchgehend (LED für LED, ein langer Streifen)", "Lüfter für Lüfter (jeder Lüfter eine Farbe, wandert durch den PC)" },
+            var flow = gc.Combo("Ablauf:", new[] { "Jeder Kanal für sich", "Durchgehend (LED für LED, ein langer Streifen)", "Lüfter für Lüfter (nacheinander, LEDs einzeln)", "Lüfter für Lüfter (jeder Lüfter einfarbig)" },
                 g.Mode, i => { gg.Flow = i; gg.Continuous = i > 0; st.Save(); });
             flow.Width = S(330);
+            gc.Note("„Lüfter“ je Kanal (in der Liste oben) = Lüfter mit eigenen LEDs. Zeigen hintereinander gesteckte Lüfter ohnehin dasselbe Bild, dort 1 eintragen.");
             if (g.Members.Count > 1)
             {
                 gc.Note("Reihenfolge (z. B. von unten nach oben) – mit ▲ ▼ verschieben:", muted: false);
@@ -1717,6 +1733,8 @@ sealed class CustomEffect
     public float Softness { get; set; } = 80;
     /// Von der Mitte nach außen (gespiegelt)
     public bool Mirror { get; set; }
+    /// Dichte / Anzahl in % (Tropfen, Sterne, Funken, Glühwürmchen, Blasen) – 100 = Standard
+    public float Density { get; set; } = 100;
     /// Lauflicht: hin und her statt immer in eine Richtung
     public bool Bounce { get; set; }
     /// Atmen: Zeiten in Millisekunden (0 = automatisch aus der Geschwindigkeit)
@@ -1739,7 +1757,7 @@ sealed class CustomEffect
     public CustomEffect Clone() => new()
     {
         Type = Type, Colors = Colors.ToList(), Speed = Speed, Brightness = Brightness, Width = Width, Reverse = Reverse,
-        MinLevel = MinLevel, Softness = Softness, Mirror = Mirror, Bounce = Bounce,
+        MinLevel = MinLevel, Softness = Softness, Mirror = Mirror, Bounce = Bounce, Density = Density,
         FadeInMs = FadeInMs, HoldOnMs = HoldOnMs, FadeOutMs = FadeOutMs, HoldOffMs = HoldOffMs,
     };
 
@@ -1887,8 +1905,11 @@ static class EffectRenderer
     }
 
     /// LED-Farben einer Zone zum Zeitpunkt t (Sekunden). temp = aktuelle Temperatur (für Temperatur-Effekte)
-    public static Color[] Render(CustomEffect fx, int zone, int count, double t, float? temp)
+    /// unit/units: „Lüfter für Lüfter“ – dieser Streifen ist Lüfter Nr. unit von units; der Effekt läuft auf jedem Lüfter
+    /// für sich (alle LEDs einzeln), aber zeitlich versetzt, sodass er von Lüfter zu Lüfter wandert
+    public static Color[] Render(CustomEffect fx, int zone, int count, double t, float? temp, int unit = 0, int units = 1)
     {
+        zone += unit * 31;
         var res = new Color[Math.Max(1, count)];
         var pal = fx.Colors.Select(a => (Rgbf)Color.FromArgb(a)).ToList();
         if (pal.Count == 0) pal.Add(Color.FromArgb(0, 120, 255));
@@ -1936,6 +1957,20 @@ static class EffectRenderer
             _ => 1 + speed * 6,
         };
         double ph = fx.Clock(t, rate);
+        float density = Math.Clamp(fx.Density, 5, 500) / 100f;
+        bool sequence = units > 1 && fx.Type == EffectType.Comet && !fx.Bounce;
+        if (units > 1 && !sequence)
+        {
+            // Versatz: die Lüfter verteilen sich gleichmäßig über einen Durchlauf des Effekts
+            double cycle = fx.Type switch
+            {
+                EffectType.Breathing or EffectType.Wave or EffectType.Gradient or EffectType.ColorCycle => 1,
+                EffectType.RainbowWave => 360,
+                EffectType.Comet => 2 * Math.Max(1, span - 1),
+                _ => Math.PI * 2,
+            };
+            ph += (fx.Reverse ? units - 1 - unit : unit) * cycle / units;
+        }
         float pf = (float)(ph % 100000.0);
 
         for (int idx = 0; idx < n; idx++)
@@ -1984,6 +2019,13 @@ static class EffectRenderer
                 {
                     float cspan = span + width;
                     float head = (float)(ph % cspan);
+                    if (sequence)
+                    {
+                        // Lauflicht Lüfter für Lüfter: der Komet läuft erst durch Lüfter 1, dann 2, 3 … und beginnt von vorn
+                        int slot = fx.Reverse ? units - 1 - unit : unit;
+                        head = (float)(ph % (cspan * units)) - slot * cspan;
+                        if (head < 0 || head >= cspan) head = -1000;
+                    }
                     bool back = fx.Reverse;
                     if (fx.Bounce)
                     {
@@ -2010,7 +2052,7 @@ static class EffectRenderer
                     Sparks.TryGetValue(key, out float lvl);
                     // Weichheit = wie langsam ein Funke verglimmt
                     lvl = Math.Max(0, lvl - ((0.02f + (1 - _soft) * 0.25f) + Math.Min(speed, 2f) * 0.05f) * 0.5f);
-                    if (Rnd.NextDouble() < (0.004 + speed * 0.03) * 0.5) lvl = 1;
+                    if (Rnd.NextDouble() < (0.004 + speed * 0.03) * 0.5 * density) lvl = 1;
                     Sparks[key] = lvl;
                     var sparkCol = pal[(i * 7 + zone) % Math.Max(1, pal.Count > 2 ? pal.Count - 1 : pal.Count)];
                     c = Lerp(bg, sparkCol, lvl);
@@ -2029,7 +2071,7 @@ static class EffectRenderer
                 {
                     // Einzelne weiche Farbblasen (je Farbe eine) treiben gemächlich hin und her, „atmen“ dabei und
                     // verschmelzen, wo sie sich treffen. Dazwischen bleibt es dunkel bzw. auf der dunkelsten Stufe.
-                    int blobs = Math.Clamp(pal.Count, 2, 4);
+                    int blobs = Math.Clamp((int)MathF.Round(Math.Clamp(pal.Count, 2, 4) * density), 1, 8);
                     float len = Math.Max(1, span - 1);
                     float radius = Math.Max(1.1f, width / 4f);
                     float wsum = 0, cr = 0, cg = 0, cb = 0;
@@ -2071,7 +2113,7 @@ static class EffectRenderer
                 {
                     // Feste Anzahl Glühwürmchen je Zone; jedes hat eigene Bahn, eigenes Tempo und eigenen Leuchtrhythmus
                     var bg = Scale(pal.Count > 2 ? pal[^1] : Color.FromArgb(0, 20, 8), Math.Max(min, 0.04f));
-                    int flies = Math.Max(1, n / 7);
+                    int flies = Math.Max(1, (int)MathF.Round(n / 7f * density));
                     float glowW = Math.Max(0.8f, Math.Min(width, 6f) / 2f);
                     float best = 0; var fc = pal[0];
                     for (int j = 0; j < flies; j++)
@@ -2122,9 +2164,9 @@ static class EffectRenderer
                     var bg = Scale(sky, Math.Max(min, 0.04f));
                     float h = Hash(idx * 1.37f + zone * 17.3f);
                     float tw = MathF.Sin(pf * (0.45f + h * 1.3f) + h * 40f);
-                    tw = tw > 0 ? MathF.Pow(tw, 5) : 0;
+                    tw = tw > 0 ? MathF.Pow(tw, Math.Clamp(5f / density, 1.5f, 10f)) : 0;
                     int starCols = Math.Max(1, pal.Count > 1 ? pal.Count - 1 : 1);
-                    c = Lerp(bg, pal[(int)(h * 97) % starCols], Hash(idx * 3.7f + zone) < 0.7f ? tw : 0);
+                    c = Lerp(bg, pal[(int)(h * 97) % starCols], Hash(idx * 3.7f + zone) < 0.7f * density ? tw : 0);
                     break;
                 }
                 case EffectType.Rain:
@@ -2133,7 +2175,7 @@ static class EffectRenderer
                     // ein Ring nach beiden Seiten und wird dabei schwächer
                     Rgbf water = pal.Count > 2 ? pal[^1] : (Rgbf)Color.FromArgb(0, 8, 30);
                     var bg = Scale(water, Math.Max(min, 0.05f));
-                    int slots = Math.Max(1, span / 6);
+                    int slots = Math.Max(1, (int)MathF.Round(span / 6f * density));
                     int dropCols = Math.Max(1, pal.Count > 2 ? pal.Count - 1 : pal.Count);
                     float reach = Math.Max(1.5f, width * 0.5f);
                     float best = 0; var dc = pal[0];
@@ -2248,9 +2290,27 @@ sealed class EffectEngine
                         int total = 0;
                         foreach (var m in groups[gi].Members) if (len.TryGetValue(m, out int n)) { off[m] = total; total += n; }
                         if (total == 0) continue;
-                        // Immer als ein langer Streifen rechnen (gleiche Breite, gleiches Tempo wie „Durchgehend“) …
-                        var strip = EffectRenderer.Render(groups[gi].Effect, 500 + gi, total, t, temp);
+                        Color[] strip;
                         if (mode == 2)
+                        {
+                            // Lüfter für Lüfter: jeder Lüfter spielt den Effekt auf seinen eigenen LEDs (alle einzeln),
+                            // zeitlich versetzt – so wandert er von Lüfter zu Lüfter
+                            strip = new Color[total];
+                            var fans = new List<(int Start, int Len)>();
+                            foreach (var (m, o) in off)
+                            {
+                                int n = len[m], f = Math.Clamp(fanCount.GetValueOrDefault(m, 1), 1, Math.Max(1, n));
+                                for (int k = 0; k < f; k++)
+                                    if ((k + 1) * n / f > k * n / f) fans.Add((o + k * n / f, (k + 1) * n / f - k * n / f));
+                            }
+                            for (int u = 0; u < fans.Count; u++)
+                            {
+                                var part = EffectRenderer.Render(groups[gi].Effect, 500 + gi, fans[u].Len, t, temp, u, fans.Count);
+                                Array.Copy(part, 0, strip, fans[u].Start, fans[u].Len);
+                            }
+                        }
+                        else strip = EffectRenderer.Render(groups[gi].Effect, 500 + gi, total, t, temp);
+                        if (mode == 3)
                         {
                             // … bei „Lüfter für Lüfter“ bekommt jeder Lüfter eine Farbe: den Mittelwert seiner LEDs.
                             // So wandert der Effekt sichtbar von Lüfter zu Lüfter statt um jeden Ring herum.
