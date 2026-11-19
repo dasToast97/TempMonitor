@@ -1794,20 +1794,12 @@ sealed class FanController
             // Grafikkarten-Lüfter: nach dem Hot Spot regeln (heißester Punkt, eigenes Ziel),
             // die normale GPU-Temperatur nur, wenn die Karte keinen Hot Spot meldet
             if (ch.IsGpu && c == Component.Gpu && Temp(Component.Hotspot) is float) continue;
-            // Eigene Kurve bei Gehäuse-/Radiator-Lüftern: die Kurve ist für die GPU-Temperatur gemacht. Der Hot Spot liegt
-            // 15–30 °C darüber und würde dieselbe Kurve viel zu früh auf 100 % treiben -> hier nur als Notkühlung beachten
-            bool curveSkip = !ch.IsGpu && prof.Profile == FanProfile.Custom && c == Component.Hotspot && Temp(Component.Gpu) is float;
             var st = ch.States[c];
             // Steigt die Temperatur, schnell folgen; fällt sie, langsam (kurze Lastpausen lassen die Lüfter nicht abfallen)
             st.Smooth = st.Smooth is float sm ? sm + (raw > sm ? 0.35f : 0.06f) * (raw - sm) : raw;
             float T = st.Smooth.Value;
             float target = targets[(int)c];
 
-            if (curveSkip)
-            {
-                if (_s.EmergencyEnabled && raw >= _s.Critical(c)) { emergency = true; emergencyWhy ??= $"{CompName(c)} {raw:0} °C ≥ {_s.Critical(c):0} °C"; }
-                continue;
-            }
             float d = prof.Profile switch
             {
                 FanProfile.Max => 100,

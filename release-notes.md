@@ -1,3 +1,8 @@
+## Neu in 2.25.3
+
+- **„Eigene Kurve“ wieder wie vor 2.25.2:** Gehäuse- und Radiator-Lüfter mit Quelle „GPU“ beachten den GPU-Hot-Spot wieder auf ihrer Kurve.
+- Beibehalten: Fahren Lüfter wegen Notkühlung oder Mainboard-Grenze hoch, steht der Grund im Fehler-Logbuch und auf der Lüfter-Karte. Das Diagnose-Paket enthält die Temperatur-Aufzeichnungen von heute und gestern.
+
 ## Neu in 2.25.2
 
 **Lüfter drehen nicht mehr unnötig voll auf**
