@@ -1,3 +1,17 @@
+## Neu in 2.26.0
+
+**Vorrang beim Kühlen: Hauptkühler zuerst, Gehäuse-Lüfter helfen**
+Gilt für „Energiesparend“, „Ausgewogen“ und „Leistung“. Notkühlung und Mainboard-Grenze bleiben unverändert.
+- **CPU:** Der Radiator-Lüfter kühlt zuerst. Gehäuse-Lüfter helfen erst mit, wenn der Radiator **65 %** erreicht (einstellbar unter „Gehäuse-Lüfter helfen ab“), und steigen dann langsam ein (höchstens 1,5 % pro Sekunde, gleichmäßig mit dem Radiator bis 100 %).
+- **Grafikkarte:** Der Grafikkarten-Lüfter kühlt zuerst. Gehäuse-Lüfter helfen ebenso erst ab 65 % mit.
+- **Pumpe:** Hält dauerhaft ihre Drehzahl („Pumpe mindestens“) und dreht nur im Notfall mit hoch, ab 90 % des Radiators.
+- **Wasserkühlung ist träge:** Bei der CPU wird die Temperatur ruhiger ausgewertet. Kurze Spitzen (z. B. 59 → 63 °C für eine Minute) treiben Radiator und Gehäuse-Lüfter nicht mehr sofort hoch.
+- Auf jeder Lüfter-Karte: **„Vorrang“** – automatisch, Hauptkühler oder Helfer. Automatisch erkennt den Radiator am Namen (Radiator, AIO, CPU) oder an der gemessenen Wirkung auf die CPU.
+- Die Lüfter-Karte zeigt, ob ein Helfer gerade wartet oder mithilft.
+
+**Aufzeichnung**
+- Kam im Lauf des Tages ein Sensor dazu, rutschten die Werte in der CSV in die falsche Spalte. Jetzt wird dann eine neue Kopfzeile geschrieben, und der Verlauf liest auch die älteren Dateien richtig ein.
+
 ## Neu in 2.25.3
 
 - **„Eigene Kurve“ wieder wie vor 2.25.2:** Gehäuse- und Radiator-Lüfter mit Quelle „GPU“ beachten den GPU-Hot-Spot wieder auf ihrer Kurve.

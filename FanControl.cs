@@ -12,6 +12,8 @@ enum FanProfile { Bios, Eco, Balanced, Performance, Max, Custom }
 enum Component { Cpu = 0, Gpu = 1, Board = 2, Hotspot = 3 }
 
 enum FanKind { Fan, Pump }
+/// Vorrang beim Kühlen: Hauptkühler regeln frei, Helfer kommen erst dazu, wenn der Hauptkühler schon kräftig arbeitet
+enum CoolRole { Auto, Main, Helper }
 
 static class Components
 {
@@ -128,6 +130,8 @@ sealed class FanChannelSettings
     public DateTime? CalibratedAt { get; set; }
     /// Darf im Leerlauf ganz stehen bleiben (wenn "Lüfter-Stopp im Leerlauf" an ist)
     public bool AllowStop { get; set; } = true;
+    /// Vorrang: automatisch (Radiator/Grafikkarten-Lüfter zuerst), immer Hauptkühler oder immer Helfer
+    public CoolRole Role { get; set; }
 
     public float? EffectFor(Component c) => Effect.TryGetValue(c.ToString(), out var v) ? v : null;
 
@@ -195,6 +199,8 @@ sealed class FanSettings
 
     /// Mindestleistung für Pumpen (Wasserkühlung), damit sie nie zu langsam laufen
     public float PumpMinPercent { get; set; } = 60f;
+    /// Helfer (z. B. Gehäuse-Lüfter) helfen erst mit, wenn der Hauptkühler mindestens so stark läuft (in %)
+    public float HelperStart { get; set; } = 65f;
 
     public Dictionary<string, FanChannelSettings> Fans { get; set; } = new();
 
@@ -1777,6 +1783,10 @@ sealed class FanController
         float driverTarget = 0;
         bool emergency = false;
         string? emergencyWhy = null;
+        bool driverHelped = false;          // bestimmendes Bauteil wird von diesem Lüfter nur als Helfer gekühlt
+        FanChannel? helperLead = null; float helperStartPct = 0; bool helperCapped = false;
+        var (floorPct, _) = Limits(ch, prof);
+        bool water = CpuWaterCooled();
 
         if (ch.Output < 0)
         {
@@ -1795,17 +1805,34 @@ sealed class FanController
             // die normale GPU-Temperatur nur, wenn die Karte keinen Hot Spot meldet
             if (ch.IsGpu && c == Component.Gpu && Temp(Component.Hotspot) is float) continue;
             var st = ch.States[c];
-            // Steigt die Temperatur, schnell folgen; fällt sie, langsam (kurze Lastpausen lassen die Lüfter nicht abfallen)
-            st.Smooth = st.Smooth is float sm ? sm + (raw > sm ? 0.35f : 0.06f) * (raw - sm) : raw;
+            // Steigt die Temperatur, schnell folgen; fällt sie, langsam (kurze Lastpausen lassen die Lüfter nicht abfallen).
+            // CPU mit Wasserkühlung: das Wasser reagiert träge -> ruhiger glätten, kurze Spitzen treiben die Lüfter nicht hoch
+            // (Notkühlung prüft weiter die echte Temperatur)
+            bool slowCpu = water && c == Component.Cpu && prof.Adaptive;
+            float up = slowCpu ? 0.03f : 0.35f, down = slowCpu ? 0.02f : 0.06f;
+            st.Smooth = st.Smooth is float sm ? sm + (raw > sm ? up : down) * (raw - sm) : raw;
             float T = st.Smooth.Value;
             float target = targets[(int)c];
 
+            float integralBefore = st.Integral;
             float d = prof.Profile switch
             {
                 FanProfile.Max => 100,
                 FanProfile.Custom => Interpolate(ch.Cfg.Curve, T),
                 _ => Adaptive(ch, c, st, T, target, prof, isDriver: ch.Driver == c),
             };
+            // Vorrang (nur Smart-Profile): als Helfer höchstens so viel, wie der Hauptkühler gerade braucht
+            bool helped = false; bool capped = false; FanChannel? lead = null; float startPct = 0;
+            if (prof.Adaptive && HelperCap(ch, c, floorPct, out lead, out startPct) is float cap)
+            {
+                helped = true;
+                if (d > cap)
+                {
+                    d = cap;
+                    capped = true;
+                    st.Integral = Math.Min(st.Integral, integralBefore);   // nicht aufschaukeln, solange begrenzt
+                }
+            }
 
             if (_s.EmergencyEnabled && raw >= _s.Critical(c)) { emergency = true; emergencyWhy ??= $"{CompName(c)} {raw:0} °C ≥ {_s.Critical(c):0} °C"; }
 
@@ -1815,6 +1842,7 @@ sealed class FanController
                 driver = c;
                 driverTemp = T;
                 driverTarget = target;
+                driverHelped = helped; helperLead = lead; helperStartPct = startPct; helperCapped = capped;
             }
         }
 
@@ -1831,6 +1859,7 @@ sealed class FanController
                 driverTemp = bt;
                 driverTarget = _s.BoardLimit;
                 boardGuard = true;
+                driverHelped = false;
             }
         }
 
@@ -1853,7 +1882,9 @@ sealed class FanController
         float next = ch.Output;
         if (desired > ch.Output + 0.5f)
         {
-            next = Math.Min(desired, ch.Output + prof.UpRate);
+            // Helfer steigen langsam ein (höchstens 1,5 % pro Sekunde) statt voll auszuschlagen
+            float upRate = driverHelped ? Math.Min(prof.UpRate, HelperUpRate) : prof.UpRate;
+            next = Math.Min(desired, ch.Output + upRate);
             ch.LastUpAt = DateTime.Now;
         }
         else if (desired < ch.Output - 2f && (DateTime.Now - ch.LastUpAt).TotalSeconds >= 20)
@@ -1872,6 +1903,10 @@ sealed class FanController
                      ? (ef < WeakEffect ? $"Wirkung gering ({ef:0.0} °C je 10 %) – gedämpft" : $"Wirkung {ef:0.0} °C je 10 %")
                      : "Wirkung wird gemessen"),
         };
+        if (driverHelped && helperLead != null && prof.Adaptive)
+            ch.Status += helperCapped
+                ? $" · Helfer: wartet auf {helperLead.DisplayName} ({helperLead.Output:0} %, hilft ab {helperStartPct:0} %)"
+                : $" · Helfer für {helperLead.DisplayName} ({helperLead.Output:0} %)";
         if (boardGuard)
             ch.Status = $"Mainboard-Grenze: {driverTemp:0} °C liegt über {_s.BoardLimit:0} °C – Lüfter erhöht";
 
@@ -2025,6 +2060,63 @@ sealed class FanController
     // ---------------------------------------------------------------------
     // Ab dieser Wirkung (°C pro 10 % Lüfterleistung) gilt ein Bauteil als "reagiert kaum"
     const float WeakEffect = 0.3f;
+
+    // ---------------------------------------------------------------------
+    // Vorrang: Hauptkühler und Helfer
+    //  CPU:  Radiator-/CPU-Lüfter zuerst, Gehäuse-Lüfter helfen ab „Helfer ab“ (Standard 65 %) des Radiators,
+    //        die Pumpe hält ihre Drehzahl und dreht nur im Notfall mit (ab 90 % des Radiators)
+    //  GPU:  Grafikkarten-Lüfter zuerst, Gehäuse-Lüfter helfen ab „Helfer ab“
+    //  Mainboard: kein Vorrang. Notkühlung und Mainboard-Grenze gelten immer.
+    // ---------------------------------------------------------------------
+    const float HelperUpRate = 1.5f;
+    const float PumpHelpStart = 90f;
+
+    static readonly System.Text.RegularExpressions.Regex CpuCoolerWords = new(
+        @"radiator|\bradi\b|\baio\b|cpu|prozessor",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    static bool NamedCpuCooler(FanChannel ch) =>
+        !ch.IsGpu && ch.Kind == FanKind.Fan && (CpuCoolerWords.IsMatch(ch.DisplayName) || CpuCoolerWords.IsMatch(ch.DefaultName));
+
+    /// Regelt dieser Lüfter gerade selbst (nicht BIOS, nicht gestört, kein Gruppen-Mitläufer)?
+    bool Active(FanChannel o) => !o.MonitorOnly && !o.NotControllable && !o.Faulted && o.Output >= 0 && !IsFollower(o);
+
+    /// Wasserkühlung für die CPU vorhanden (Pumpe oder Radiator)?
+    bool CpuWaterCooled() => Channels.Any(o => o.Kind == FanKind.Pump && o.Cfg.UseCpu)
+                             || Channels.Any(o => !o.IsGpu && o.Cfg.UseCpu && System.Text.RegularExpressions.Regex.IsMatch(o.DisplayName, @"radiator|\baio\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase));
+
+    /// Ist dieser Lüfter Hauptkühler für das Bauteil?
+    public bool IsMainFor(FanChannel ch, Component c)
+    {
+        if (ch.Cfg.Role == CoolRole.Main) return true;
+        if (ch.Cfg.Role == CoolRole.Helper) return false;
+        if (c is Component.Gpu or Component.Hotspot) return ch.IsGpu;
+        if (c != Component.Cpu) return true;
+        if (ch.IsGpu) return false;
+        if (ch.Kind == FanKind.Pump) return false;          // Pumpe: hält die Drehzahl, hilft nur im Notfall
+        if (NamedCpuCooler(ch)) return true;
+        bool named = Channels.Any(o => o != ch && o.Cfg.UseCpu && o.Cfg.Role != CoolRole.Helper && NamedCpuCooler(o));
+        if (named) return false;
+        // Kein Lüfter als Radiator/CPU benannt: der mit der deutlich gemessenen Wirkung auf die CPU zuerst
+        var best = Channels.Where(o => !o.IsGpu && o.Kind == FanKind.Fan && o.Cfg.UseCpu && o.Cfg.Role != CoolRole.Helper)
+                           .OrderByDescending(o => o.Cfg.EffectFor(Component.Cpu) ?? -1f).FirstOrDefault();
+        if (best?.Cfg.EffectFor(Component.Cpu) is float be && be >= WeakEffect) return best == ch;
+        return true;   // nichts bekannt: wie bisher, jeder regelt selbst
+    }
+
+    /// Höchstleistung als Helfer für dieses Bauteil; null = Hauptkühler oder kein aktiver Hauptkühler vorhanden
+    float? HelperCap(FanChannel ch, Component c, float floor, out FanChannel? lead, out float start)
+    {
+        lead = null; start = 0;
+        if (c == Component.Board || IsMainFor(ch, c)) return null;
+        lead = Channels.Where(o => o != ch && Active(o) && o.Cfg.Uses(c) && IsMainFor(o, c))
+                       .OrderByDescending(o => o.Output).FirstOrDefault();
+        if (lead == null) return null;
+        start = ch.Kind == FanKind.Pump ? PumpHelpStart : Math.Clamp(_s.HelperStart, 30f, 95f);
+        // Ab „Helfer ab“ gleichmäßig mitsteigen: Hauptkühler bei 100 % -> Helfer darf bis 100 %
+        float f = Math.Clamp((lead.Output - start) / (100f - start), 0f, 1f);
+        return floor + f * (100f - floor);
+    }
 
     float Adaptive(FanChannel ch, Component c, SourceState st, float T, float target, ProfileInfo p, bool isDriver)
     {

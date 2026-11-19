@@ -600,7 +600,7 @@ sealed class TargetsPanel : Panel
         _ctl = ctl;
         float k = Dpi.K(this);
         int S(float px) => (int)(px * k);
-        Height = S(84);
+        Height = S(112);
         BackColor = Theme.Card;
 
         _title = new Label
@@ -632,12 +632,25 @@ sealed class TargetsPanel : Panel
             Controls.AddRange(new Control[] { lbl, num, unit });
         }
 
-        var pumpLbl = new Label { Text = "Pumpen mindestens", ForeColor = Theme.Muted, AutoSize = true, Location = new Point(x + S(10), S(45)) };
-        int px = x + S(10) + TextRenderer.MeasureText(pumpLbl.Text, pumpLbl.Font).Width + S(6);
-        _pump = Ui.Number(_ctl.Settings.PumpMinPercent, 20, 100, new Point(px, S(42)), k);
+        // Zweite Zeile: Pumpe und Vorrang
+        int y2 = S(78);
+        var pumpLbl = new Label { Text = "Pumpe mindestens", ForeColor = Theme.Muted, AutoSize = true, Location = new Point(S(14), y2 + S(3)) };
+        int px = S(14) + TextRenderer.MeasureText(pumpLbl.Text, pumpLbl.Font).Width + S(6);
+        _pump = Ui.Number(_ctl.Settings.PumpMinPercent, 20, 100, new Point(px, y2), k);
         _pump.ValueChanged += (_, _) => { _ctl.Settings.PumpMinPercent = (float)_pump.Value; _ctl.Save(); };
-        var pumpUnit = new Label { Text = "%", ForeColor = Theme.Muted, AutoSize = true, Location = new Point(px + _pump.Width + S(4), S(45)) };
+        var pumpUnit = new Label { Text = "%", ForeColor = Theme.Muted, AutoSize = true, Location = new Point(px + _pump.Width + S(4), y2 + S(3)) };
         Controls.AddRange(new Control[] { pumpLbl, _pump, pumpUnit });
+
+        int hx = px + _pump.Width + S(34);
+        var helpLbl = new Label { Text = "Gehäuse-Lüfter helfen ab", ForeColor = Theme.Muted, AutoSize = true, Location = new Point(hx, y2 + S(3)) };
+        int hnx = hx + TextRenderer.MeasureText(helpLbl.Text, helpLbl.Font).Width + S(6);
+        var help = Ui.Number(_ctl.Settings.HelperStart, 30, 95, new Point(hnx, y2), k);
+        help.ValueChanged += (_, _) => { _ctl.Settings.HelperStart = (float)help.Value; _ctl.Save(); };
+        var helpUnit = new Label { Text = "% des Hauptkühlers", ForeColor = Theme.Muted, AutoSize = true, Location = new Point(hnx + help.Width + S(4), y2 + S(3)) };
+        new ToolTip { AutoPopDelay = 20000 }.SetToolTip(helpLbl,
+            "Gehäuse-Lüfter (Helfer) drehen für CPU bzw. Grafikkarte erst mit, wenn Radiator bzw. Grafikkarten-Lüfter so stark laufen,\n" +
+            "und steigen dann langsam ein. Die Pumpe hält ihre Drehzahl und hilft erst ab 90 %. Pro Lüfter einstellbar unter „Vorrang“.");
+        Controls.AddRange(new Control[] { helpLbl, help, helpUnit });
 
         var reset = new LinkLabel
         {
@@ -645,7 +658,7 @@ sealed class TargetsPanel : Panel
             LinkColor = Theme.Accent,
             ActiveLinkColor = Theme.Text,
             AutoSize = true,
-            Location = new Point(px + _pump.Width + S(40), S(45)),
+            Location = new Point(x + S(10), S(45)),
         };
         reset.Click += (_, _) =>
         {
@@ -775,6 +788,7 @@ sealed class FanCard : Control
     readonly Label _sourceLabel;
     readonly CurveEditor _curve;
     readonly ComboBox? _group;
+    readonly ComboBox? _role;
     readonly Label _follow;
     readonly Action _rebuild;
     readonly bool _follower;
@@ -897,6 +911,25 @@ sealed class FanCard : Control
 
         _curve = new CurveEditor(ch.Cfg.Curve) { Visible = false };
         _curve.CurveChanged += () => ctl.Save();
+
+        // Vorrang (nicht für Grafikkarten-Lüfter – die sind immer Hauptkühler der Grafikkarte)
+        if (!ch.IsGpu && !_follower)
+        {
+            _role = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat,
+                BackColor = Theme.CardHero, ForeColor = Theme.Text,
+            };
+            _role.Items.AddRange(new object[] { "Vorrang: automatisch", "Vorrang: Hauptkühler", "Vorrang: Helfer" });
+            _role.SelectedIndex = (int)ch.Cfg.Role;
+            _role.SelectedIndexChanged += (_, _) => { ch.Cfg.Role = (CoolRole)_role.SelectedIndex; ctl.Save(); };
+            new ToolTip { AutoPopDelay = 20000 }.SetToolTip(_role,
+                "Hauptkühler regeln frei (z. B. Radiator für die CPU, Grafikkarten-Lüfter für die GPU).\n" +
+                "Helfer drehen erst mit, wenn der Hauptkühler die eingestellte Leistung erreicht („Helfer ab“), und steigen dann langsam ein.\n" +
+                "Automatisch: Radiator/CPU-Lüfter und Grafikkarten-Lüfter sind Hauptkühler, Gehäuse-Lüfter helfen, die Pumpe hält ihre Drehzahl\n" +
+                "und dreht nur im Notfall mit. Gilt für Energiesparend, Ausgewogen und Leistung – Notkühlung und Mainboard-Grenze immer.");
+            Controls.Add(_role);
+        }
 
         // Gruppe wählen (nicht für Grafikkarten-Lüfter)
         _follow = new Label { ForeColor = Theme.Muted, BackColor = Theme.Card, AutoSize = false, UseMnemonic = false, Visible = false };
@@ -1056,6 +1089,7 @@ sealed class FanCard : Control
         if (_hide == null) _reset.Location = new Point(S(232), S(67));
         _sourceLabel.Location = new Point(S(16), _ch.IsGpu ? S(160) : S(150));
         _group?.SetBounds(Width - S(196), S(144), S(180), S(26));
+        _role?.SetBounds(S(94), S(144), S(124), S(26));
         _follow.SetBounds(S(16), S(170), Width - S(32), S(26));
         if (_follower) _sourceLabel.Text = "Gruppe:";
         int x = S(16), w = (Width - S(32)) / 3;

@@ -76,8 +76,20 @@ static class CsvHistory
             string file = FileFor(day);
             if (!File.Exists(file)) continue;
             string[] cols = Array.Empty<string>();
+            var known = new Dictionary<int, string[]>();
             try
             {
+                // Kopfzeilen der Datei vorab sammeln (je Spaltenzahl)
+                using (var hs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                using (var hr = new StreamReader(hs, System.Text.Encoding.UTF8))
+                {
+                    string? hl;
+                    while ((hl = hr.ReadLine()) != null)
+                    {
+                        hl = hl.TrimStart('\uFEFF');
+                        if (hl.StartsWith("Zeit;")) { var hp = hl.Split(';'); known.TryAdd(hp.Length, hp); }
+                    }
+                }
                 using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                 using var rd = new StreamReader(fs, System.Text.Encoding.UTF8);
                 string? line;
@@ -86,17 +98,26 @@ static class CsvHistory
                     ct.ThrowIfCancellationRequested();
                     if (line.Length == 0) continue;
                     var parts = line.Split(';');
-                    if (parts[0] == "Zeit")
+                    if (parts[0].TrimStart('\uFEFF') == "Zeit")
                     {
                         cols = parts;
+                        known[parts.Length] = parts;
                         continue;
                     }
                     if (!DateTime.TryParseExact(parts[0], "dd.MM.yyyy HH:mm:ss", De, DateTimeStyles.None, out var t)) continue;
+                    // Ältere Aufzeichnungen: kam während des Tages ein Sensor dazu, fehlte die neue Kopfzeile –
+                    // dann die Kopfzeile mit passender Spaltenzahl nehmen, sonst die Zeile auslassen (statt Werte zu vertauschen)
+                    var rowCols = cols;
+                    if (parts.Length != cols.Length)
+                    {
+                        if (known.TryGetValue(parts.Length, out var alt)) rowCols = alt;
+                        else continue;
+                    }
                     int idx = data.Times.Count;
                     data.Times.Add(t);
-                    for (int i = 1; i < parts.Length && i < cols.Length; i++)
+                    for (int i = 1; i < parts.Length && i < rowCols.Length; i++)
                     {
-                        string name = cols[i];
+                        string name = rowCols[i];
                         if (only != null && !only.Contains(name)) continue;
                         if (!data.Series.TryGetValue(name, out var list))
                         {

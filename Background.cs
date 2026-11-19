@@ -232,6 +232,7 @@ sealed class DataLogger
     DateTime _last = DateTime.MinValue;
     string? _currentFile;
     string _headerLine = "";
+    string? _writtenHeader;
 
     public string? LastError { get; private set; }
     public bool Enabled => AppSettings.Instance.LogEnabled;
@@ -265,13 +266,18 @@ sealed class DataLogger
             if (file != _currentFile)
             {
                 _currentFile = file;
-                // Neue Datei oder geänderte Spalten (andere Hardware): Kopfzeile schreiben
-                bool needHeader = !File.Exists(file) || File.ReadLines(file).FirstOrDefault() != _headerLine;
-                if (needHeader)
-                {
-                    if (File.Exists(file)) File.AppendAllText(file, Environment.NewLine, Encoding.UTF8);
-                    File.AppendAllText(file, _headerLine + Environment.NewLine, new UTF8Encoding(true));
-                }
+                // Zuletzt geschriebene Kopfzeile dieser Datei (nach einem Neustart weiterschreiben)
+                _writtenHeader = File.Exists(file)
+                    ? File.ReadLines(file).Select(l => l.TrimStart('\uFEFF')).LastOrDefault(l => l.StartsWith("Zeit;"))
+                    : null;
+            }
+            // Neue Datei oder geänderte Spalten (z. B. Sensor kam während des Tages dazu): Kopfzeile schreiben,
+            // damit die Werte nicht in die falsche Spalte rutschen
+            if (_writtenHeader != _headerLine)
+            {
+                if (File.Exists(file)) File.AppendAllText(file, Environment.NewLine, Encoding.UTF8);
+                File.AppendAllText(file, _headerLine + Environment.NewLine, new UTF8Encoding(true));
+                _writtenHeader = _headerLine;
             }
 
             var sb = new StringBuilder(now.ToString("dd.MM.yyyy HH:mm:ss", De));
