@@ -1191,6 +1191,20 @@ static class BackupTools
                     }
                     catch { }
                 }
+                // Aufzeichnungen von heute und gestern (Temperaturen & Lüfter) – zeigt, was vor einem Problem passiert ist
+                foreach (var day in new[] { DateTime.Today, DateTime.Today.AddDays(-1) })
+                {
+                    try
+                    {
+                        var csv = Directory.Exists(DataLogger.Folder)
+                            ? Directory.GetFiles(DataLogger.Folder, $"*{day:yyyy-MM-dd}*.csv").FirstOrDefault() : null;
+                        if (csv == null) continue;
+                        using var src = new FileStream(csv, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                        using var dst = zip.CreateEntry("aufzeichnung/" + Path.GetFileName(csv)).Open();
+                        src.CopyTo(dst);
+                    }
+                    catch { }
+                }
                 var info = zip.CreateEntry("info.txt");
                 using var w = new StreamWriter(info.Open());
                 w.WriteLine($"Toast Temperatur {Updater.CurrentVersion.ToString(3)}");
@@ -1198,7 +1212,7 @@ static class BackupTools
             }
             System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{path}\"");
             MessageBox.Show(owner, "Diagnose-Paket gespeichert:\n" + path +
-                "\n\nEs enthält nur Protokolle und Einstellungen von Toast Temperatur – keine persönlichen Dateien.",
+                "\n\nEs enthält nur Protokolle, Einstellungen und die Temperatur-Aufzeichnungen von heute und gestern – keine persönlichen Dateien.",
                 "Diagnose-Paket", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex) { MessageBox.Show(owner, "Erstellen fehlgeschlagen: " + ex.Message, "Diagnose-Paket", MessageBoxButtons.OK, MessageBoxIcon.Error); }

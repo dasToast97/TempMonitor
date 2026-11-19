@@ -1,3 +1,6 @@
-## Neu in 2.25.1
+## Neu in 2.25.2
 
-- **Lauflicht: „Abstand zur nächsten Welle“** statt „Pause danach“: legt fest, wie viele Sekunden nach der ersten Welle die zweite hinterherkommt. Kleiner als der Durchlauf = mehrere Wellen gleichzeitig unterwegs; 0 = die nächste startet, sobald die erste ganz durch ist.
+**Lüfter drehen nicht mehr unnötig voll auf**
+- Bei „Eigene Kurve“ haben Gehäuse- und Radiator-Lüfter mit Quelle „GPU“ auch den **GPU-Hot-Spot** auf ihre Kurve gelegt. Der Hot Spot liegt 15–30 °C über der GPU-Temperatur – die Kurve lief dadurch beim Spielen schnell auf 80–100 %. Jetzt bestimmt bei diesen Lüftern die GPU-Temperatur die Kurve; der Hot Spot zählt nur noch für die Notkühlung (ab der eingestellten Grenze, Standard 105 °C). Der Grafikkarten-Lüfter selbst regelt weiter nach dem Hot Spot.
+- **Nachvollziehbar:** Fahren Lüfter wegen Notkühlung oder Mainboard-Grenze hoch, steht jetzt im Fehler-Logbuch, warum und bei welchen Temperaturen. Die Lüfter-Karte zeigt den Grund direkt an (z. B. „Notkühlung – Grafikkarte 86 °C ≥ 85 °C“).
+- Das **Diagnose-Paket** enthält jetzt auch die Temperatur-Aufzeichnungen von heute und gestern.
